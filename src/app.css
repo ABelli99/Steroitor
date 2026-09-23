@@ -1,0 +1,104 @@
+:root {
+  color-scheme: light;
+  --bg: #f3f3f3;
+  --panel-bg: #f7f7f7;
+  --editor-bg: #ffffff;
+  --fg: #1f1f1f;
+  --fg-muted: #8a8a8a;
+  --border: #dcdcdc;
+  --accent: #2f6fdb;
+  --hover: rgba(0, 0, 0, 0.06);
+  --active-line: rgba(0, 0, 0, 0.035);
+  --selection: #cfe0fb;
+  --selection-match: rgba(47, 111, 219, 0.15);
+  --search-match: rgba(255, 200, 0, 0.35);
+  --danger: #c62828;
+  --git-added: #2e7d32;
+  --git-modified: #1f5fbf;
+  --git-untracked: #b0433a;
+  --git-ignored: #9e9e9e;
+
+  --hl-keyword: #0033b3;
+  --hl-string: #067d17;
+  --hl-number: #1750eb;
+  --hl-comment: #8c8c8c;
+  --hl-function: #00627a;
+  --hl-type: #871094;
+  --hl-property: #871094;
+
+  --ui-font: "Segoe UI", system-ui, sans-serif;
+  --mono: "Cascadia Mono", Consolas, "JetBrains Mono", monospace;
+  --ui-font-size: 13px;
+  --editor-font-size: 14px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #1e1f22;
+    --panel-bg: #232427;
+    --editor-bg: #1e1f22;
+    --fg: #d4d4d4;
+    --fg-muted: #6f737a;
+    --border: #393b40;
+    --accent: #5a9cf8;
+    --hover: rgba(255, 255, 255, 0.07);
+    --active-line: rgba(255, 255, 255, 0.04);
+    --selection: #214283;
+    --selection-match: rgba(90, 156, 248, 0.2);
+    --search-match: rgba(255, 200, 0, 0.25);
+    --danger: #ef5350;
+    --git-added: #73c991;
+    --git-modified: #6ea8fe;
+    --git-untracked: #d9776e;
+    --git-ignored: #6f737a;
+
+    --hl-keyword: #cf8e6d;
+    --hl-string: #6aab73;
+    --hl-number: #2aacb8;
+    --hl-comment: #7a7e85;
+    --hl-function: #56a8f5;
+    --hl-type: #c77dbb;
+    --hl-property: #c77dbb;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--ui-font);
+  font-size: var(--ui-font-size);
+  overflow: hidden;
+  user-select: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--hover);
+}
+
+button:focus-visible {
+  outline: 1px solid var(--accent);
+}
