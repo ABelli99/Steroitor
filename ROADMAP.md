@@ -31,7 +31,7 @@ Se la risposta a una delle tre è "no", va in backlog.
 Si misurano da F0 in poi (`npm run measure`, oppure `-SkipBuild` lanciando lo script direttamente).
 Una fase non è chiusa se sfora un limite.
 
-Ultima misura (F6.2, build release): installer 2,0 MB · RAM 75–78 MB · avvio a regime 510–540 ms (primi 2–3 lanci dopo una build: 850–1090 ms).
+Ultima misura (F6.6, build release): installer 2,0 MB · RAM 75–77 MB · avvio a regime 525–600 ms (target 500 superato di poco, limite rispettato; il bundle iniziale è passato da 180 a 198 KB tra F2 e F6).
 **Rischio aperto:** il primo avvio dopo una build (cache file del sistema operativo fredda) arriva a 1,0–1,3 s, oltre il limite; a regime e con profilo WebView2 vuoto resta ~500 ms. Da ricontrollare dopo un riavvio del PC.
 
 **Decisione:** WebView2 gira con `--disable-gpu` (`tauri.conf.json` → `additionalBrowserArgs`).
@@ -156,7 +156,7 @@ Note di implementazione:
 
 ---
 
-## F6 — Backlog (dopo la chiusura di F5)
+## F6 — Backlog (dopo la chiusura di F5) — completato
 
 Si parte solo a roadmap completata. Ogni voce resta soggetta ai budget di performance.
 In ordine di priorità:
@@ -166,7 +166,7 @@ In ordine di priorità:
 3. ✅ Commit parziale per hunk / riga, stage/rollback dal gutter — click su un marker: rollback, stage del hunk o delle righe selezionate (l'index si aggiorna senza toccare il file)
 4. ✅ Clone da URL e `git init` dall'UI — pulsante Clona (top bar, Explorer vuoto, tab Git) e git init dalla tab Git
 5. ✅ Edit Commit Message di commit non pushati — dal menu del log; riscrive i commit con commit-tree (tree e autori invariati), rifiuta i commit già su un remote
-6. Minimap
+6. ✅ Minimap — toggle nella status bar, estensione caricata solo quando attiva, preferenza salvata nella sessione
 
 ---
 

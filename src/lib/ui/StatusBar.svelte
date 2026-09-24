@@ -40,6 +40,7 @@
     <span>{tab.encoding}{tab.bom ? " BOM" : ""}</span>
     <span>{languageName(tab.language)}</span>
   {/if}
+  <button title="Minimap" class:on={workspace.minimap} onclick={() => workspace.setMinimap(!workspace.minimap)}>Minimap</button>
   <button title="A capo automatico (Alt+Z)" class:on={workspace.wrap} onclick={() => workspace.toggleWrap()}>
     A capo
   </button>

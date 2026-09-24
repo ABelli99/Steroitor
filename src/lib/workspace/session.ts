@@ -16,6 +16,7 @@ export interface SessionTab {
 export interface SessionData extends Partial<TreeSnapshot> {
   version: 1;
   wrap: boolean;
+  minimap?: boolean;
   tabs: SessionTab[];
 }
 

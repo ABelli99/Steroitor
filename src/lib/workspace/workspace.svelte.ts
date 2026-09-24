@@ -3,7 +3,7 @@ import { EditorState, Text, Transaction, type Extension, type TransactionSpec } 
 import { message, open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "../backend";
 import { detectLanguage, loadLanguage } from "../editor/languages";
-import { blameSlot, createState, gitSlot, languageSlot, wrapExtension, wrapSlot } from "../editor/setup";
+import { blameSlot, createState, gitSlot, languageSlot, minimapSlot, wrapExtension, wrapSlot } from "../editor/setup";
 import { detectEol, fileName, isInsideDir, parentDir, samePath, type Eol } from "./files";
 import type { SessionData, SessionTab } from "./session";
 
@@ -48,6 +48,7 @@ export class Workspace {
   activeId = $state<string | null>(null);
   cursor = $state({ line: 1, column: 1, selected: 0 });
   wrap = $state(false);
+  minimap = $state(false);
   active = $derived(this.tabs.find((tab) => tab.id === this.activeId) ?? null);
 
   #states = new Map<string, EditorState>();
@@ -56,6 +57,7 @@ export class Workspace {
   #nextId = 1;
   #untitledCount = 0;
   #listeners = new Set<() => void>();
+  #minimapExtension: Extension = [];
 
   mount(parent: HTMLElement) {
     this.#view = new EditorView({ parent });
@@ -220,6 +222,14 @@ export class Workspace {
     this.#emitChange();
   }
 
+  async setMinimap(enabled: boolean) {
+    this.#minimapExtension = enabled ? (await import("../editor/minimap")).minimapExtension : [];
+    this.minimap = enabled;
+    const effect = minimapSlot.reconfigure(this.#minimapExtension);
+    for (const tab of this.tabs) this.#dispatch(tab.id, { effects: effect });
+    this.#emitChange();
+  }
+
   snapshot(): SessionData {
     this.#persistActiveState();
     const tabs = this.tabs
@@ -238,11 +248,12 @@ export class Workspace {
         };
       })
       .filter((tab): tab is SessionTab => tab !== null);
-    return { version: 1, wrap: this.wrap, tabs };
+    return { version: 1, wrap: this.wrap, minimap: this.minimap, tabs };
   }
 
   async restore(session: SessionData) {
     this.wrap = session.wrap;
+    if (session.minimap) await this.setMinimap(true);
     let activeId: string | null = null;
     for (const saved of session.tabs) {
       const id = await this.#restoreTab(saved);
@@ -295,7 +306,7 @@ export class Workspace {
   #addTab(spec: NewTab): string {
     const id = `tab-${this.#nextId++}`;
     const language = detectLanguage(spec.path);
-    const state = createState(spec.content, this.wrap, (update) => this.#handleUpdate(id, update));
+    const state = createState(spec.content, this.wrap, this.#minimapExtension, (update) => this.#handleUpdate(id, update));
     this.#states.set(id, state);
     this.#baselines.set(id, spec.baseline);
     this.tabs.push({

@@ -13,10 +13,11 @@ export const languageSlot = new Compartment();
 export const wrapSlot = new Compartment();
 export const gitSlot = new Compartment();
 export const blameSlot = new Compartment();
+export const minimapSlot = new Compartment();
 
 export const wrapExtension = (enabled: boolean): Extension => (enabled ? EditorView.lineWrapping : []);
 
-export function createState(content: string, wrap: boolean, onUpdate: (update: ViewUpdate) => void): EditorState {
+export function createState(content: string, wrap: boolean, minimap: Extension, onUpdate: (update: ViewUpdate) => void): EditorState {
   return EditorState.create({
     doc: content,
     extensions: [
@@ -49,6 +50,7 @@ export function createState(content: string, wrap: boolean, onUpdate: (update: V
       editorTheme,
       languageSlot.of([]),
       wrapSlot.of(wrapExtension(wrap)),
+      minimapSlot.of(minimap),
       EditorView.updateListener.of(onUpdate),
     ],
   });
