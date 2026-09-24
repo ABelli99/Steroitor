@@ -28,10 +28,12 @@ Se la risposta a una delle tre è "no", va in backlog.
 | Apertura file da 10 MB | < 1 s | 2 s |
 | Input latency durante la digitazione | < 16 ms | — |
 
-Si misurano da F0 in poi (`npm run measure`, oppure `-SkipBuild` lanciando lo script direttamente).
+Si misurano da F0 in poi (`npm run measure`, oppure `-SkipBuild` lanciando lo script direttamente; `-Repo <percorso>` per una misura informativa con un repository aperto).
+Lo script mette da parte la sessione dell'utente e parte sempre da uno stato pulito.
 Una fase non è chiusa se sfora un limite.
 
-Ultima misura (F6.6, build release): installer 2,0 MB · RAM 75–77 MB · avvio a regime 525–600 ms (target 500 superato di poco, limite rispettato; il bundle iniziale è passato da 180 a 198 KB tra F2 e F6).
+Ultima misura (post-F6, build release, sessione isolata): installer 2,0 MB · RAM 75–79 MB · avvio a regime 515–670 ms.
+Con un repository reale aperto (329 commit, tab Git visibile): RAM ~95 MB — prima della virtualizzazione del log era ~130 MB.
 **Rischio aperto:** il primo avvio dopo una build (cache file del sistema operativo fredda) arriva a 1,0–1,3 s, oltre il limite; a regime e con profilo WebView2 vuoto resta ~500 ms. Da ricontrollare dopo un riavvio del PC.
 
 **Decisione:** WebView2 gira con `--disable-gpu` (`tauri.conf.json` → `additionalBrowserArgs`).

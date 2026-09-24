@@ -37,6 +37,7 @@ pub fn run() {
             explorer::rename_path,
             explorer::delete_to_trash,
             explorer::reveal_in_os,
+            explorer::path_state,
             files::read_text_file,
             files::write_text_file,
             git::commands::git_version,

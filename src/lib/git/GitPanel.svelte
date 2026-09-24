@@ -55,6 +55,13 @@
 
   const rowKey = (node: BranchNode) => (node.kind === "folder" ? node.key : `${node.branch.remote ? "r" : "l"}:${node.branch.name}`);
 
+  const OVERSCAN = 10;
+  let list = $state<HTMLElement>();
+  let scrollTop = $state(0);
+  let viewportHeight = $state(0);
+  const firstVisible = $derived(Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN));
+  const visibleCommits = $derived(commits.slice(firstVisible, firstVisible + Math.ceil(viewportHeight / ROW_HEIGHT) + OVERSCAN * 2));
+
   const x = (lane: number) => lane * LANE_WIDTH + LANE_WIDTH / 2;
   const color = (index: number) => LANE_COLORS[index % LANE_COLORS.length];
 
@@ -82,6 +89,8 @@
   function reload() {
     generation += 1;
     commits = [];
+    scrollTop = 0;
+    if (list) list.scrollTop = 0;
     complete = false;
     loading = false;
     selected = null;
@@ -105,18 +114,21 @@
     }
   }
 
-  function onScroll(event: Event) {
-    const list = event.currentTarget as HTMLElement;
+  function onScroll() {
+    if (!list) return;
+    scrollTop = list.scrollTop;
     if (list.scrollHeight - list.scrollTop - list.clientHeight < 200) loadMore();
   }
 
   function onKeyDown(event: KeyboardEvent) {
     const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
-    if (!step || !commits.length) return;
+    if (!step || !commits.length || !list) return;
     event.preventDefault();
-    const index = selected ? commits.indexOf(selected) : -1;
-    selected = commits[Math.min(Math.max(index + step, 0), commits.length - 1)];
-    document.getElementById(`commit-${selected.hash}`)?.scrollIntoView({ block: "nearest" });
+    const index = Math.min(Math.max((selected ? commits.indexOf(selected) : -1) + step, 0), commits.length - 1);
+    selected = commits[index];
+    const top = index * ROW_HEIGHT;
+    if (top < list.scrollTop) list.scrollTop = top;
+    else if (top + ROW_HEIGHT > list.scrollTop + list.clientHeight) list.scrollTop = top + ROW_HEIGHT - list.clientHeight;
   }
 
   function commitMenu(event: MouseEvent, commit: Commit) {
@@ -203,15 +215,17 @@
       {#if filtered}<span class="note">grafo nascosto con i filtri</span>{/if}
     </div>
 
-    <div class="log" role="grid" tabindex="0" onscroll={onScroll} onkeydown={onKeyDown}>
-      {#each commits as commit, index (commit.hash)}
+    <div class="log" role="grid" tabindex="0" bind:this={list} bind:clientHeight={viewportHeight} onscroll={onScroll} onkeydown={onKeyDown}>
+      <div class="spacer-rows" style:height="{commits.length * ROW_HEIGHT}px">
+      {#each visibleCommits as commit, offset (commit.hash)}
+        {@const index = firstVisible + offset}
         {@const row = graph[index]}
         <div
-          id="commit-{commit.hash}"
           class="commit"
           class:selected={selected === commit}
           role="row"
           tabindex="-1"
+          style:transform="translateY({index * ROW_HEIGHT}px)"
           style:grid-template-columns="{filtered ? '' : `${lanes * LANE_WIDTH}px `}64px 1fr 140px 110px"
           onclick={() => (selected = commit)}
           ondblclick={() => (diffState.request = { kind: "commit", hash: commit.hash })}
@@ -243,9 +257,9 @@
           <span class="author" title={commit.email}>{commit.author}</span>
           <span class="date" title={absoluteTime(commit.timestamp)}>{relativeTime(commit.timestamp)}</span>
         </div>
-      {:else}
-        <p class="empty">{error ?? (loading ? "Caricamento…" : "Nessun commit.")}</p>
       {/each}
+      </div>
+      {#if !commits.length}<p class="empty">{error ?? (loading ? "Caricamento…" : "Nessun commit.")}</p>{/if}
       {#if loading && commits.length}<p class="empty">Caricamento…</p>{/if}
     </div>
   </div>
@@ -372,7 +386,15 @@
     outline: none;
   }
 
+  .spacer-rows {
+    position: relative;
+  }
+
   .commit {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
     display: grid;
     align-items: center;
     gap: 10px;

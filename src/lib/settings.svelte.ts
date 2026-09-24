@@ -5,9 +5,11 @@ export type UpdateMethod = "merge" | "rebase";
 interface Settings {
   updateMethod: UpdateMethod;
   warnCrlf: boolean;
+  /** Ultima cartella in cui si è clonato un repository. */
+  cloneParent: string;
 }
 
-const defaults: Settings = { updateMethod: "merge", warnCrlf: true };
+const defaults: Settings = { updateMethod: "merge", warnCrlf: true, cloneParent: "" };
 
 function load(): Settings {
   try {

@@ -11,11 +11,9 @@
   import { vcsMenuItems } from "./lib/git/vcsMenu";
   import { showPanel } from "./lib/ui/panels";
   import { closeMenu, menuState, openMenu } from "./lib/ui/menu.svelte";
-  import { track } from "./lib/ui/activity.svelte";
   import { terminals } from "./lib/terminal/terminals.svelte";
-  import { gitClone, gitInit, repoNameFromUrl } from "./lib/git/clone";
+  import { gitInit } from "./lib/git/clone";
   import { message } from "@tauri-apps/plugin-dialog";
-  import { askText } from "./lib/ui/prompt.svelte";
   import ContextMenu, { type MenuItem } from "./lib/ui/ContextMenu.svelte";
   import type { Entry } from "./lib/backend";
   import { isInsideDir, samePath } from "./lib/workspace/files";
@@ -39,6 +37,7 @@
   const tree = new FileTree();
   const actions = new ExplorerActions(tree, workspace);
   let quickOpen = $state(false);
+  let cloneOpen = $state(false);
   let git = $state<GitRepo | null>(null);
   const appWindow = getCurrentWindow();
 
@@ -63,18 +62,13 @@
     saveLayout();
   }
 
-  async function cloneRepository() {
-    const url = await askText("URL del repository da clonare");
-    if (!url) return;
-    const parent = await open({ directory: true, title: "Cartella in cui clonare" });
-    if (!parent) return;
-    const target = `${parent.replace(/[\\/]+$/, "")}\\${repoNameFromUrl(url)}`;
-    try {
-      await track(`Clone di ${repoNameFromUrl(url)}`, () => gitClone(url, target));
-      await openFolder(target);
-    } catch (error) {
-      await message(String(error), { title: "Clone non riuscito", kind: "error" });
-    }
+  function cloneRepository() {
+    cloneOpen = true;
+  }
+
+  async function onCloned(folder: string) {
+    cloneOpen = false;
+    await openFolder(folder);
   }
 
   async function initRepository() {
@@ -215,6 +209,12 @@
   </div>
   <StatusBar {workspace} {git} onvcsmenu={(event) => openVcsMenu(event.clientX, event.clientY)} />
 </div>
+
+{#if cloneOpen}
+  {#await import("./lib/git/CloneDialog.svelte") then { default: CloneDialog }}
+    <CloneDialog onclose={() => (cloneOpen = false)} oncloned={onCloned} />
+  {/await}
+{/if}
 
 {#if quickOpen}
   <QuickOpen {tree} {workspace} onclose={closeQuickOpen} />

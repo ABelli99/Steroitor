@@ -1,7 +1,11 @@
 # Misura i budget di performance definiti in ROADMAP.md sulla build release.
 # Uso: npm run measure            (build + misura)
-#      npm run measure -- -SkipBuild
-param([switch]$SkipBuild)
+#      powershell -File scripts/measure.ps1 -SkipBuild
+#      powershell -File scripts/measure.ps1 -SkipBuild -Repo C:\percorso\repo   (misura informativa con un repo aperto)
+#
+# La sessione dell'utente viene messa da parte e ripristinata: la misura parte sempre dallo stesso stato
+# (nessuna cartella, un solo file), altrimenti conterebbe le tab e i repo lasciati aperti.
+param([switch]$SkipBuild, [string]$Repo = "")
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
@@ -41,23 +45,38 @@ Set-Content $sample "riga di prova" -Encoding utf8
 $marker = Join-Path $env:TEMP "steroitor-ready.txt"
 Remove-Item $marker -ErrorAction SilentlyContinue
 
-$env:STEROITOR_MEASURE_FILE = $marker
-$process = Start-Process $exe -ArgumentList "`"$sample`"" -PassThru
-Remove-Item Env:STEROITOR_MEASURE_FILE
+$dataDir = Join-Path $env:APPDATA "it.overzoom.steroitor"
+$sessionFile = Join-Path $dataDir "session.json"
+$sessionBackup = "$sessionFile.measure-backup"
+New-Item -ItemType Directory -Force $dataDir | Out-Null
+if (Test-Path $sessionFile) { Move-Item $sessionFile $sessionBackup -Force }
+$session = @{ version = 1; wrap = $false; tabs = @(); folder = $(if ($Repo) { $Repo } else { $null }); expanded = @() }
+[IO.File]::WriteAllText($sessionFile, ($session | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding $false))
 
-$deadline = (Get-Date).AddSeconds(15)
-while (-not (Test-Path $marker) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 50 }
-if (-not (Test-Path $marker)) { throw "L'app non ha segnalato app_ready entro 15 s" }
-$startupMs = [int](Get-Content $marker)
+try {
+    $env:STEROITOR_MEASURE_FILE = $marker
+    $process = Start-Process $exe -ArgumentList "`"$sample`"" -PassThru
+    Remove-Item Env:STEROITOR_MEASURE_FILE
 
-Start-Sleep -Seconds 3
-$ramMb = Get-PrivateMemoryMB (Get-ProcessTree $process.Id)
-Get-ProcessTree $process.Id | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+    $deadline = (Get-Date).AddSeconds(15)
+    while (-not (Test-Path $marker) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 50 }
+    if (-not (Test-Path $marker)) { throw "L'app non ha segnalato app_ready entro 15 s" }
+    $startupMs = [int](Get-Content $marker)
+
+    Start-Sleep -Seconds 3
+    $ramMb = Get-PrivateMemoryMB (Get-ProcessTree $process.Id)
+}
+finally {
+    if ($process) { Get-ProcessTree $process.Id | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }
+    Start-Sleep -Milliseconds 300
+    Remove-Item $sessionFile -ErrorAction SilentlyContinue
+    if (Test-Path $sessionBackup) { Move-Item $sessionBackup $sessionFile -Force }
+}
 
 $results = @(
     [pscustomobject]@{ Metrica = "Installer (MB)"; Valore = [math]::Round($installer.Length / 1MB, 1); Target = 10; Limite = 15 }
     [pscustomobject]@{ Metrica = "Eseguibile (MB)"; Valore = [math]::Round((Get-Item $exe).Length / 1MB, 1); Target = $null; Limite = $null }
-    [pscustomobject]@{ Metrica = "RAM privata, 1 file (MB)"; Valore = $ramMb; Target = 80; Limite = 120 }
+    [pscustomobject]@{ Metrica = $(if ($Repo) { "RAM privata, repo aperto (MB)" } else { "RAM privata, 1 file (MB)" }); Valore = $ramMb; Target = 80; Limite = 120 }
     [pscustomobject]@{ Metrica = "Avvio -> editor pronto (ms)"; Valore = $startupMs; Target = 500; Limite = 1000 }
 )
 

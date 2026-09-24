@@ -103,6 +103,34 @@ pub async fn delete_to_trash(path: String) -> Result<(), String> {
     trash::delete(&path).map_err(|e| format!("Impossibile eliminare {path}: {e}"))
 }
 
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum PathState {
+    Missing,
+    EmptyDir,
+    Dir,
+    File,
+}
+
+fn path_state_of(path: &Path) -> PathState {
+    if path.is_file() {
+        return PathState::File;
+    }
+    fs::read_dir(path).map_or(PathState::Missing, |mut entries| {
+        if entries.next().is_some() {
+            PathState::Dir
+        } else {
+            PathState::EmptyDir
+        }
+    })
+}
+
+/// Stato di una destinazione (es. per il clone, che vuole una cartella inesistente o vuota).
+#[tauri::command]
+pub fn path_state(path: String) -> PathState {
+    path_state_of(Path::new(&path))
+}
+
 #[tauri::command]
 pub fn reveal_in_os(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
@@ -130,6 +158,22 @@ pub fn reveal_in_os(path: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classifies_clone_destinations() {
+        let base = std::env::temp_dir().join(format!("steroitor-path-state-{}", std::process::id()));
+        let empty = base.join("vuota");
+        let full = base.join("piena");
+        fs::create_dir_all(&empty).unwrap();
+        fs::create_dir_all(&full).unwrap();
+        fs::write(full.join("x.txt"), "x").unwrap();
+
+        assert_eq!(path_state_of(&base.join("manca")), PathState::Missing);
+        assert_eq!(path_state_of(&empty), PathState::EmptyDir);
+        assert_eq!(path_state_of(&full), PathState::Dir);
+        assert_eq!(path_state_of(&full.join("x.txt")), PathState::File);
+        let _ = fs::remove_dir_all(base);
+    }
 
     #[test]
     fn rejects_names_that_escape_the_parent() {
