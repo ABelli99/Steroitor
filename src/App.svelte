@@ -10,6 +10,7 @@
   import { diffState } from "./lib/git/selection.svelte";
   import { vcsMenuItems } from "./lib/git/vcsMenu";
   import { showPanel } from "./lib/ui/panels";
+  import { closeMenu, menuState, openMenu } from "./lib/ui/menu.svelte";
   import ContextMenu, { type MenuItem } from "./lib/ui/ContextMenu.svelte";
   import type { Entry } from "./lib/backend";
   import { isInsideDir, samePath } from "./lib/workspace/files";
@@ -34,7 +35,6 @@
   const actions = new ExplorerActions(tree, workspace);
   let quickOpen = $state(false);
   let git = $state<GitRepo | null>(null);
-  let menu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const appWindow = getCurrentWindow();
 
   $effect(() => {
@@ -71,7 +71,7 @@
 
   function openVcsMenu(x = 8, y = window.innerHeight - 28) {
     if (!git) return;
-    const open = (items: MenuItem[]) => (menu = { x, y, items });
+    const open = (items: MenuItem[]) => openMenu(x, y, items);
     open(vcsMenuItems(git, { openCommit: () => showPanel("commit", "#commit-message"), open }));
   }
 
@@ -84,7 +84,7 @@
   function openGutterMenu(event: MouseEvent) {
     const tab = workspace.active;
     const items = tab?.path ? blameItem(tab.id, tab.path) : [];
-    if (items.length) menu = { x: event.clientX, y: event.clientY, items };
+    openMenu(event.clientX, event.clientY, items);
   }
 
   function explorerGitItems(entry: Entry): MenuItem[] {
@@ -192,8 +192,8 @@
 {/if}
 <PromptDialog />
 
-{#if menu}
-  <ContextMenu x={menu.x} y={menu.y} items={menu.items} onclose={() => (menu = null)} />
+{#if menuState.current}
+  <ContextMenu x={menuState.current.x} y={menuState.current.y} items={menuState.current.items} onclose={closeMenu} />
 {/if}
 
 {#if diffState.request?.kind === "merge" && git}

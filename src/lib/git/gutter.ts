@@ -2,6 +2,9 @@ import { Chunk } from "@codemirror/merge";
 import { RangeSet, RangeSetBuilder, StateField, type Extension, type Text } from "@codemirror/state";
 import { EditorView, gutter, GutterMarker } from "@codemirror/view";
 
+/** Click su un marker: riga cliccata, chunk HEAD↔buffer correnti e baseline (HEAD). */
+export type HunkClick = (view: EditorView, position: number, chunks: readonly Chunk[], baseline: Text, event: MouseEvent) => void;
+
 type ChangeKind = "added" | "modified" | "deleted";
 
 class ChangeMarker extends GutterMarker {
@@ -63,7 +66,7 @@ export function buildMarkers(baseline: Text, chunks: readonly Chunk[], doc: Text
 
 const theme = EditorView.baseTheme({
   ".cm-git-gutter": { width: "4px", marginRight: "2px" },
-  ".cm-git-gutter .cm-gutterElement": { padding: "0" },
+  ".cm-git-gutter .cm-gutterElement": { padding: "0", cursor: "pointer" },
   ".cm-git-added, .cm-git-modified": { width: "3px", height: "100%" },
   ".cm-git-added": { backgroundColor: "var(--git-added)" },
   ".cm-git-modified": { backgroundColor: "var(--git-modified)" },
@@ -78,7 +81,7 @@ const theme = EditorView.baseTheme({
 });
 
 /** Marker di modifica rispetto a `baseline` (il contenuto del file a HEAD). */
-export function gitGutter(baseline: Text): Extension {
+export function gitGutter(baseline: Text, onClick?: HunkClick): Extension {
   const field = StateField.define<GutterState>({
     create(state) {
       const chunks = Chunk.build(baseline, state.doc, DIFF_CONFIG);
@@ -94,6 +97,16 @@ export function gitGutter(baseline: Text): Extension {
   return [
     field,
     theme,
-    gutter({ class: "cm-git-gutter", markers: (view) => view.state.field(field).markers }),
+    gutter({
+      class: "cm-git-gutter",
+      markers: (view) => view.state.field(field).markers,
+      domEventHandlers: {
+        click(view, block, event) {
+          if (!onClick) return false;
+          onClick(view, block.from, view.state.field(field).chunks, baseline, event as MouseEvent);
+          return true;
+        },
+      },
+    }),
   ];
 }

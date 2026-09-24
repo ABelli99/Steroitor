@@ -146,3 +146,8 @@ export interface ConflictVersions {
 }
 
 export const gitConflictVersions = (root: string, path: string) => invoke<ConflictVersions>("git_conflict_versions", { root, path });
+
+export const gitIndexContent = (root: string, path: string) => invoke<string | null>("git_index_content", { root, path });
+
+export const gitStageContent = (root: string, path: string, content: string) =>
+  invoke<void>("git_stage_content", { root, path, content });

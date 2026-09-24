@@ -1,6 +1,7 @@
 use serde::Serialize;
 use std::path::{Path, MAIN_SEPARATOR};
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -81,6 +82,11 @@ impl Git {
     }
 
     pub fn run(&self, cwd: &Path, args: &[&str], background: bool) -> Result<Output, String> {
+        self.run_with_input(cwd, args, None, background)
+    }
+
+    /// Come `run`, passando `input` sullo stdin di git.
+    pub fn run_with_input(&self, cwd: &Path, args: &[&str], input: Option<&[u8]>, background: bool) -> Result<Output, String> {
         let mut command = Command::new(&self.executable);
         command.args(args).current_dir(cwd).env("GIT_OPTIONAL_LOCKS", "0").env("GIT_TERMINAL_PROMPT", "0").env("GIT_EDITOR", "true");
         #[cfg(target_os = "windows")]
@@ -92,7 +98,17 @@ impl Git {
 
         let started_at = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis());
         let started = Instant::now();
-        let result = command.output();
+        let result = match input {
+            None => command.output(),
+            Some(input) => command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().and_then(|mut child| {
+                let mut stdin = child.stdin.take().expect("stdin configurato come piped");
+                let data = input.to_vec();
+                let writer = std::thread::spawn(move || stdin.write_all(&data));
+                let output = child.wait_with_output();
+                let _ = writer.join();
+                output
+            }),
+        };
         let duration_ms = started.elapsed().as_millis();
 
         let (output, stdout, stderr, code) = match result {

@@ -73,6 +73,8 @@ pub fn run() {
             git::commands::git_head_is_pushed,
             git::commands::git_stashes,
             git::commands::git_conflict_versions,
+            git::commands::git_index_content,
+            git::commands::git_stage_content,
             session::load_session,
             session::save_session,
             startup::startup_files,

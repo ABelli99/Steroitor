@@ -163,7 +163,7 @@ In ordine di priorità:
 
 1. ✅ Merge tool a 3 vie (Yours / Result / Theirs) — apribile da "Risolvi…" o doppio click su un file in conflitto; F7 / Shift+F7 tra i conflitti
 2. ✅ Terminale interattivo vero (xterm.js + PTY) come seconda sotto-tab della Console — PowerShell su Windows, più istanze, i tasti vanno alla shell tranne Alt+1 / Alt+9 / Alt+`
-3. Commit parziale per hunk / riga, stage/rollback dal gutter
+3. ✅ Commit parziale per hunk / riga, stage/rollback dal gutter — click su un marker: rollback, stage del hunk o delle righe selezionate (l'index si aggiorna senza toccare il file)
 4. Clone da URL e `git init` dall'UI
 5. Edit Commit Message di commit non pushati
 6. Minimap

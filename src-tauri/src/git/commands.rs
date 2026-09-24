@@ -179,3 +179,13 @@ pub async fn git_stashes(app: AppHandle, root: String) -> Result<Vec<Stash>, Str
 pub async fn git_conflict_versions(app: AppHandle, root: String, path: String) -> Result<ConflictVersions, String> {
     with_git(app, move |git| git.conflict_versions(&root, &path)).await
 }
+
+#[tauri::command]
+pub async fn git_index_content(app: AppHandle, root: String, path: String) -> Result<Option<String>, String> {
+    with_git(app, move |git| git.index_content(&root, &path)).await
+}
+
+#[tauri::command]
+pub async fn git_stage_content(app: AppHandle, root: String, path: String, content: String) -> Result<(), String> {
+    with_git(app, move |git| git.stage_content(&root, &path, &content)).await
+}

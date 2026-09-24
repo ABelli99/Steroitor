@@ -12,6 +12,8 @@ import {
 import { blameGutter } from "./blame";
 import { gitGutter } from "./gutter";
 import { GitHistory } from "./history";
+import { hunkMenu } from "./hunkActions";
+import { toText } from "./hunks";
 import { diffState } from "./selection.svelte";
 
 const STATUS_DELAY_MS = 300;
@@ -254,8 +256,9 @@ Apri i file (sono in rosso nel pannello Commit), risolvi i marker <<<<<<< / >>>>
   async #loadGutter(id: string, path: string) {
     const head = await gitHeadContent(this.root, path).catch(() => null);
     if (this.#gutters.get(id) !== path) return;
-    if (head) return this.workspace.configureGit(id, gitGutter(Text.of(head.content.split(/\r\n|\r|\n/))));
+    const onClick = hunkMenu(this, id, path);
+    if (head) return this.workspace.configureGit(id, gitGutter(toText(head.content), onClick));
     const tracked = this.statusOf(path) === "added";
-    this.workspace.configureGit(id, tracked ? gitGutter(Text.empty) : []);
+    this.workspace.configureGit(id, tracked ? gitGutter(Text.empty, onClick) : []);
   }
 }
