@@ -4,7 +4,7 @@ import { message, open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "../backend";
 import { detectLanguage, loadLanguage } from "../editor/languages";
 import { createState, languageSlot, wrapExtension, wrapSlot } from "../editor/setup";
-import { detectEol, fileName, samePath, type Eol } from "./files";
+import { detectEol, fileName, isInsideDir, samePath, type Eol } from "./files";
 import type { SessionData, SessionTab } from "./session";
 
 export interface Tab {
@@ -169,6 +169,17 @@ export class Workspace {
     if (from === -1 || from === toIndex) return;
     const [tab] = this.tabs.splice(from, 1);
     this.tabs.splice(toIndex, 0, tab);
+    this.#emitChange();
+  }
+
+  /** Aggiorna le tab aperte dopo il rename di un file o di una cartella che le contiene. */
+  pathRenamed(from: string, to: string) {
+    for (const tab of this.tabs) {
+      if (!tab.path || !isInsideDir(tab.path, from)) continue;
+      tab.path = to + tab.path.slice(from.length);
+      tab.name = fileName(tab.path);
+      this.#applyLanguage(tab, detectLanguage(tab.path));
+    }
     this.#emitChange();
   }
 

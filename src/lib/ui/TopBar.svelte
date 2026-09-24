@@ -2,7 +2,7 @@
   import type { Workspace } from "../workspace/workspace.svelte";
   import { layout, saveLayout } from "./layout.svelte";
 
-  let { workspace }: { workspace: Workspace } = $props();
+  let { workspace, onopenfolder }: { workspace: Workspace; onopenfolder: () => void } = $props();
 
   function toggle(key: "explorerVisible" | "panelVisible") {
     layout[key] = !layout[key];
@@ -13,6 +13,7 @@
 <header class="bar">
   <button title="Nuovo (Ctrl+N)" onclick={() => workspace.newUntitled()}>Nuovo</button>
   <button title="Apri (Ctrl+O)" onclick={() => workspace.openDialog()}>Apri</button>
+  <button title="Apri cartella" onclick={onopenfolder}>Apri cartella</button>
   <button title="Salva (Ctrl+S)" onclick={() => workspace.save()}>Salva</button>
   <button title="Salva con nome (Ctrl+Shift+S)" onclick={() => workspace.saveAs()}>Salva con nome</button>
   <span class="spacer"></span>

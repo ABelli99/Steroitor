@@ -8,6 +8,14 @@ export function detectEol(content: string, fallback: Eol): Eol {
 
 export const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
-export const samePath = (a: string, b: string) => a.replace(/\//g, "\\").toLowerCase() === b.replace(/\//g, "\\").toLowerCase();
+const normalize = (path: string) => path.replace(/\//g, "\\").toLowerCase();
+
+export const samePath = (a: string, b: string) => normalize(a) === normalize(b);
+
+export function isInsideDir(path: string, dir: string) {
+  const target = normalize(path);
+  const base = normalize(dir);
+  return target === base || target.startsWith(base.endsWith("\\") ? base : `${base}\\`);
+}
 
 export const eolLabel = (eol: Eol) => (eol === "\r\n" ? "CRLF" : "LF");

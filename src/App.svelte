@@ -2,9 +2,12 @@
   import { onMount } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { open } from "@tauri-apps/plugin-dialog";
   import { appReady, startupFiles } from "./lib/backend";
   import { installShortcuts } from "./lib/shortcuts";
   import { Workspace } from "./lib/workspace/workspace.svelte";
+  import { FileTree } from "./lib/explorer/tree.svelte";
+  import { ExplorerActions } from "./lib/explorer/actions";
   import { persistSession, readSession } from "./lib/workspace/session";
   import { clamp, layout, saveLayout } from "./lib/ui/layout.svelte";
   import TopBar from "./lib/ui/TopBar.svelte";
@@ -14,8 +17,13 @@
   import BottomPanel from "./lib/ui/BottomPanel.svelte";
   import StatusBar from "./lib/ui/StatusBar.svelte";
   import Splitter from "./lib/ui/Splitter.svelte";
+  import QuickOpen from "./lib/ui/QuickOpen.svelte";
+  import PromptDialog from "./lib/ui/PromptDialog.svelte";
 
   const workspace = new Workspace();
+  const tree = new FileTree();
+  const actions = new ExplorerActions(tree, workspace);
+  let quickOpen = $state(false);
   const appWindow = getCurrentWindow();
 
   $effect(() => {
@@ -29,8 +37,21 @@
     saveLayout();
   };
 
+  async function openFolder() {
+    const folder = await open({ directory: true });
+    if (!folder) return;
+    await tree.open(folder);
+    layout.explorerVisible = true;
+    saveLayout();
+  }
+
+  function closeQuickOpen() {
+    quickOpen = false;
+    workspace.focusEditor();
+  }
+
   onMount(() => {
-    const session = persistSession(workspace);
+    const session = persistSession(workspace, tree);
     const cleanups: Array<() => void> = [session.stop];
 
     cleanups.push(
@@ -45,17 +66,21 @@
         "Ctrl+Shift+Tab": { editor: () => workspace.cycle(-1) },
         "Alt+Z": { editor: () => workspace.toggleWrap() },
         "Alt+1": { editor: toggleExplorer, git: toggleExplorer },
+        "Ctrl+P": { editor: () => (quickOpen = !quickOpen), git: () => (quickOpen = !quickOpen) },
       }),
     );
 
     (async () => {
       const saved = await readSession();
       if (saved) await workspace.restore(saved);
+      if (saved?.folder) await tree.open(saved.folder, saved.expanded);
       for (const path of await startupFiles()) await workspace.openPath(path);
       if (workspace.tabs.length === 0) workspace.newUntitled();
       workspace.focusEditor();
       appReady();
     })();
+
+    listen<string[]>("fs-changed", (event) => tree.refresh(event.payload)).then((unlisten) => cleanups.push(unlisten));
 
     listen<string[]>("open-files", async (event) => {
       for (const path of event.payload) await workspace.openPath(path);
@@ -68,11 +93,11 @@
 </script>
 
 <div class="app">
-  <TopBar {workspace} />
+  <TopBar {workspace} onopenfolder={openFolder} />
   <div class="main">
     {#if layout.explorerVisible}
       <div class="explorer" style:width="{layout.explorerWidth}px">
-        <Explorer />
+        <Explorer {tree} {workspace} {actions} onopenfolder={openFolder} />
       </div>
       <Splitter
         direction="horizontal"
@@ -97,6 +122,11 @@
   {/if}
   <StatusBar {workspace} />
 </div>
+
+{#if quickOpen}
+  <QuickOpen {tree} {workspace} onclose={closeQuickOpen} />
+{/if}
+<PromptDialog />
 
 <style>
   .app {

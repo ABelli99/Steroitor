@@ -1,4 +1,5 @@
 import { loadSession, saveSession } from "../backend";
+import type { FileTree, TreeSnapshot } from "../explorer/tree.svelte";
 import type { Eol } from "./files";
 import type { Workspace } from "./workspace.svelte";
 
@@ -12,7 +13,7 @@ export interface SessionTab {
   active: boolean;
 }
 
-export interface SessionData {
+export interface SessionData extends Partial<TreeSnapshot> {
   version: 1;
   wrap: boolean;
   tabs: SessionTab[];
@@ -31,19 +32,21 @@ export async function readSession(): Promise<SessionData | null> {
   }
 }
 
-export function persistSession(workspace: Workspace) {
+export function persistSession(workspace: Workspace, tree: FileTree) {
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   const flush = async () => {
     clearTimeout(timer);
     timer = undefined;
-    await saveSession(JSON.stringify(workspace.snapshot())).catch(console.error);
+    const data: SessionData = { ...workspace.snapshot(), ...tree.snapshot() };
+    await saveSession(JSON.stringify(data)).catch(console.error);
   };
 
-  const unsubscribe = workspace.onChange(() => {
+  const schedule = () => {
     clearTimeout(timer);
     timer = setTimeout(flush, SAVE_DELAY_MS);
-  });
+  };
 
-  return { flush, stop: unsubscribe };
+  const unsubscribers = [workspace.onChange(schedule), tree.onChange(schedule)];
+  return { flush, stop: () => unsubscribers.forEach((unsubscribe) => unsubscribe()) };
 }

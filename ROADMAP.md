@@ -31,7 +31,7 @@ Se la risposta a una delle tre è "no", va in backlog.
 Si misurano da F0 in poi (`npm run measure`, oppure `-SkipBuild` lanciando lo script direttamente).
 Una fase non è chiusa se sfora un limite.
 
-Ultima misura (F1, build release): installer 1,5 MB · RAM 72 MB · avvio ~550 ms.
+Ultima misura (F2, build release): installer 1,8 MB · RAM 73–81 MB · avvio 510–640 ms.
 
 **Decisione:** WebView2 gira con `--disable-gpu` (`tauri.conf.json` → `additionalBrowserArgs`).
 Risparmia ~40 MB (processo GPU). Costo: rendering software, da tenere d'occhio su
@@ -83,7 +83,7 @@ Se l'app si fermasse qui, dovrebbe già sostituire Notepad/Notepad++ per l'uso b
 
 ---
 
-### F2 — File Explorer
+### F2 — File Explorer — implementata, in verifica manuale
 
 - Apertura cartella → albero con caricamento **lazy** delle sottocartelle
 - Click su file → apre o porta in focus la tab

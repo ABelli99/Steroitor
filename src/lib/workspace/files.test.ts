@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectEol, fileName, samePath } from "./files";
+import { detectEol, fileName, isInsideDir, samePath } from "./files";
 import { detectLanguage } from "../editor/languages";
 
 describe("detectEol", () => {
@@ -22,6 +22,13 @@ describe("paths", () => {
   it("compares Windows paths ignoring case and separators", () => {
     expect(samePath("C:\\Repo\\File.ts", "c:/repo/file.ts")).toBe(true);
     expect(samePath("C:\\Repo\\a.ts", "C:\\Repo\\b.ts")).toBe(false);
+  });
+
+  it("detects containment without matching sibling prefixes", () => {
+    expect(isInsideDir("C:\\Repo\\src\\a.ts", "c:/repo")).toBe(true);
+    expect(isInsideDir("C:\\Repo", "C:\\Repo")).toBe(true);
+    expect(isInsideDir("C:\\Repository\\a.ts", "C:\\Repo")).toBe(false);
+    expect(isInsideDir("C:\\a.ts", "C:\\")).toBe(true);
   });
 });
 
