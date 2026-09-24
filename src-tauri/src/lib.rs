@@ -77,6 +77,8 @@ pub fn run() {
             git::commands::git_stage_content,
             git::commands::git_clone,
             git::commands::git_init,
+            git::commands::git_reword,
+            git::commands::git_commit_message,
             session::load_session,
             session::save_session,
             startup::startup_files,

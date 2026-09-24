@@ -150,7 +150,11 @@ impl Git {
     }
 
     pub fn last_commit_message(&self, root: &str) -> Result<String, String> {
-        self.text(Path::new(root), &["log", "-1", "--format=%B"], true).map(|message| message.trim_end().to_owned())
+        self.commit_message(root, "HEAD")
+    }
+
+    pub fn commit_message(&self, root: &str, hash: &str) -> Result<String, String> {
+        self.text(Path::new(root), &["log", "-1", "--format=%B", hash], true).map(|message| message.trim_end().to_owned())
     }
 
     /// true se HEAD è già contenuto in almeno un branch remoto (amend riscriverebbe storia pubblicata).

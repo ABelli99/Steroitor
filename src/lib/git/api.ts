@@ -151,3 +151,7 @@ export const gitIndexContent = (root: string, path: string) => invoke<string | n
 
 export const gitStageContent = (root: string, path: string, content: string) =>
   invoke<void>("git_stage_content", { root, path, content });
+
+export const gitCommitMessage = (root: string, hash: string) => invoke<string>("git_commit_message", { root, hash });
+
+export const gitReword = (root: string, hash: string, message: string) => invoke<void>("git_reword", { root, hash, message });

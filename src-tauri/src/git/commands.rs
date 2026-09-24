@@ -199,3 +199,13 @@ pub async fn git_clone(app: AppHandle, url: String, target: String) -> Result<()
 pub async fn git_init(app: AppHandle, path: String) -> Result<(), String> {
     with_git(app, move |git| git.init_repo(&path)).await
 }
+
+#[tauri::command]
+pub async fn git_reword(app: AppHandle, root: String, hash: String, message: String) -> Result<(), String> {
+    with_git(app, move |git| git.reword(&root, &hash, &message)).await
+}
+
+#[tauri::command]
+pub async fn git_commit_message(app: AppHandle, root: String, hash: String) -> Result<String, String> {
+    with_git(app, move |git| git.commit_message(&root, &hash)).await
+}

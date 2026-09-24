@@ -1,7 +1,7 @@
 <script lang="ts">
   import { prompts, settlePrompt } from "./prompt.svelte";
 
-  let input = $state<HTMLInputElement>();
+  let input = $state<HTMLInputElement | HTMLTextAreaElement>();
   let value = $state("");
 
   $effect(() => {
@@ -13,7 +13,11 @@
   });
 
   function onKeyDown(event: KeyboardEvent) {
-    if (event.key === "Enter") settlePrompt(value);
+    const submit = prompts.current?.multiline ? event.key === "Enter" && event.ctrlKey : event.key === "Enter";
+    if (submit) {
+      event.preventDefault();
+      settlePrompt(value);
+    }
     if (event.key === "Escape") settlePrompt(null);
   }
 </script>
@@ -23,7 +27,12 @@
     <div class="dialog" role="dialog" aria-label={prompts.current.title}>
       <label>
         <span>{prompts.current.title}</span>
-        <input bind:this={input} bind:value onkeydown={onKeyDown} spellcheck="false" />
+        {#if prompts.current.multiline}
+          <textarea bind:this={input} bind:value onkeydown={onKeyDown} spellcheck="false" rows="6"></textarea>
+          <small>Ctrl+Invio per confermare, Esc per annullare</small>
+        {:else}
+          <input bind:this={input} bind:value onkeydown={onKeyDown} spellcheck="false" />
+        {/if}
       </label>
     </div>
   </div>
@@ -42,7 +51,7 @@
   }
 
   .dialog {
-    width: min(420px, calc(100vw - 32px));
+    width: min(560px, calc(100vw - 32px));
     padding: 12px;
     background: var(--panel-bg);
     border: 1px solid var(--border);
@@ -56,7 +65,8 @@
     gap: 8px;
   }
 
-  input {
+  input,
+  textarea {
     font: inherit;
     color: var(--fg);
     background: var(--editor-bg);
@@ -64,5 +74,14 @@
     border-radius: 4px;
     padding: 5px 8px;
     outline: none;
+  }
+
+  textarea {
+    resize: vertical;
+    font-family: var(--mono);
+  }
+
+  small {
+    color: var(--fg-muted);
   }
 </style>

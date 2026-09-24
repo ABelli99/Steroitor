@@ -165,7 +165,7 @@ In ordine di priorità:
 2. ✅ Terminale interattivo vero (xterm.js + PTY) come seconda sotto-tab della Console — PowerShell su Windows, più istanze, i tasti vanno alla shell tranne Alt+1 / Alt+9 / Alt+`
 3. ✅ Commit parziale per hunk / riga, stage/rollback dal gutter — click su un marker: rollback, stage del hunk o delle righe selezionate (l'index si aggiorna senza toccare il file)
 4. ✅ Clone da URL e `git init` dall'UI — pulsante Clona (top bar, Explorer vuoto, tab Git) e git init dalla tab Git
-5. Edit Commit Message di commit non pushati
+5. ✅ Edit Commit Message di commit non pushati — dal menu del log; riscrive i commit con commit-tree (tree e autori invariati), rifiuta i commit già su un remote
 6. Minimap
 
 ---

@@ -1,9 +1,9 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { askText } from "../ui/prompt.svelte";
+import { askMultiline, askText } from "../ui/prompt.svelte";
 import {
   gitAbortOperation, gitAmend, gitCheckoutCommit, gitCherryPick, gitContinueOperation, gitCreateBranch, gitCreateTag,
   gitHeadIsPushed, gitLastCommitMessage, gitMerge, gitRebase, gitReset, gitRevert, gitStashDrop, gitStashPop, gitStashPush,
-  OPERATION_LABELS, type ResetMode, type Stash,
+  gitCommitMessage, gitReword, OPERATION_LABELS, type ResetMode, type Stash,
 } from "./api";
 import type { GitRepo } from "./repo.svelte";
 
@@ -75,6 +75,13 @@ export class GitHistory {
     const label = OPERATION_LABELS[operation];
     if (!(await confirm(`Annullare il ${label.toLowerCase()} e tornare allo stato precedente?`, label, "Annulla operazione"))) return false;
     return this.repo.run(`Annulla ${label.toLowerCase()}`, () => gitAbortOperation(this.#root));
+  }
+
+  async reword(hash: string) {
+    const current = await gitCommitMessage(this.#root, hash).catch(() => "");
+    const message = await askMultiline(`Messaggio del commit ${short(hash)}`, current);
+    if (!message || message === current) return false;
+    return this.repo.run("Modifica messaggio", () => gitReword(this.#root, hash, message));
   }
 
   lastCommitMessage() {

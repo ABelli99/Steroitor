@@ -113,6 +113,7 @@
         { label: "Checkout (detached)", run: () => history.checkoutCommit(commit.hash), separatorBefore: true },
         { label: "Nuovo branch da qui…", run: () => history.branchFrom(commit.hash) },
         { label: "Crea tag…", run: () => history.tag(commit.hash) },
+        { label: "Modifica messaggio…", run: () => history.reword(commit.hash) },
         { label: "Cherry-pick", run: () => history.cherryPick(commit.hash), separatorBefore: true },
         { label: "Revert", run: () => history.revert(commit.hash) },
         { label: `Reset ${target} qui`, disabled: true, separatorBefore: true, run: () => {} },

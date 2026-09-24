@@ -87,7 +87,13 @@ impl Git {
 
     /// Come `run`, passando `input` sullo stdin di git.
     pub fn run_with_input(&self, cwd: &Path, args: &[&str], input: Option<&[u8]>, background: bool) -> Result<Output, String> {
+        self.run_full(cwd, args, input, &[], background)
+    }
+
+    /// Variante completa: stdin opzionale e variabili d'ambiente aggiuntive.
+    pub fn run_full(&self, cwd: &Path, args: &[&str], input: Option<&[u8]>, env: &[(&str, &str)], background: bool) -> Result<Output, String> {
         let mut command = Command::new(&self.executable);
+        command.envs(env.iter().copied());
         command.args(args).current_dir(cwd).env("GIT_OPTIONAL_LOCKS", "0").env("GIT_TERMINAL_PROMPT", "0").env("GIT_EDITOR", "true");
         #[cfg(target_os = "windows")]
         {
