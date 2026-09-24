@@ -3,6 +3,7 @@ mod files;
 mod git;
 mod session;
 mod startup;
+mod terminal;
 mod watcher;
 
 use std::path::Path;
@@ -23,6 +24,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .manage(watcher::FolderWatcher::default())
+        .manage(terminal::Terminals::default())
         .setup(|app| {
             app.manage(git::GitConfig::load(app.handle()));
             Ok(())
@@ -76,6 +78,10 @@ pub fn run() {
             startup::startup_files,
             startup::app_ready,
             watcher::watch_folder,
+            terminal::terminal_open,
+            terminal::terminal_write,
+            terminal::terminal_resize,
+            terminal::terminal_close,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

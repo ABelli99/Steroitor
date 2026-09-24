@@ -21,6 +21,7 @@ encoding_rs = "0.8"
 notify-debouncer-mini = "0.7.0"
 ignore = "0.4.33"
 trash = "5.2.9"
+portable-pty = "0.9.0"
 
 [profile.release]
 codegen-units = 1

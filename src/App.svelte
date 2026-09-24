@@ -117,7 +117,7 @@
         "Ctrl+Tab": { editor: () => workspace.cycle(1) },
         "Ctrl+Shift+Tab": { editor: () => workspace.cycle(-1) },
         "Alt+Z": { editor: () => workspace.toggleWrap() },
-        "Alt+1": { editor: toggleExplorer, git: toggleExplorer },
+        "Alt+1": { editor: toggleExplorer, git: toggleExplorer, terminal: toggleExplorer },
         "Ctrl+P": { editor: () => (quickOpen = !quickOpen), git: () => (quickOpen = !quickOpen) },
         ...gitShortcuts({ repo: () => git, workspace, openVcsMenu: () => openVcsMenu() }),
       }),
@@ -174,16 +174,16 @@
       <Editor {workspace} ongutterMenu={openGutterMenu} />
     </div>
   </div>
-  {#if layout.panelVisible}
+  <div class="panel-area" class:hidden={!layout.panelVisible}>
     <Splitter
       direction="vertical"
       ondrag={(delta) => (layout.panelHeight = clamp(layout.panelHeight - delta, 80, window.innerHeight - 200))}
       onend={saveLayout}
     />
     <div class="bottom" style:height="{layout.panelHeight}px">
-      <BottomPanel {git} />
+      <BottomPanel {git} folder={tree.root} />
     </div>
-  {/if}
+  </div>
   <StatusBar {workspace} {git} onvcsmenu={(event) => openVcsMenu(event.clientX, event.clientY)} />
 </div>
 
@@ -232,5 +232,15 @@
 
   .bottom {
     flex: none;
+  }
+
+  .panel-area {
+    display: flex;
+    flex-direction: column;
+    flex: none;
+  }
+
+  .hidden {
+    display: none;
   }
 </style>

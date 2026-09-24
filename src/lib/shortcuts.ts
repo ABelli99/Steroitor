@@ -1,4 +1,5 @@
-export type ShortcutContext = "editor" | "git";
+/** "terminal": il focus è in una shell, che riceve i tasti tranne quelli registrati esplicitamente. */
+export type ShortcutContext = "editor" | "git" | "terminal";
 
 export type Handlers = Partial<Record<ShortcutContext, () => void>>;
 

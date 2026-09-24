@@ -18,6 +18,7 @@ interface Options {
 /** Scorciatoie Git (vedi CLAUDE.md). Ctrl+D e Ctrl+T cambiano azione in base al focus. */
 export function gitShortcuts({ repo, workspace, openVcsMenu }: Options): Record<string, Handlers> {
   const both = (run: () => void): Handlers => ({ editor: run, git: run });
+  const everywhere = (run: () => void): Handlers => ({ editor: run, git: run, terminal: run });
   const withRepo = (run: (repo: GitRepo) => void) => () => {
     const current = repo();
     if (current) run(current);
@@ -46,7 +47,7 @@ export function gitShortcuts({ repo, workspace, openVcsMenu }: Options): Record<
     "Ctrl+Alt+A": { editor: stageActiveFile, git: stageSelectedFile },
     "Ctrl+T": { editor: () => workspace.newUntitled(), git: withRepo((current) => current.update()) },
     "Ctrl+D": { git: () => showSelectedDiff(layout.panelTab === "commit" ? "commit" : "git") },
-    "Alt+9": both(() => showPanel("git")),
-    "Alt+`": both(withRepo(() => openVcsMenu())),
+    "Alt+9": everywhere(() => showPanel("git")),
+    "Alt+`": everywhere(withRepo(() => openVcsMenu())),
   };
 }

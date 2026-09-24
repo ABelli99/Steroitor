@@ -3,7 +3,7 @@
   import ConsolePanel from "./ConsolePanel.svelte";
   import { layout, saveLayout } from "./layout.svelte";
 
-  let { git }: { git: GitRepo | null } = $props();
+  let { git, folder }: { git: GitRepo | null; folder: string | null } = $props();
 
   const tabs = [
     { id: "console", label: "Console" },
@@ -26,8 +26,11 @@
     {/each}
   </div>
   <div class="content" tabindex="-1" data-panel-content data-shortcut-context={layout.panelTab === "console" ? "editor" : "git"}>
+    <div class="keep-alive" class:hidden={layout.panelTab !== "console"}>
+      <ConsolePanel cwd={git?.root ?? folder} />
+    </div>
     {#if layout.panelTab === "console"}
-      <ConsolePanel />
+      <!-- sempre montata: i terminali devono sopravvivere al cambio di tab -->
     {:else if git && layout.panelTab === "git"}
       {#await import("../git/GitPanel.svelte") then { default: GitPanel }}
         <GitPanel repo={git} />
@@ -72,6 +75,14 @@
     font-size: 12px;
     user-select: text;
     outline: none;
+  }
+
+  .keep-alive {
+    height: 100%;
+  }
+
+  .hidden {
+    display: none;
   }
 
   .empty {
