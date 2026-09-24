@@ -6,6 +6,11 @@
   import { appReady, gitRepoRoot, startupFiles } from "./lib/backend";
   import { listenToGitCommands } from "./lib/console/console.svelte";
   import type { GitRepo } from "./lib/git/repo.svelte";
+  import { gitShortcuts } from "./lib/git/shortcuts";
+  import { diffState } from "./lib/git/selection.svelte";
+  import { vcsMenuItems } from "./lib/git/vcsMenu";
+  import { showPanel } from "./lib/ui/panels";
+  import ContextMenu from "./lib/ui/ContextMenu.svelte";
   import { installShortcuts } from "./lib/shortcuts";
   import { Workspace } from "./lib/workspace/workspace.svelte";
   import { FileTree } from "./lib/explorer/tree.svelte";
@@ -27,6 +32,7 @@
   const actions = new ExplorerActions(tree, workspace);
   let quickOpen = $state(false);
   let git = $state<GitRepo | null>(null);
+  let vcsMenu = $state<{ x: number; y: number } | null>(null);
   const appWindow = getCurrentWindow();
 
   $effect(() => {
@@ -61,12 +67,7 @@
     await repo.refresh();
   }
 
-  function showGitPanel() {
-    layout.panelVisible = true;
-    layout.panelTab = "git";
-    saveLayout();
-    requestAnimationFrame(() => document.querySelector<HTMLElement>("[data-panel-content]")?.focus());
-  }
+  const openVcsMenu = (x = 8, y = window.innerHeight - 28) => (vcsMenu = { x, y });
 
   function closeQuickOpen() {
     quickOpen = false;
@@ -81,7 +82,6 @@
     cleanups.push(
       installShortcuts({
         "Ctrl+N": { editor: () => workspace.newUntitled() },
-        "Ctrl+T": { editor: () => workspace.newUntitled() },
         "Ctrl+O": { editor: () => workspace.openDialog() },
         "Ctrl+S": { editor: () => workspace.save() },
         "Ctrl+Shift+S": { editor: () => workspace.saveAs() },
@@ -90,8 +90,8 @@
         "Ctrl+Shift+Tab": { editor: () => workspace.cycle(-1) },
         "Alt+Z": { editor: () => workspace.toggleWrap() },
         "Alt+1": { editor: toggleExplorer, git: toggleExplorer },
-        "Alt+9": { editor: showGitPanel, git: showGitPanel },
         "Ctrl+P": { editor: () => (quickOpen = !quickOpen), git: () => (quickOpen = !quickOpen) },
+        ...gitShortcuts({ repo: () => git, workspace, openVcsMenu: () => openVcsMenu() }),
       }),
     );
 
@@ -153,13 +153,28 @@
       <BottomPanel {git} />
     </div>
   {/if}
-  <StatusBar {workspace} {git} onshowgit={showGitPanel} />
+  <StatusBar {workspace} {git} onvcsmenu={(event) => openVcsMenu(event.clientX, event.clientY)} />
 </div>
 
 {#if quickOpen}
   <QuickOpen {tree} {workspace} onclose={closeQuickOpen} />
 {/if}
 <PromptDialog />
+
+{#if vcsMenu && git}
+  <ContextMenu
+    x={vcsMenu.x}
+    y={vcsMenu.y}
+    items={vcsMenuItems(git, { openCommit: () => showPanel("commit", "#commit-message") })}
+    onclose={() => (vcsMenu = null)}
+  />
+{/if}
+
+{#if diffState.request && git}
+  {#await import("./lib/git/DiffDialog.svelte") then { default: DiffDialog }}
+    <DiffDialog root={git.root} request={diffState.request} onclose={() => (diffState.request = null)} />
+  {/await}
+{/if}
 
 <style>
   .app {

@@ -31,7 +31,8 @@ Se la risposta a una delle tre è "no", va in backlog.
 Si misurano da F0 in poi (`npm run measure`, oppure `-SkipBuild` lanciando lo script direttamente).
 Una fase non è chiusa se sfora un limite.
 
-Ultima misura (F3, build release): installer 1,8 MB · RAM 74–78 MB · avvio 480–610 ms.
+Ultima misura (F4, build release): installer 1,9 MB · RAM 73–77 MB · avvio 500–560 ms (anche con profilo WebView2 vuoto).
+Outlier: un singolo avvio da 1,3 s subito dopo una build (cache file del sistema operativo fredda), non riproducibile.
 
 **Decisione:** WebView2 gira con `--disable-gpu` (`tauri.conf.json` → `additionalBrowserArgs`).
 Risparmia ~40 MB (processo GPU). Costo: rendering software, da tenere d'occhio su
@@ -115,7 +116,7 @@ Note di implementazione:
 
 ---
 
-### F4 — Git operativo (il flusso quotidiano)
+### F4 — Git operativo (il flusso quotidiano) — implementata, in verifica manuale
 
 - Pannello **Commit**: lista file modificati / untracked / cancellati, checkbox, messaggio, Commit / Commit and Push
 - Solo **staging area**. Niente changelist (vedi "Fuori scope")
@@ -126,6 +127,12 @@ Note di implementazione:
 - Warning su detached HEAD e su CRLF
 
 **Uscita:** modifica → commit → push senza uscire dall'app.
+
+Note di implementazione:
+- Checkbox del pannello Commit = staging reale (`git add` / `git restore --staged`); stato misto = checkbox indeterminata.
+- `Ctrl+Shift+K` (Push) vince su "elimina riga" di CodeMirror anche nell'editor.
+- Push senza upstream: chiede conferma e pubblica su `origin` (o sul primo remote) con `--set-upstream`.
+- Metodo di update (Merge/Rebase) e avviso CRLF sono preferenze locali, dal popup VCS (``Alt+` `` o click sul branch).
 
 ---
 

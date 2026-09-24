@@ -7,10 +7,10 @@
   interface Props {
     workspace: Workspace;
     git: GitRepo | null;
-    onshowgit: () => void;
+    onvcsmenu: (event: MouseEvent) => void;
   }
 
-  let { workspace, git, onshowgit }: Props = $props();
+  let { workspace, git, onvcsmenu }: Props = $props();
   const tab = $derived(workspace.active);
   const branch = $derived(git?.branch ?? null);
   const branchLabel = $derived(branch ? (branch.head ?? `HEAD staccato (${branch.oid?.slice(0, 7) ?? "?"})`) : null);
@@ -18,9 +18,10 @@
 
 <footer class="status">
   {#if branch}
-    <button class="vcs" title={branch.upstream ? `Upstream: ${branch.upstream}` : "Nessun upstream"} onclick={onshowgit}>
+    <button class="vcs" title="Branch e operazioni Git (Alt+`)" onclick={onvcsmenu}>
       ⎇ {branchLabel}{#if branch.ahead} ↑{branch.ahead}{/if}{#if branch.behind} ↓{branch.behind}{/if}
     </button>
+    {#if git?.busy}<span class="busy">{git.busy}…</span>{/if}
   {/if}
   <span class="spacer"></span>
   {#if tab}
@@ -59,6 +60,10 @@
 
   .spacer {
     flex: 1;
+  }
+
+  .busy {
+    color: var(--accent);
   }
 
   .vcs {

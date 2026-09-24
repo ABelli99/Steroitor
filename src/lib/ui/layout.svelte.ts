@@ -1,11 +1,13 @@
 const STORAGE_KEY = "steroitor.layout";
 
+export type PanelTab = "console" | "git" | "commit";
+
 interface LayoutState {
   explorerWidth: number;
   explorerVisible: boolean;
   panelHeight: number;
   panelVisible: boolean;
-  panelTab: "console" | "git";
+  panelTab: PanelTab;
 }
 
 const defaults: LayoutState = {

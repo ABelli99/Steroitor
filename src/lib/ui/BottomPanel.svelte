@@ -8,6 +8,7 @@
   const tabs = [
     { id: "console", label: "Console" },
     { id: "git", label: "Git" },
+    { id: "commit", label: "Commit" },
   ] as const;
 
   function select(id: (typeof tabs)[number]["id"]) {
@@ -24,12 +25,16 @@
       </button>
     {/each}
   </div>
-  <div class="content" tabindex="-1" data-panel-content data-shortcut-context={layout.panelTab === "git" ? "git" : "editor"}>
+  <div class="content" tabindex="-1" data-panel-content data-shortcut-context={layout.panelTab === "console" ? "editor" : "git"}>
     {#if layout.panelTab === "console"}
       <ConsolePanel />
-    {:else if git}
+    {:else if git && layout.panelTab === "git"}
       {#await import("../git/GitPanel.svelte") then { default: GitPanel }}
         <GitPanel repo={git} />
+      {/await}
+    {:else if git}
+      {#await import("../git/CommitPanel.svelte") then { default: CommitPanel }}
+        <CommitPanel repo={git} />
       {/await}
     {:else}
       <p class="empty">Nessun repository Git nella cartella aperta.</p>

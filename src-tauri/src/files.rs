@@ -4,7 +4,7 @@ use serde::Serialize;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TextFile {
-    content: String,
+    pub content: String,
     encoding: String,
     bom: bool,
 }

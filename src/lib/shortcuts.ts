@@ -1,6 +1,6 @@
 export type ShortcutContext = "editor" | "git";
 
-type Handlers = Partial<Record<ShortcutContext, () => void>>;
+export type Handlers = Partial<Record<ShortcutContext, () => void>>;
 
 const CONTEXT_ATTRIBUTE = "data-shortcut-context";
 
@@ -10,12 +10,12 @@ export function currentContext(): ShortcutContext {
   return (scope?.getAttribute(CONTEXT_ATTRIBUTE) as ShortcutContext | null) ?? "editor";
 }
 
-function keyOf(event: KeyboardEvent) {
+export function keyOf(event: Pick<KeyboardEvent, "ctrlKey" | "metaKey" | "altKey" | "shiftKey" | "key" | "code">) {
   const parts = [];
   if (event.ctrlKey || event.metaKey) parts.push("Ctrl");
   if (event.altKey) parts.push("Alt");
   if (event.shiftKey) parts.push("Shift");
-  const key = event.key.length === 1 ? event.key.toUpperCase() : event.key;
+  const key = event.code === "Backquote" ? "`" : event.key.length === 1 ? event.key.toUpperCase() : event.key;
   parts.push(key);
   return parts.join("+");
 }

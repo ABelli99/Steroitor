@@ -3,6 +3,7 @@
   import { gitLog, type Commit } from "./api";
   import { absoluteTime, refLabel, relativeTime } from "./format";
   import type { GitRepo } from "./repo.svelte";
+  import { diffState, gitSelection } from "./selection.svelte";
 
   let { repo }: { repo: GitRepo } = $props();
 
@@ -19,6 +20,10 @@
   const remote = $derived(repo.branches.filter((branch) => branch.remote));
 
   let generation = 0;
+
+  $effect(() => {
+    gitSelection.commit = selected?.hash ?? null;
+  });
 
   $effect(() => {
     repo.revision;
@@ -95,6 +100,7 @@
         role="row"
         tabindex="-1"
         onclick={() => (selected = commit)}
+        ondblclick={() => (diffState.request = { kind: "commit", hash: commit.hash })}
         onkeydown={() => {}}
       >
         <span class="hash">{commit.shortHash}</span>

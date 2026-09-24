@@ -3,6 +3,8 @@
     label: string;
     run: () => void;
     danger?: boolean;
+    disabled?: boolean;
+    hint?: string;
     separatorBefore?: boolean;
   }
 </script>
@@ -56,9 +58,16 @@
   style:top="{position.top}px"
   onkeydown={onKeyDown}
 >
-  {#each items as item (item.label)}
+  {#each items as item, index (index)}
     {#if item.separatorBefore}<hr />{/if}
-    <button role="menuitem" class:danger={item.danger} onclick={() => choose(item)}>{item.label}</button>
+    {#if item.disabled}
+      <div class="section">{item.label}</div>
+    {:else}
+      <button role="menuitem" class:danger={item.danger} onclick={() => choose(item)}>
+        <span>{item.label}</span>
+        {#if item.hint}<span class="hint">{item.hint}</span>{/if}
+      </button>
+    {/if}
   {/each}
 </div>
 
@@ -67,6 +76,8 @@
     position: fixed;
     z-index: 30;
     min-width: 180px;
+    max-height: calc(100vh - 16px);
+    overflow-y: auto;
     padding: 4px;
     display: flex;
     flex-direction: column;
@@ -77,8 +88,22 @@
   }
 
   button {
+    display: flex;
+    justify-content: space-between;
+    gap: 24px;
     text-align: left;
     padding: 4px 10px;
+  }
+
+  .hint,
+  .section {
+    color: var(--fg-muted);
+  }
+
+  .section {
+    padding: 4px 10px 2px;
+    font-size: 11px;
+    text-transform: uppercase;
   }
 
   button:focus {
