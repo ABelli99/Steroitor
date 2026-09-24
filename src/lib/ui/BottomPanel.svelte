@@ -3,7 +3,14 @@
   import ConsolePanel from "./ConsolePanel.svelte";
   import { layout, saveLayout } from "./layout.svelte";
 
-  let { git, folder }: { git: GitRepo | null; folder: string | null } = $props();
+  interface Props {
+    git: GitRepo | null;
+    folder: string | null;
+    oninit: () => void;
+    onclone: () => void;
+  }
+
+  let { git, folder, oninit, onclone }: Props = $props();
 
   const tabs = [
     { id: "console", label: "Console" },
@@ -40,7 +47,15 @@
         <CommitPanel repo={git} />
       {/await}
     {:else}
-      <p class="empty">Nessun repository Git nella cartella aperta.</p>
+      <div class="empty">
+        {#if folder}
+          <p>La cartella aperta non è un repository Git.</p>
+          <button onclick={oninit}>Inizializza repository (git init)</button>
+        {:else}
+          <p>Nessuna cartella aperta.</p>
+        {/if}
+        <button onclick={onclone}>Clona repository…</button>
+      </div>
     {/if}
   </div>
 </section>
@@ -88,5 +103,12 @@
   .empty {
     margin: 8px 12px;
     color: var(--fg-muted);
+    font-family: var(--ui-font);
+  }
+
+  .empty button {
+    margin-right: 6px;
+    border: 1px solid var(--border);
+    color: var(--fg);
   }
 </style>

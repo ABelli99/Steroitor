@@ -11,6 +11,10 @@
   import { vcsMenuItems } from "./lib/git/vcsMenu";
   import { showPanel } from "./lib/ui/panels";
   import { closeMenu, menuState, openMenu } from "./lib/ui/menu.svelte";
+  import { track } from "./lib/ui/activity.svelte";
+  import { gitClone, gitInit, repoNameFromUrl } from "./lib/git/clone";
+  import { message } from "@tauri-apps/plugin-dialog";
+  import { askText } from "./lib/ui/prompt.svelte";
   import ContextMenu, { type MenuItem } from "./lib/ui/ContextMenu.svelte";
   import type { Entry } from "./lib/backend";
   import { isInsideDir, samePath } from "./lib/workspace/files";
@@ -48,13 +52,37 @@
     saveLayout();
   };
 
-  async function openFolder() {
-    const folder = await open({ directory: true });
+  async function openFolder(folder?: string | null) {
+    folder ??= await open({ directory: true });
     if (!folder) return;
     await tree.open(folder);
     await connectRepo(folder);
     layout.explorerVisible = true;
     saveLayout();
+  }
+
+  async function cloneRepository() {
+    const url = await askText("URL del repository da clonare");
+    if (!url) return;
+    const parent = await open({ directory: true, title: "Cartella in cui clonare" });
+    if (!parent) return;
+    const target = `${parent.replace(/[\\/]+$/, "")}\\${repoNameFromUrl(url)}`;
+    try {
+      await track(`Clone di ${repoNameFromUrl(url)}`, () => gitClone(url, target));
+      await openFolder(target);
+    } catch (error) {
+      await message(String(error), { title: "Clone non riuscito", kind: "error" });
+    }
+  }
+
+  async function initRepository() {
+    if (!tree.root) return;
+    try {
+      await gitInit(tree.root);
+      await connectRepo(tree.root);
+    } catch (error) {
+      await message(String(error), { title: "git init non riuscito", kind: "error" });
+    }
   }
 
   /** Il modulo Git si carica solo se la cartella è dentro un repository. */
@@ -155,11 +183,11 @@
 </script>
 
 <div class="app">
-  <TopBar {workspace} onopenfolder={openFolder} />
+  <TopBar {workspace} onopenfolder={() => openFolder()} onclone={cloneRepository} />
   <div class="main">
     {#if layout.explorerVisible}
       <div class="explorer" style:width="{layout.explorerWidth}px">
-        <Explorer {tree} {workspace} {actions} onopenfolder={openFolder} statusOf={git ? (path) => git!.statusOf(path) : undefined}
+        <Explorer {tree} {workspace} {actions} onopenfolder={() => openFolder()} onclone={cloneRepository} statusOf={git ? (path) => git!.statusOf(path) : undefined}
           extraItems={explorerGitItems}
         />
       </div>
@@ -181,7 +209,7 @@
       onend={saveLayout}
     />
     <div class="bottom" style:height="{layout.panelHeight}px">
-      <BottomPanel {git} folder={tree.root} />
+      <BottomPanel {git} folder={tree.root} oninit={initRepository} onclone={cloneRepository} />
     </div>
   </div>
   <StatusBar {workspace} {git} onvcsmenu={(event) => openVcsMenu(event.clientX, event.clientY)} />

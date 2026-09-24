@@ -12,12 +12,13 @@
     workspace: Workspace;
     actions: ExplorerActions;
     onopenfolder: () => void;
+    onclone: () => void;
     statusOf?: (path: string) => FileStatus | null;
     /** Voci aggiuntive del context menu (es. Annotate quando c'è un repository). */
     extraItems?: (entry: Entry) => MenuItem[];
   }
 
-  let { tree, workspace, actions, onopenfolder, statusOf, extraItems }: Props = $props();
+  let { tree, workspace, actions, onopenfolder, onclone, statusOf, extraItems }: Props = $props();
 
   const ROW_HEIGHT = 22;
   const OVERSCAN = 10;
@@ -160,6 +161,7 @@
     <div class="empty">
       <p>Nessuna cartella aperta.</p>
       <button class="open" onclick={onopenfolder}>Apri cartella</button>
+      <button class="open" onclick={onclone}>Clona repository…</button>
     </div>
   {/if}
 </aside>
@@ -277,6 +279,8 @@
   }
 
   .open {
+    display: block;
+    margin-bottom: 6px;
     border: 1px solid var(--border);
     padding: 4px 12px;
   }

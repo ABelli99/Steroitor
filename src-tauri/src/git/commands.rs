@@ -189,3 +189,13 @@ pub async fn git_index_content(app: AppHandle, root: String, path: String) -> Re
 pub async fn git_stage_content(app: AppHandle, root: String, path: String, content: String) -> Result<(), String> {
     with_git(app, move |git| git.stage_content(&root, &path, &content)).await
 }
+
+#[tauri::command]
+pub async fn git_clone(app: AppHandle, url: String, target: String) -> Result<(), String> {
+    with_git(app, move |git| git.clone_repo(&url, &target)).await
+}
+
+#[tauri::command]
+pub async fn git_init(app: AppHandle, path: String) -> Result<(), String> {
+    with_git(app, move |git| git.init_repo(&path)).await
+}

@@ -4,6 +4,7 @@ mod ops;
 mod parse;
 mod partial;
 mod runner;
+mod setup;
 #[cfg(test)]
 mod testing;
 

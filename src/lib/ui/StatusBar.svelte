@@ -2,6 +2,7 @@
   import { languageName } from "../editor/languages";
   import { eolLabel } from "../workspace/files";
   import type { GitRepo } from "../git/repo.svelte";
+  import { activity } from "./activity.svelte";
   import type { Workspace } from "../workspace/workspace.svelte";
 
   interface Props {
@@ -26,6 +27,7 @@
     {/if}
     {#if git?.busy}<span class="busy">{git.busy}…</span>{/if}
   {/if}
+  {#if activity.label}<span class="busy">{activity.label}…</span>{/if}
   <span class="spacer"></span>
   {#if tab}
     <span>
