@@ -1,5 +1,6 @@
 use tauri::AppHandle;
 
+use super::changes::ChangedFile;
 use super::history::{ConflictVersions, LogFilter, ResetMode};
 use super::parse::{BlameLine, Branch, Commit, RepoStatus, Stash};
 use super::runner::Git;
@@ -40,10 +41,6 @@ pub async fn git_head_content(app: AppHandle, root: String, path: String) -> Res
     with_git(app, move |git| git.head_content(&root, &path)).await
 }
 
-#[tauri::command]
-pub async fn git_show_commit(app: AppHandle, root: String, hash: String) -> Result<String, String> {
-    with_git(app, move |git| git.show_commit(&root, &hash)).await
-}
 
 #[tauri::command]
 pub async fn git_stage(app: AppHandle, root: String, paths: Vec<String>) -> Result<(), String> {
@@ -208,4 +205,14 @@ pub async fn git_reword(app: AppHandle, root: String, hash: String, message: Str
 #[tauri::command]
 pub async fn git_commit_message(app: AppHandle, root: String, hash: String) -> Result<String, String> {
     with_git(app, move |git| git.commit_message(&root, &hash)).await
+}
+
+#[tauri::command]
+pub async fn git_commit_changes(app: AppHandle, root: String, hash: String) -> Result<Vec<ChangedFile>, String> {
+    with_git(app, move |git| git.commit_changes(&root, &hash)).await
+}
+
+#[tauri::command]
+pub async fn git_file_at(app: AppHandle, root: String, revision: String, path: String) -> Result<Option<String>, String> {
+    with_git(app, move |git| git.file_at(&root, &revision, &path)).await
 }

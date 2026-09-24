@@ -1,3 +1,4 @@
+mod changes;
 pub mod commands;
 mod history;
 mod ops;

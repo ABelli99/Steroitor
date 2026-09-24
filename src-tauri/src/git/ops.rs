@@ -34,10 +34,6 @@ impl Git {
         Ok(output.success.then(|| decode(&output.stdout)))
     }
 
-    /// Patch completa di un commit, per Show Diff dal log.
-    pub fn show_commit(&self, root: &str, hash: &str) -> Result<String, String> {
-        self.text(Path::new(root), &["show", "--format=fuller", "--patch", "--no-color", hash, "--"], false)
-    }
 
     pub fn stage(&self, root: &str, paths: &[String]) -> Result<(), String> {
         let relative = relative_paths(root, paths)?;

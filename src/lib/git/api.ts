@@ -62,8 +62,6 @@ export const gitLog = (root: string, filter: LogFilter, skip: number, limit: num
 
 export const gitHeadContent = (root: string, path: string) => invoke<TextFile | null>("git_head_content", { root, path });
 
-export const gitShowCommit = (root: string, hash: string) => invoke<string>("git_show_commit", { root, hash });
-
 export const gitStage = (root: string, paths: string[]) => invoke<void>("git_stage", { root, paths });
 
 export const gitUnstage = (root: string, paths: string[]) => invoke<void>("git_unstage", { root, paths });
@@ -155,3 +153,13 @@ export const gitStageContent = (root: string, path: string, content: string) =>
 export const gitCommitMessage = (root: string, hash: string) => invoke<string>("git_commit_message", { root, hash });
 
 export const gitReword = (root: string, hash: string, message: string) => invoke<void>("git_reword", { root, hash, message });
+
+export interface ChangedFile {
+  path: string;
+  oldPath: string | null;
+  status: string;
+}
+
+export const gitCommitChanges = (root: string, hash: string) => invoke<ChangedFile[]>("git_commit_changes", { root, hash });
+
+export const gitFileAt = (root: string, revision: string, path: string) => invoke<string | null>("git_file_at", { root, revision, path });

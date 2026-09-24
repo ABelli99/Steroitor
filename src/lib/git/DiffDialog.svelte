@@ -1,30 +1,33 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { fileName } from "../workspace/files";
-  import { gitShowCommit } from "./api";
+  import { gitCommitMessage } from "./api";
+  import CommitChanges from "./CommitChanges.svelte";
   import DiffView from "./DiffView.svelte";
   import type { DiffRequest } from "./selection.svelte";
 
-  let { root, request, onclose }: { root: string; request: DiffRequest; onclose: () => void } = $props();
+  interface Props {
+    root: string;
+    request: DiffRequest;
+    onclose: () => void;
+    onopenfile: (path: string) => void;
+  }
 
-  const MAX_PATCH_LINES = 5000;
+  let { root, request, onclose, onopenfile }: Props = $props();
 
   let dialog = $state<HTMLElement>();
-  let patch = $state<string[] | null>(null);
-  let error = $state<string | null>(null);
+  let subject = $state("");
 
   const title = $derived(
-    request.kind === "file" ? fileName(request.file.path) : request.kind === "commit" ? `Commit ${request.hash.slice(0, 7)}` : fileName(request.path),
+    request.kind === "commit" ? `${request.hash.slice(0, 7)}${subject ? ` · ${subject}` : ""}` : fileName(request.kind === "file" ? request.file.path : request.path),
   );
-  const lineClass = (line: string) =>
-    line.startsWith("+++") || line.startsWith("---") ? "meta" : line.startsWith("+") ? "add" : line.startsWith("-") ? "del" : line.startsWith("@@") ? "hunk" : line.startsWith("diff ") ? "file" : "";
 
   onMount(() => {
     dialog?.focus();
     if (request.kind !== "commit") return;
-    gitShowCommit(root, request.hash)
-      .then((text) => (patch = text.split("\n")))
-      .catch((failure) => (error = String(failure)));
+    gitCommitMessage(root, request.hash)
+      .then((message) => (subject = message.split("\n")[0]))
+      .catch(() => {});
   });
 </script>
 
@@ -46,13 +49,8 @@
     <div class="body">
       {#if request.kind === "file"}
         <DiffView {root} file={request.file} />
-      {:else if error}
-        <p class="error">{error}</p>
-      {:else if patch}
-        <pre>{#each patch.slice(0, MAX_PATCH_LINES) as line, index (index)}<span class={lineClass(line)}>{line}</span>
-{/each}{#if patch.length > MAX_PATCH_LINES}<span class="meta">… altre {patch.length - MAX_PATCH_LINES} righe</span>{/if}</pre>
-      {:else}
-        <p class="muted">Caricamento…</p>
+      {:else if request.kind === "commit"}
+        <CommitChanges {root} hash={request.hash} {onopenfile} />
       {/if}
     </div>
   </div>
@@ -70,8 +68,8 @@
   }
 
   .dialog {
-    width: calc(100vw - 64px);
-    height: calc(100vh - 64px);
+    width: calc(100vw - 48px);
+    height: calc(100vh - 48px);
     display: flex;
     flex-direction: column;
     background: var(--editor-bg);
@@ -94,10 +92,12 @@
 
   .title {
     font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .path,
-  .muted {
+  .path {
     color: var(--fg-muted);
     font-size: 12px;
   }
@@ -109,39 +109,6 @@
   .body {
     flex: 1;
     min-height: 0;
-    overflow: auto;
-  }
-
-  pre {
-    margin: 0;
-    padding: 8px 12px;
-    font-family: var(--mono);
-    font-size: 12px;
-    user-select: text;
-  }
-
-  .add {
-    color: var(--git-added);
-  }
-
-  .del {
-    color: var(--git-untracked);
-  }
-
-  .hunk {
-    color: var(--accent);
-  }
-
-  .file {
-    font-weight: 600;
-  }
-
-  .meta {
-    color: var(--fg-muted);
-  }
-
-  .error {
-    margin: 12px;
-    color: var(--danger);
+    overflow: hidden;
   }
 </style>

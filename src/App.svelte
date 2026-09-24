@@ -231,7 +231,15 @@
   {/await}
 {:else if diffState.request && git}
   {#await import("./lib/git/DiffDialog.svelte") then { default: DiffDialog }}
-    <DiffDialog root={git.root} request={diffState.request} onclose={() => (diffState.request = null)} />
+    <DiffDialog
+      root={git.root}
+      request={diffState.request}
+      onclose={() => (diffState.request = null)}
+      onopenfile={(path) => {
+        diffState.request = null;
+        workspace.openPath(path);
+      }}
+    />
   {/await}
 {/if}
 
