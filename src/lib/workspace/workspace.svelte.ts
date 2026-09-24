@@ -146,7 +146,6 @@ export class Workspace {
     if (!tab) return;
     if (tab.dirty && !(await this.#confirmDiscard(tab))) return;
     this.#remove(tab.id);
-    if (this.tabs.length === 0) this.newUntitled();
   }
 
   activate(id: string) {

@@ -1,5 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
+  import { buildBranchTree, flattenBranchTree, foldersToCollapse, type BranchNode } from "./branchTree";
   import ContextMenu, { type MenuItem } from "../ui/ContextMenu.svelte";
   import { gitLog, type Branch, type Commit } from "./api";
   import { absoluteTime, refLabel, relativeTime } from "./format";
@@ -34,6 +36,24 @@
   const graph = $derived(filtered ? [] : layoutGraph(commits));
   const lanes = $derived(Math.min(MAX_LANES, Math.max(1, ...graph.map((row) => row.width))));
   const current = $derived(repo.branch?.head ?? null);
+  const localTree = $derived(buildBranchTree(local, "local"));
+  const remoteTree = $derived(buildBranchTree(remote, "remote"));
+  const collapsed = new SvelteSet<string>();
+  let collapsedOnce = false;
+
+  $effect(() => {
+    if (collapsedOnce || !repo.branches.length) return;
+    collapsedOnce = true;
+    const remoteNested = foldersToCollapse(remoteTree).filter((key) => key.split("/").length > 2);
+    untrack(() => [...foldersToCollapse(localTree), ...remoteNested].forEach((key) => collapsed.add(key)));
+  });
+
+  function toggleFolder(key: string) {
+    if (collapsed.has(key)) collapsed.delete(key);
+    else collapsed.add(key);
+  }
+
+  const rowKey = (node: BranchNode) => (node.kind === "folder" ? node.key : `${node.branch.remote ? "r" : "l"}:${node.branch.name}`);
 
   const x = (lane: number) => lane * LANE_WIDTH + LANE_WIDTH / 2;
   const color = (index: number) => LANE_COLORS[index % LANE_COLORS.length];
@@ -142,30 +162,38 @@
 
 <div class="git">
   <nav class="branches">
-    <button class:active={reference === null} onclick={() => (reference = null)}>Tutti i branch</button>
+    <button class="all" class:active={reference === null} onclick={() => (reference = null)}>Tutti i branch</button>
     {#if local.length}
       <h4>Locali</h4>
-      {#each local as branch (branch.name)}
-        <button
-          class:active={reference === branch.name}
-          class:current={branch.current}
-          title={branch.upstream ? `→ ${branch.upstream}` : branch.name}
-          onclick={() => (reference = branch.name)}
-          oncontextmenu={(e) => branchMenu(e, branch)}
-        >
-          {branch.name}
-        </button>
-      {/each}
+      {@render branchRows(localTree)}
     {/if}
     {#if remote.length}
       <h4>Remoti</h4>
-      {#each remote as branch (branch.name)}
-        <button class:active={reference === branch.name} onclick={() => (reference = branch.name)} oncontextmenu={(e) => branchMenu(e, branch)}>
-          {branch.name}
-        </button>
-      {/each}
+      {@render branchRows(remoteTree)}
     {/if}
   </nav>
+
+  {#snippet branchRows(tree: BranchNode[])}
+    {#each flattenBranchTree(tree, collapsed) as row (rowKey(row.node))}
+      {@const node = row.node}
+      {#if node.kind === "folder"}
+        <button class="folder" style:padding-left="{8 + row.depth * 12}px" onclick={() => toggleFolder(node.key)}>
+          <span class="chevron">{collapsed.has(node.key) ? "▸" : "▾"}</span>{node.name}
+        </button>
+      {:else}
+        <button
+          class:active={reference === node.branch.name}
+          class:current={node.branch.current}
+          style:padding-left="{8 + row.depth * 12}px"
+          title={node.branch.upstream ? `${node.branch.name} → ${node.branch.upstream}` : node.branch.name}
+          onclick={() => (reference = node.branch.name)}
+          oncontextmenu={(e) => branchMenu(e, node.branch)}
+        >
+          {node.name}
+        </button>
+      {/if}
+    {/each}
+  {/snippet}
 
   <div class="main">
     <div class="filters">
@@ -264,11 +292,25 @@
     border-right: 1px solid var(--border);
   }
 
+  .branches > * {
+    flex-shrink: 0;
+  }
+
   .branches button {
     text-align: left;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .branches .folder {
+    color: var(--fg-muted);
+  }
+
+  .chevron {
+    display: inline-block;
+    width: 12px;
+    font-size: 10px;
   }
 
   .branches .active {

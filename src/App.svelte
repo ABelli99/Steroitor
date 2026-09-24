@@ -159,7 +159,6 @@
         connectRepo(saved.folder);
       }
       for (const path of await startupFiles()) await workspace.openPath(path);
-      if (workspace.tabs.length === 0) workspace.newUntitled();
       workspace.focusEditor();
       appReady();
     })();
