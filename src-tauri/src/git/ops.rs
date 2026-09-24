@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::parse::{parse_branches, parse_log, parse_status, Branch, Commit, RepoStatus, BRANCH_FORMAT, LOG_FORMAT};
+use super::parse::{parse_branches, parse_status, Branch, RepoStatus, BRANCH_FORMAT};
 use super::runner::{repo_relative, to_native, Git};
 use crate::files::{decode, TextFile};
 
@@ -18,24 +18,14 @@ impl Git {
 
     pub fn status(&self, root: &str) -> Result<RepoStatus, String> {
         let raw = self.text(Path::new(root), &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all", "--ignored=matching"], true)?;
-        Ok(parse_status(Path::new(root), &raw))
+        let mut status = parse_status(Path::new(root), &raw);
+        status.operation = self.operation(root)?;
+        Ok(status)
     }
 
     pub fn branches(&self, root: &str) -> Result<Vec<Branch>, String> {
         let raw = self.text(Path::new(root), &["for-each-ref", BRANCH_FORMAT, "refs/heads", "refs/remotes"], true)?;
         Ok(parse_branches(&raw))
-    }
-
-    pub fn log(&self, root: &str, reference: Option<&str>, skip: u32, limit: u32) -> Result<Vec<Commit>, String> {
-        let skip = format!("--skip={skip}");
-        let limit = format!("--max-count={limit}");
-        let target = reference.unwrap_or("--all");
-        let args = ["log", LOG_FORMAT, "--date-order", &skip, &limit, target, "--"];
-        match self.text(Path::new(root), &args, false) {
-            Ok(raw) => Ok(parse_log(&raw)),
-            Err(error) if error.contains("does not have any commits") || error.contains("unknown revision") => Ok(vec![]),
-            Err(error) => Err(error),
-        }
     }
 
     pub fn head_content(&self, root: &str, path: &str) -> Result<Option<TextFile>, String> {
@@ -97,9 +87,10 @@ impl Git {
         self.text(Path::new(root), args, false).map(drop)
     }
 
-    pub fn create_branch(&self, root: &str, name: &str, checkout: bool) -> Result<(), String> {
-        let args: &[&str] = if checkout { &["switch", "-c", name] } else { &["branch", name] };
-        self.text(Path::new(root), args, false).map(drop)
+    pub fn create_branch(&self, root: &str, name: &str, checkout: bool, start: Option<&str>) -> Result<(), String> {
+        let mut args = if checkout { vec!["switch", "-c", name] } else { vec!["branch", name] };
+        args.extend(start);
+        self.text(Path::new(root), &args, false).map(drop)
     }
 
     /// File in stage con terminazioni CRLF quando core.autocrlf non le converte.
@@ -139,65 +130,10 @@ fn relative_paths(root: &str, paths: &[String]) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::super::parse::FileStatus;
+    use super::super::history::LogFilter;
+    use super::super::testing::{git, status_of, write, Sandbox};
     use super::*;
     use std::fs;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn git() -> Git {
-        Git::new("git", Box::new(|_| {}))
-    }
-
-    struct Sandbox(PathBuf);
-
-    impl Sandbox {
-        fn new(name: &str) -> Self {
-            let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-            let dir = std::env::temp_dir().join(format!("steroitor-{name}-{nanos}"));
-            fs::create_dir_all(&dir).unwrap();
-            Self(dir)
-        }
-
-        fn repo(&self, name: &str) -> String {
-            let path = self.0.join(name);
-            fs::create_dir_all(&path).unwrap();
-            let root = path.to_string_lossy().into_owned();
-            let git = git();
-            for args in [
-                &["init", "-q", "-b", "main"][..],
-                &["config", "user.name", "Test"],
-                &["config", "user.email", "test@example.com"],
-                &["config", "commit.gpgsign", "false"],
-                &["config", "core.autocrlf", "false"],
-            ] {
-                git.text(&path, args, false).unwrap();
-            }
-            root
-        }
-
-        fn bare(&self, name: &str) -> String {
-            let path = self.0.join(name);
-            git().text(&self.0, &["init", "-q", "--bare", "-b", "main", &path.to_string_lossy()], false).unwrap();
-            path.to_string_lossy().into_owned()
-        }
-    }
-
-    impl Drop for Sandbox {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn write(root: &str, name: &str, content: &str) -> String {
-        let path = Path::new(root).join(name);
-        fs::write(&path, content).unwrap();
-        path.to_string_lossy().into_owned()
-    }
-
-    fn status_of(git: &Git, root: &str, path: &str) -> Option<(FileStatus, bool, bool)> {
-        let status = git.status(root).unwrap();
-        status.files.iter().find(|f| f.path == path).map(|f| (f.status, f.staged, f.unstaged))
-    }
 
     #[test]
     fn stage_commit_and_unstage_round_trip() {
@@ -218,7 +154,7 @@ mod tests {
         git.commit(&root, "primo commit").unwrap();
         assert_eq!(status_of(&git, &root, &file), None);
 
-        let log = git.log(&root, None, 0, 10).unwrap();
+        let log = git.log_filtered(&root, &LogFilter::default(), 0, 10).unwrap();
         assert_eq!(log.len(), 1);
         assert_eq!(log[0].subject, "primo commit");
         assert_eq!(git.head_content(&root, &file).unwrap().map(|f| f.content), Some("uno\n".into()));
@@ -262,8 +198,8 @@ mod tests {
         git.stage(&root, &[write(&root, "a.txt", "a\n")]).unwrap();
         git.commit(&root, "init").unwrap();
 
-        git.create_branch(&root, "feature", true).unwrap();
-        git.create_branch(&root, "other", false).unwrap();
+        git.create_branch(&root, "feature", true, None).unwrap();
+        git.create_branch(&root, "other", false, None).unwrap();
         let current: Vec<String> = git.branches(&root).unwrap().into_iter().filter(|b| b.current).map(|b| b.name).collect();
         assert_eq!(current, vec!["feature"]);
 
@@ -285,11 +221,7 @@ mod tests {
         git.push(&first).unwrap();
         assert_eq!(git.status(&first).unwrap().branch.upstream.as_deref(), Some("origin/main"));
 
-        let second = sandbox.0.join("second").to_string_lossy().into_owned();
-        git.text(&sandbox.0, &["clone", "-q", &remote, &second], false).unwrap();
-        for args in [&["config", "user.name", "Other"][..], &["config", "user.email", "o@example.com"], &["config", "commit.gpgsign", "false"]] {
-            git.text(Path::new(&second), args, false).unwrap();
-        }
+        let second = sandbox.clone(&remote, "second");
         git.stage(&second, &[write(&second, "b.txt", "b\n")]).unwrap();
         git.commit(&second, "dal secondo clone").unwrap();
         git.push(&second).unwrap();
@@ -297,7 +229,7 @@ mod tests {
         git.fetch(&first).unwrap();
         assert_eq!(git.status(&first).unwrap().branch.behind, 1);
         git.pull(&first, false).unwrap();
-        assert_eq!(git.log(&first, Some("main"), 0, 1).unwrap()[0].subject, "dal secondo clone");
+        assert_eq!(git.log_filtered(&first, &LogFilter { reference: Some("main".into()), ..Default::default() }, 0, 1).unwrap()[0].subject, "dal secondo clone");
     }
 
     #[test]

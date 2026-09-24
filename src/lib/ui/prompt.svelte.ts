@@ -17,5 +17,5 @@ export function askText(title: string, value = "", selectUntil = value.length): 
 export function settlePrompt(value: string | null) {
   const request = prompts.current;
   prompts.current = null;
-  request?.resolve(value?.trim() || null);
+  request?.resolve(value === null ? null : value.trim());
 }

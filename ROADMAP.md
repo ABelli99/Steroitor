@@ -31,7 +31,7 @@ Se la risposta a una delle tre è "no", va in backlog.
 Si misurano da F0 in poi (`npm run measure`, oppure `-SkipBuild` lanciando lo script direttamente).
 Una fase non è chiusa se sfora un limite.
 
-Ultima misura (F4, build release): installer 1,9 MB · RAM 73–77 MB · avvio 500–560 ms (anche con profilo WebView2 vuoto).
+Ultima misura (F5, build release): installer 1,9 MB · RAM 75–78 MB · avvio 500–640 ms, primo avvio dopo la build 990 ms (anche con profilo WebView2 vuoto).
 Outlier: un singolo avvio da 1,3 s subito dopo una build (cache file del sistema operativo fredda), non riproducibile.
 
 **Decisione:** WebView2 gira con `--disable-gpu` (`tauri.conf.json` → `additionalBrowserArgs`).
@@ -136,9 +136,9 @@ Note di implementazione:
 
 ---
 
-### F5 — History avanzata
+### F5 — History avanzata — implementata, in verifica manuale
 
-- Grafo dei commit nel log (algoritmo a corsie, disegnato su canvas)
+- Grafo dei commit nel log (algoritmo a corsie, disegnato in SVG)
 - Filtri: branch, autore, path, testo nel messaggio
 - Azioni dal log: Checkout commit, Cherry-Pick, Revert, Reset (soft/mixed/hard, con conferma su hard), Create Tag, Copy Commit ID, Show Changes
 - Merge / Rebase dal VCS widget, con stato "conflitto" visibile e file in conflitto elencati
@@ -147,6 +147,12 @@ Note di implementazione:
 - Stash (push / pop / list)
 
 **Uscita:** si può gestire la history ordinaria senza aprire un terminale.
+
+Note di implementazione:
+- Il grafo si nasconde quando sono attivi filtri su autore/testo/path (i parent non sono più contigui).
+- Merge/rebase/cherry-pick/revert fermi su conflitti: stato in status bar, Continua/Annulla nel pannello Commit e nel popup VCS.
+- Annotate: click destro sul gutter dell'editor o sul file nell'Explorer; click su un'annotazione apre il commit.
+- Amend di un commit già pushato chiede conferma: il push forzato resta da terminale.
 
 ---
 

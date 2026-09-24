@@ -1,10 +1,10 @@
 <script lang="ts">
   import { fileName } from "../workspace/files";
-  import type { StatusEntry } from "./api";
+  import { OPERATION_LABELS, type StatusEntry } from "./api";
   import DiffView from "./DiffView.svelte";
   import type { GitRepo } from "./repo.svelte";
   import { diffState, gitSelection } from "./selection.svelte";
-  import { commitDraft } from "./commitDraft.svelte";
+  import { commitDraft, submitCommit } from "./commitDraft.svelte";
 
   let { repo }: { repo: GitRepo } = $props();
 
@@ -14,7 +14,9 @@
   const allStaged = $derived(changes.length > 0 && changes.every((entry) => entry.staged && !entry.unstaged));
   const someStaged = $derived(changes.some((entry) => entry.staged));
   const selected = $derived(changes.find((entry) => entry.path === gitSelection.file?.path) ?? null);
-  const canCommit = $derived(!repo.busy && repo.staged > 0 && commitDraft.message.trim().length > 0);
+  const hasMessage = $derived(commitDraft.message.trim().length > 0);
+  const canCommit = $derived(!repo.busy && hasMessage && (commitDraft.amend || repo.staged > 0));
+  const operation = $derived(repo.operation ? OPERATION_LABELS[repo.operation] : null);
 
   const relativeDir = (path: string) => path.slice(repo.root.length + 1, -fileName(path).length).replace(/[\\/]$/, "");
 
@@ -34,8 +36,12 @@
   }
 
   async function commit(andPush: boolean) {
-    if (!canCommit) return;
-    if (await repo.commit(commitDraft.message, andPush)) commitDraft.message = "";
+    if (canCommit) await submitCommit(repo, andPush);
+  }
+
+  async function toggleAmend() {
+    commitDraft.amend = !commitDraft.amend;
+    if (commitDraft.amend && !hasMessage) commitDraft.message = await repo.history.lastCommitMessage();
   }
 
   function onMessageKeyDown(event: KeyboardEvent) {
@@ -102,6 +108,20 @@
         <p class="empty">Nessuna modifica.</p>
       {/each}
     </div>
+    {#if operation}
+      <div class="operation">
+        <strong>{operation} in corso</strong>
+        {#if repo.conflicts}· {repo.conflicts} file in conflitto: risolvili e mettili in stage{:else}· conflitti risolti{/if}
+      </div>
+      <div class="actions">
+        <button class="primary" disabled={!!repo.busy || repo.conflicts > 0} onclick={() => repo.history.continueOperation()}>
+          Continua {operation.toLowerCase()}
+        </button>
+        <button disabled={!!repo.busy} onclick={() => repo.history.abortOperation()}>Annulla {operation.toLowerCase()}</button>
+        <span class="spacer"></span>
+        {#if repo.busy}<span class="busy">{repo.busy}…</span>{/if}
+      </div>
+    {:else}
     <textarea
       id="commit-message"
       placeholder="Messaggio di commit (Ctrl+Invio per committare)"
@@ -110,11 +130,19 @@
       spellcheck="false"
     ></textarea>
     <div class="actions">
-      <button class="primary" disabled={!canCommit} title="Ctrl+K" onclick={() => commit(false)}>Commit</button>
-      <button disabled={!canCommit} title="Ctrl+Alt+K" onclick={() => commit(true)}>Commit and Push</button>
+      <button class="primary" disabled={!canCommit} title="Ctrl+K" onclick={() => commit(false)}>
+        {commitDraft.amend ? "Amend" : "Commit"}
+      </button>
+      {#if !commitDraft.amend}
+        <button disabled={!canCommit} title="Ctrl+Alt+K" onclick={() => commit(true)}>Commit and Push</button>
+      {/if}
+      <label class="amend" title="Modifica l'ultimo commit invece di crearne uno nuovo">
+        <input type="checkbox" checked={commitDraft.amend} onchange={toggleAmend} /> Amend
+      </label>
       <span class="spacer"></span>
       {#if repo.busy}<span class="busy">{repo.busy}…</span>{/if}
     </div>
+    {/if}
   </div>
 
   <div class="preview">
@@ -258,6 +286,19 @@
 
   .busy {
     color: var(--fg-muted);
+  }
+
+  .amend {
+    margin-left: 6px;
+    color: var(--fg-muted);
+  }
+
+  .operation {
+    margin: 6px 8px 0;
+    padding: 6px 8px;
+    border-radius: 4px;
+    color: var(--fg);
+    background: var(--search-match);
   }
 
   .preview {

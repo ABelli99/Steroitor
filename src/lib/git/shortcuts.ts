@@ -3,7 +3,7 @@ import { layout } from "../ui/layout.svelte";
 import { showPanel } from "../ui/panels";
 import { isInsideDir } from "../workspace/files";
 import type { Workspace } from "../workspace/workspace.svelte";
-import { commitDraft } from "./commitDraft.svelte";
+import { commitDraft, submitCommit } from "./commitDraft.svelte";
 import type { GitRepo } from "./repo.svelte";
 import { gitSelection, showSelectedDiff } from "./selection.svelte";
 
@@ -26,8 +26,8 @@ export function gitShortcuts({ repo, workspace, openVcsMenu }: Options): Record<
   const commitShortcut = (andPush: boolean) =>
     withRepo(async (current) => {
       const typing = document.activeElement?.matches(COMMIT_MESSAGE);
-      if (!typing || !commitDraft.message.trim()) return showPanel("commit", COMMIT_MESSAGE);
-      if (await current.commit(commitDraft.message, andPush)) commitDraft.message = "";
+      if (!typing || !commitDraft.message.trim() || current.operation) return showPanel("commit", COMMIT_MESSAGE);
+      await submitCommit(current, andPush);
     });
 
   const stageActiveFile = withRepo((current) => {

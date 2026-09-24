@@ -82,7 +82,7 @@ impl Git {
 
     pub fn run(&self, cwd: &Path, args: &[&str], background: bool) -> Result<Output, String> {
         let mut command = Command::new(&self.executable);
-        command.args(args).current_dir(cwd).env("GIT_OPTIONAL_LOCKS", "0").env("GIT_TERMINAL_PROMPT", "0");
+        command.args(args).current_dir(cwd).env("GIT_OPTIONAL_LOCKS", "0").env("GIT_TERMINAL_PROMPT", "0").env("GIT_EDITOR", "true");
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::process::CommandExt;

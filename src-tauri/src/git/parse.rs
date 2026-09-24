@@ -35,11 +35,22 @@ pub struct StatusEntry {
     pub unstaged: bool,
 }
 
+/// Operazione lasciata a metà da un conflitto: si conclude con continue o abort.
+#[derive(Serialize, Debug, PartialEq, Clone, Copy)]
+#[serde(rename_all = "kebab-case")]
+pub enum Operation {
+    Merge,
+    Rebase,
+    CherryPick,
+    Revert,
+}
+
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoStatus {
     pub branch: BranchInfo,
     pub files: Vec<StatusEntry>,
+    pub operation: Option<Operation>,
 }
 
 fn classify(xy: &str) -> (FileStatus, bool, bool) {
@@ -106,7 +117,7 @@ pub fn parse_status(root: &Path, raw: &str) -> RepoStatus {
             _ => {}
         }
     }
-    RepoStatus { branch, files }
+    RepoStatus { branch, files, operation: None }
 }
 
 #[derive(Serialize, Debug)]
@@ -177,9 +188,108 @@ pub fn parse_log(raw: &str) -> Vec<Commit> {
         .collect()
 }
 
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BlameLine {
+    pub hash: String,
+    pub author: String,
+    pub timestamp: i64,
+    pub summary: String,
+}
+
+const UNCOMMITTED: &str = "0000000000000000000000000000000000000000";
+
+/// `git blame --porcelain`: i metadati di un commit compaiono solo la prima volta.
+pub fn parse_blame(raw: &str) -> Vec<BlameLine> {
+    let mut known: std::collections::HashMap<String, BlameLine> = std::collections::HashMap::new();
+    let mut lines = Vec::new();
+    let mut current: Option<BlameLine> = None;
+
+    for line in raw.lines() {
+        if line.starts_with('\t') {
+            if let Some(entry) = current.take() {
+                known.entry(entry.hash.clone()).or_insert_with(|| entry.clone());
+                lines.push(entry);
+            }
+            continue;
+        }
+        let Some(entry) = current.as_mut() else {
+            let hash = line.split(' ').next().unwrap_or_default().to_owned();
+            current = Some(known.get(&hash).cloned().unwrap_or(BlameLine {
+                author: if hash == UNCOMMITTED { "Non committato".into() } else { String::new() },
+                hash,
+                timestamp: 0,
+                summary: String::new(),
+            }));
+            continue;
+        };
+        match line.split_once(' ') {
+            Some(("author", author)) if entry.hash != UNCOMMITTED => entry.author = author.to_owned(),
+            Some(("author-time", time)) => entry.timestamp = time.parse().unwrap_or(0),
+            Some(("summary", summary)) => entry.summary = summary.to_owned(),
+            _ => {}
+        }
+    }
+    lines
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Stash {
+    pub name: String,
+    pub timestamp: i64,
+    pub message: String,
+}
+
+pub const STASH_FORMAT: &str = "--format=%gd%x00%ct%x00%s";
+
+pub fn parse_stashes(raw: &str) -> Vec<Stash> {
+    raw.lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\0');
+            Some(Stash {
+                name: fields.next()?.to_owned(),
+                timestamp: fields.next()?.parse().unwrap_or(0),
+                message: fields.next().unwrap_or_default().to_owned(),
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_blame_porcelain_reusing_commit_metadata() {
+        let raw = "\
+aaaa 1 1 2
+author Ada
+author-time 1700000000
+summary Primo
+filename a.txt
+\tuno
+aaaa 2 2
+\tdue
+0000000000000000000000000000000000000000 3 3 1
+author Not Committed Yet
+author-time 1800000000
+summary Version of a.txt from a.txt
+\ttre
+";
+        let lines = parse_blame(raw);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[1], BlameLine { hash: "aaaa".into(), author: "Ada".into(), timestamp: 1700000000, summary: "Primo".into() });
+        assert_eq!(lines[2].author, "Non committato");
+    }
+
+    #[test]
+    fn parses_stash_list() {
+        let raw = "stash@{0}\x001700000000\x00On main: prova\nstash@{1}\x001600000000\x00WIP on main: abc\n";
+        let stashes = parse_stashes(raw);
+        assert_eq!(stashes[0], Stash { name: "stash@{0}".into(), timestamp: 1700000000, message: "On main: prova".into() });
+        assert_eq!(stashes.len(), 2);
+    }
 
     #[test]
     fn parses_porcelain_v2_status() {

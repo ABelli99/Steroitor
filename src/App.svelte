@@ -10,7 +10,9 @@
   import { diffState } from "./lib/git/selection.svelte";
   import { vcsMenuItems } from "./lib/git/vcsMenu";
   import { showPanel } from "./lib/ui/panels";
-  import ContextMenu from "./lib/ui/ContextMenu.svelte";
+  import ContextMenu, { type MenuItem } from "./lib/ui/ContextMenu.svelte";
+  import type { Entry } from "./lib/backend";
+  import { isInsideDir, samePath } from "./lib/workspace/files";
   import { installShortcuts } from "./lib/shortcuts";
   import { Workspace } from "./lib/workspace/workspace.svelte";
   import { FileTree } from "./lib/explorer/tree.svelte";
@@ -32,7 +34,7 @@
   const actions = new ExplorerActions(tree, workspace);
   let quickOpen = $state(false);
   let git = $state<GitRepo | null>(null);
-  let vcsMenu = $state<{ x: number; y: number } | null>(null);
+  let menu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const appWindow = getCurrentWindow();
 
   $effect(() => {
@@ -67,7 +69,33 @@
     await repo.refresh();
   }
 
-  const openVcsMenu = (x = 8, y = window.innerHeight - 28) => (vcsMenu = { x, y });
+  function openVcsMenu(x = 8, y = window.innerHeight - 28) {
+    if (!git) return;
+    const open = (items: MenuItem[]) => (menu = { x, y, items });
+    open(vcsMenuItems(git, { openCommit: () => showPanel("commit", "#commit-message"), open }));
+  }
+
+  function blameItem(tabId: string, path: string): MenuItem[] {
+    if (!git || !isInsideDir(path, git.root)) return [];
+    const active = git.annotated.has(tabId);
+    return [{ label: active ? "Chiudi annotazioni" : "Annotate con Git Blame", run: () => git?.toggleBlame(tabId, path) }];
+  }
+
+  function openGutterMenu(event: MouseEvent) {
+    const tab = workspace.active;
+    const items = tab?.path ? blameItem(tab.id, tab.path) : [];
+    if (items.length) menu = { x: event.clientX, y: event.clientY, items };
+  }
+
+  function explorerGitItems(entry: Entry): MenuItem[] {
+    if (!git || entry.isDir || !isInsideDir(entry.path, git.root)) return [];
+    const annotate = async () => {
+      await workspace.openPath(entry.path);
+      const tab = workspace.tabs.find((candidate) => candidate.path && samePath(candidate.path, entry.path));
+      if (tab && !git?.annotated.has(tab.id)) git?.toggleBlame(tab.id, entry.path);
+    };
+    return [{ label: "Annotate con Git Blame", run: annotate, separatorBefore: true }];
+  }
 
   function closeQuickOpen() {
     quickOpen = false;
@@ -130,7 +158,9 @@
   <div class="main">
     {#if layout.explorerVisible}
       <div class="explorer" style:width="{layout.explorerWidth}px">
-        <Explorer {tree} {workspace} {actions} onopenfolder={openFolder} statusOf={git ? (path) => git!.statusOf(path) : undefined} />
+        <Explorer {tree} {workspace} {actions} onopenfolder={openFolder} statusOf={git ? (path) => git!.statusOf(path) : undefined}
+          extraItems={explorerGitItems}
+        />
       </div>
       <Splitter
         direction="horizontal"
@@ -140,7 +170,7 @@
     {/if}
     <div class="center">
       <TabBar {workspace} />
-      <Editor {workspace} />
+      <Editor {workspace} ongutterMenu={openGutterMenu} />
     </div>
   </div>
   {#if layout.panelVisible}
@@ -161,13 +191,8 @@
 {/if}
 <PromptDialog />
 
-{#if vcsMenu && git}
-  <ContextMenu
-    x={vcsMenu.x}
-    y={vcsMenu.y}
-    items={vcsMenuItems(git, { openCommit: () => showPanel("commit", "#commit-message") })}
-    onclose={() => (vcsMenu = null)}
-  />
+{#if menu}
+  <ContextMenu x={menu.x} y={menu.y} items={menu.items} onclose={() => (menu = null)} />
 {/if}
 
 {#if diffState.request && git}

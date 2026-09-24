@@ -21,6 +21,9 @@
     <button class="vcs" title="Branch e operazioni Git (Alt+`)" onclick={onvcsmenu}>
       ⎇ {branchLabel}{#if branch.ahead} ↑{branch.ahead}{/if}{#if branch.behind} ↓{branch.behind}{/if}
     </button>
+    {#if git?.operation}
+      <span class="operation">{git.operation.toUpperCase()}{#if git.conflicts} · {git.conflicts} conflitti{/if}</span>
+    {/if}
     {#if git?.busy}<span class="busy">{git.busy}…</span>{/if}
   {/if}
   <span class="spacer"></span>
@@ -64,6 +67,11 @@
 
   .busy {
     color: var(--accent);
+  }
+
+  .operation {
+    color: var(--danger);
+    font-weight: 600;
   }
 
   .vcs {

@@ -13,9 +13,11 @@
     actions: ExplorerActions;
     onopenfolder: () => void;
     statusOf?: (path: string) => FileStatus | null;
+    /** Voci aggiuntive del context menu (es. Annotate quando c'è un repository). */
+    extraItems?: (entry: Entry) => MenuItem[];
   }
 
-  let { tree, workspace, actions, onopenfolder, statusOf }: Props = $props();
+  let { tree, workspace, actions, onopenfolder, statusOf, extraItems }: Props = $props();
 
   const ROW_HEIGHT = 22;
   const OVERSCAN = 10;
@@ -104,6 +106,7 @@
       { label: "Copia percorso", run: () => actions.copyPath(path) },
     );
     if (!entry) items.push({ label: "Aggiorna", run: () => tree.refresh(), separatorBefore: true });
+    if (entry && extraItems) items.push(...extraItems(entry));
     return items;
   }
 </script>

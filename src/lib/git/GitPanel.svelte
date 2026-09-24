@@ -1,23 +1,42 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { gitLog, type Commit } from "./api";
+  import ContextMenu, { type MenuItem } from "../ui/ContextMenu.svelte";
+  import { gitLog, type Branch, type Commit } from "./api";
   import { absoluteTime, refLabel, relativeTime } from "./format";
+  import { layoutGraph } from "./graph";
   import type { GitRepo } from "./repo.svelte";
   import { diffState, gitSelection } from "./selection.svelte";
 
   let { repo }: { repo: GitRepo } = $props();
 
   const PAGE_SIZE = 200;
+  const FILTER_DELAY_MS = 300;
+  const ROW_HEIGHT = 22;
+  const LANE_WIDTH = 12;
+  const MAX_LANES = 12;
+  const LANE_COLORS = ["#4f8cf7", "#e5a50a", "#2ea043", "#d2527f", "#8b6cf6", "#1fb5b5", "#e0663a"];
 
   let reference = $state<string | null>(null);
+  let text = $state("");
+  let author = $state("");
+  let path = $state("");
+  let filters = $state({ text: "", author: "", path: "" });
   let commits = $state.raw<Commit[]>([]);
   let selected = $state<Commit | null>(null);
   let loading = $state(false);
   let complete = $state(false);
   let error = $state<string | null>(null);
+  let menu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
 
   const local = $derived(repo.branches.filter((branch) => !branch.remote));
   const remote = $derived(repo.branches.filter((branch) => branch.remote));
+  const filtered = $derived(Boolean(filters.text || filters.author || filters.path));
+  const graph = $derived(filtered ? [] : layoutGraph(commits));
+  const lanes = $derived(Math.min(MAX_LANES, Math.max(1, ...graph.map((row) => row.width))));
+  const current = $derived(repo.branch?.head ?? null);
+
+  const x = (lane: number) => lane * LANE_WIDTH + LANE_WIDTH / 2;
+  const color = (index: number) => LANE_COLORS[index % LANE_COLORS.length];
 
   let generation = 0;
 
@@ -26,8 +45,17 @@
   });
 
   $effect(() => {
+    const next = { text: text.trim(), author: author.trim(), path: path.trim() };
+    const unchanged = untrack(() => next.text === filters.text && next.author === filters.author && next.path === filters.path);
+    if (unchanged) return;
+    const timer = setTimeout(() => (filters = next), FILTER_DELAY_MS);
+    return () => clearTimeout(timer);
+  });
+
+  $effect(() => {
     repo.revision;
     reference;
+    filters;
     untrack(reload);
   });
 
@@ -42,18 +70,18 @@
 
   async function loadMore() {
     if (loading || complete) return;
-    const current = generation;
+    const requested = generation;
     loading = true;
     try {
-      const page = await gitLog(repo.root, reference, commits.length, PAGE_SIZE);
-      if (current !== generation) return;
+      const page = await gitLog(repo.root, { reference, ...filters }, commits.length, PAGE_SIZE);
+      if (requested !== generation) return;
       commits = [...commits, ...page];
       complete = page.length < PAGE_SIZE;
       error = null;
     } catch (failure) {
-      if (current === generation) error = String(failure);
+      if (requested === generation) error = String(failure);
     } finally {
-      if (current === generation) loading = false;
+      if (requested === generation) loading = false;
     }
   }
 
@@ -70,6 +98,45 @@
     selected = commits[Math.min(Math.max(index + step, 0), commits.length - 1)];
     document.getElementById(`commit-${selected.hash}`)?.scrollIntoView({ block: "nearest" });
   }
+
+  function commitMenu(event: MouseEvent, commit: Commit) {
+    event.preventDefault();
+    selected = commit;
+    const history = repo.history;
+    const target = current ? `"${current}"` : "HEAD";
+    menu = {
+      x: event.clientX,
+      y: event.clientY,
+      items: [
+        { label: "Copia commit ID", run: () => navigator.clipboard.writeText(commit.hash) },
+        { label: "Mostra modifiche", hint: "Ctrl+D", run: () => (diffState.request = { kind: "commit", hash: commit.hash }) },
+        { label: "Checkout (detached)", run: () => history.checkoutCommit(commit.hash), separatorBefore: true },
+        { label: "Nuovo branch da qui…", run: () => history.branchFrom(commit.hash) },
+        { label: "Crea tag…", run: () => history.tag(commit.hash) },
+        { label: "Cherry-pick", run: () => history.cherryPick(commit.hash), separatorBefore: true },
+        { label: "Revert", run: () => history.revert(commit.hash) },
+        { label: `Reset ${target} qui`, disabled: true, separatorBefore: true, run: () => {} },
+        { label: "Soft (tiene le modifiche in stage)", run: () => history.reset(commit.hash, "soft") },
+        { label: "Mixed (tiene le modifiche, fuori stage)", run: () => history.reset(commit.hash, "mixed") },
+        { label: "Hard (scarta tutto)…", danger: true, run: () => history.reset(commit.hash, "hard") },
+      ],
+    };
+  }
+
+  function branchMenu(event: MouseEvent, branch: Branch) {
+    event.preventDefault();
+    const history = repo.history;
+    const items: MenuItem[] = [{ label: "Mostra log", run: () => (reference = branch.name) }];
+    if (!branch.current) {
+      items.push(
+        { label: "Checkout", run: () => repo.checkout(branch), separatorBefore: true },
+        { label: `Merge in ${current ?? "HEAD"}`, run: () => history.merge(branch.name) },
+        { label: `Rebase ${current ?? "HEAD"} su ${branch.name}`, run: () => history.rebase(branch.name) },
+      );
+    }
+    items.push({ label: "Nuovo branch da qui…", run: () => history.branchFrom(branch.name), separatorBefore: true });
+    menu = { x: event.clientX, y: event.clientY, items };
+  }
 </script>
 
 <div class="git">
@@ -78,7 +145,13 @@
     {#if local.length}
       <h4>Locali</h4>
       {#each local as branch (branch.name)}
-        <button class:active={reference === branch.name} class:current={branch.current} title={branch.upstream ? `→ ${branch.upstream}` : branch.name} onclick={() => (reference = branch.name)}>
+        <button
+          class:active={reference === branch.name}
+          class:current={branch.current}
+          title={branch.upstream ? `→ ${branch.upstream}` : branch.name}
+          onclick={() => (reference = branch.name)}
+          oncontextmenu={(e) => branchMenu(e, branch)}
+        >
           {branch.name}
         </button>
       {/each}
@@ -86,38 +159,66 @@
     {#if remote.length}
       <h4>Remoti</h4>
       {#each remote as branch (branch.name)}
-        <button class:active={reference === branch.name} onclick={() => (reference = branch.name)}>{branch.name}</button>
+        <button class:active={reference === branch.name} onclick={() => (reference = branch.name)} oncontextmenu={(e) => branchMenu(e, branch)}>
+          {branch.name}
+        </button>
       {/each}
     {/if}
   </nav>
 
-  <div class="log" role="grid" tabindex="0" onscroll={onScroll} onkeydown={onKeyDown}>
-    {#each commits as commit (commit.hash)}
-      <div
-        id="commit-{commit.hash}"
-        class="commit"
-        class:selected={selected === commit}
-        role="row"
-        tabindex="-1"
-        onclick={() => (selected = commit)}
-        ondblclick={() => (diffState.request = { kind: "commit", hash: commit.hash })}
-        onkeydown={() => {}}
-      >
-        <span class="hash">{commit.shortHash}</span>
-        <span class="subject">
-          {#each commit.refs as ref (ref)}
-            {@const decoration = refLabel(ref)}
-            <span class="ref {decoration.kind}">{decoration.label}</span>
-          {/each}
-          {commit.subject}
-        </span>
-        <span class="author" title={commit.email}>{commit.author}</span>
-        <span class="date" title={absoluteTime(commit.timestamp)}>{relativeTime(commit.timestamp)}</span>
-      </div>
-    {:else}
-      <p class="empty">{error ?? (loading ? "Caricamento…" : "Nessun commit.")}</p>
-    {/each}
-    {#if loading && commits.length}<p class="empty">Caricamento…</p>{/if}
+  <div class="main">
+    <div class="filters">
+      <input placeholder="Testo nel messaggio" bind:value={text} spellcheck="false" />
+      <input placeholder="Autore" bind:value={author} spellcheck="false" />
+      <input placeholder="Path (es. src/)" bind:value={path} spellcheck="false" />
+      {#if filtered}<span class="note">grafo nascosto con i filtri</span>{/if}
+    </div>
+
+    <div class="log" role="grid" tabindex="0" onscroll={onScroll} onkeydown={onKeyDown}>
+      {#each commits as commit, index (commit.hash)}
+        {@const row = graph[index]}
+        <div
+          id="commit-{commit.hash}"
+          class="commit"
+          class:selected={selected === commit}
+          role="row"
+          tabindex="-1"
+          style:grid-template-columns="{filtered ? '' : `${lanes * LANE_WIDTH}px `}64px 1fr 140px 110px"
+          onclick={() => (selected = commit)}
+          ondblclick={() => (diffState.request = { kind: "commit", hash: commit.hash })}
+          oncontextmenu={(e) => commitMenu(e, commit)}
+          onkeydown={() => {}}
+        >
+          {#if row}
+            <svg class="graph" width={lanes * LANE_WIDTH} height={ROW_HEIGHT} aria-hidden="true">
+              {#each row.segments as segment, s (s)}
+                <line
+                  x1={x(segment.from)}
+                  y1={segment.half === "top" ? 0 : ROW_HEIGHT / 2}
+                  x2={x(segment.to)}
+                  y2={segment.half === "top" ? ROW_HEIGHT / 2 : ROW_HEIGHT}
+                  stroke={color(segment.color)}
+                />
+              {/each}
+              <circle cx={x(row.lane)} cy={ROW_HEIGHT / 2} r={commit.parents.length > 1 ? 4 : 3.5} fill={color(row.color)} />
+            </svg>
+          {/if}
+          <span class="hash">{commit.shortHash}</span>
+          <span class="subject">
+            {#each commit.refs as ref (ref)}
+              {@const decoration = refLabel(ref)}
+              <span class="ref {decoration.kind}">{decoration.label}</span>
+            {/each}
+            {commit.subject}
+          </span>
+          <span class="author" title={commit.email}>{commit.author}</span>
+          <span class="date" title={absoluteTime(commit.timestamp)}>{relativeTime(commit.timestamp)}</span>
+        </div>
+      {:else}
+        <p class="empty">{error ?? (loading ? "Caricamento…" : "Nessun commit.")}</p>
+      {/each}
+      {#if loading && commits.length}<p class="empty">Caricamento…</p>{/if}
+    </div>
   </div>
 
   {#if selected}
@@ -139,6 +240,10 @@
     </aside>
   {/if}
 </div>
+
+{#if menu}
+  <ContextMenu x={menu.x} y={menu.y} items={menu.items} onclose={() => (menu = null)} />
+{/if}
 
 <style>
   .git {
@@ -182,18 +287,54 @@
     color: var(--fg-muted);
   }
 
-  .log {
+  .main {
+    display: flex;
+    flex-direction: column;
     flex: 1;
     min-width: 0;
+  }
+
+  .filters {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .filters input {
+    width: 150px;
+    font: inherit;
+    color: var(--fg);
+    background: var(--editor-bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 2px 6px;
+    outline: none;
+  }
+
+  .filters input:focus {
+    border-color: var(--accent);
+  }
+
+  .note {
+    color: var(--fg-muted);
+  }
+
+  .log {
+    flex: 1;
+    min-height: 0;
     overflow: auto;
     outline: none;
   }
 
   .commit {
     display: grid;
-    grid-template-columns: 64px 1fr 140px 110px;
+    align-items: center;
     gap: 10px;
-    padding: 2px 8px;
+    height: 22px;
+    padding: 0 8px;
     white-space: nowrap;
     cursor: pointer;
   }
@@ -204,6 +345,15 @@
 
   .commit.selected {
     background: var(--selection);
+  }
+
+  .graph {
+    display: block;
+    overflow: hidden;
+  }
+
+  .graph line {
+    stroke-width: 1.5;
   }
 
   .hash,
@@ -230,6 +380,7 @@
     padding: 0 5px;
     border-radius: 3px;
     font-size: 11px;
+    line-height: 16px;
     border: 1px solid var(--border);
   }
 

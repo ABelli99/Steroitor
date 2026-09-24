@@ -1,6 +1,7 @@
 use tauri::AppHandle;
 
-use super::parse::{Branch, Commit, RepoStatus};
+use super::history::{LogFilter, ResetMode};
+use super::parse::{BlameLine, Branch, Commit, RepoStatus, Stash};
 use super::runner::Git;
 use crate::files::TextFile;
 
@@ -30,8 +31,8 @@ pub async fn git_branches(app: AppHandle, root: String) -> Result<Vec<Branch>, S
 }
 
 #[tauri::command]
-pub async fn git_log(app: AppHandle, root: String, reference: Option<String>, skip: u32, limit: u32) -> Result<Vec<Commit>, String> {
-    with_git(app, move |git| git.log(&root, reference.as_deref(), skip, limit)).await
+pub async fn git_log(app: AppHandle, root: String, filter: LogFilter, skip: u32, limit: u32) -> Result<Vec<Commit>, String> {
+    with_git(app, move |git| git.log_filtered(&root, &filter, skip, limit)).await
 }
 
 #[tauri::command]
@@ -80,11 +81,96 @@ pub async fn git_switch(app: AppHandle, root: String, branch: String, remote: bo
 }
 
 #[tauri::command]
-pub async fn git_create_branch(app: AppHandle, root: String, name: String, checkout: bool) -> Result<(), String> {
-    with_git(app, move |git| git.create_branch(&root, &name, checkout)).await
+pub async fn git_create_branch(app: AppHandle, root: String, name: String, checkout: bool, start: Option<String>) -> Result<(), String> {
+    with_git(app, move |git| git.create_branch(&root, &name, checkout, start.as_deref())).await
 }
 
 #[tauri::command]
 pub async fn git_staged_crlf_files(app: AppHandle, root: String) -> Result<Vec<String>, String> {
     with_git(app, move |git| git.staged_crlf_files(&root)).await
+}
+
+#[tauri::command]
+pub async fn git_continue_operation(app: AppHandle, root: String) -> Result<(), String> {
+    with_git(app, move |git| git.continue_operation(&root)).await
+}
+
+#[tauri::command]
+pub async fn git_abort_operation(app: AppHandle, root: String) -> Result<(), String> {
+    with_git(app, move |git| git.abort_operation(&root)).await
+}
+
+#[tauri::command]
+pub async fn git_checkout_commit(app: AppHandle, root: String, hash: String) -> Result<(), String> {
+    with_git(app, move |git| git.checkout_commit(&root, &hash)).await
+}
+
+#[tauri::command]
+pub async fn git_cherry_pick(app: AppHandle, root: String, hash: String) -> Result<(), String> {
+    with_git(app, move |git| git.cherry_pick(&root, &hash)).await
+}
+
+#[tauri::command]
+pub async fn git_revert(app: AppHandle, root: String, hash: String) -> Result<(), String> {
+    with_git(app, move |git| git.revert(&root, &hash)).await
+}
+
+#[tauri::command]
+pub async fn git_reset(app: AppHandle, root: String, hash: String, mode: ResetMode) -> Result<(), String> {
+    with_git(app, move |git| git.reset(&root, &hash, mode)).await
+}
+
+#[tauri::command]
+pub async fn git_create_tag(app: AppHandle, root: String, name: String, hash: String) -> Result<(), String> {
+    with_git(app, move |git| git.create_tag(&root, &name, &hash)).await
+}
+
+#[tauri::command]
+pub async fn git_merge(app: AppHandle, root: String, branch: String) -> Result<(), String> {
+    with_git(app, move |git| git.merge(&root, &branch)).await
+}
+
+#[tauri::command]
+pub async fn git_rebase(app: AppHandle, root: String, onto: String) -> Result<(), String> {
+    with_git(app, move |git| git.rebase(&root, &onto)).await
+}
+
+#[tauri::command]
+pub async fn git_stash_push(app: AppHandle, root: String, message: String) -> Result<(), String> {
+    with_git(app, move |git| git.stash_push(&root, &message)).await
+}
+
+#[tauri::command]
+pub async fn git_stash_pop(app: AppHandle, root: String, name: String) -> Result<(), String> {
+    with_git(app, move |git| git.stash_pop(&root, &name)).await
+}
+
+#[tauri::command]
+pub async fn git_stash_drop(app: AppHandle, root: String, name: String) -> Result<(), String> {
+    with_git(app, move |git| git.stash_drop(&root, &name)).await
+}
+
+#[tauri::command]
+pub async fn git_amend(app: AppHandle, root: String, message: String) -> Result<(), String> {
+    with_git(app, move |git| git.amend(&root, &message)).await
+}
+
+#[tauri::command]
+pub async fn git_blame(app: AppHandle, root: String, path: String) -> Result<Vec<BlameLine>, String> {
+    with_git(app, move |git| git.blame(&root, &path)).await
+}
+
+#[tauri::command]
+pub async fn git_last_commit_message(app: AppHandle, root: String) -> Result<String, String> {
+    with_git(app, move |git| git.last_commit_message(&root)).await
+}
+
+#[tauri::command]
+pub async fn git_head_is_pushed(app: AppHandle, root: String) -> Result<bool, String> {
+    with_git(app, move |git| git.head_is_pushed(&root)).await
+}
+
+#[tauri::command]
+pub async fn git_stashes(app: AppHandle, root: String) -> Result<Vec<Stash>, String> {
+    with_git(app, move |git| git.stashes(&root)).await
 }
