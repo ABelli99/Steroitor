@@ -35,7 +35,7 @@
 
   function activate(row: Row) {
     tree.selected = row.entry.path;
-    if (row.entry.isDir) tree.toggle(row.entry.path);
+    if (row.entry.isDir) tree.toggle(row.head);
     else workspace.openPath(row.entry.path);
   }
 
@@ -64,11 +64,11 @@
       ArrowRight: () => {
         if (!row?.entry.isDir) return;
         if (row.expanded) select(selectedIndex + 1);
-        else tree.expand(row.entry.path);
+        else tree.expand(row.head);
       },
       ArrowLeft: () => {
         if (!row) return;
-        if (row.expanded) tree.collapse(row.entry.path);
+        if (row.expanded) tree.collapse(row.head);
         else select(parentIndex(selectedIndex));
       },
       Enter: () => row && activate(row),
@@ -152,7 +152,7 @@
             oncontextmenu={(e) => openMenu(e, row.entry)}
           >
             <span class="chevron">{row.entry.isDir ? (row.expanded ? "▾" : "▸") : ""}</span>
-            <span class="name git-{statusOf?.(row.entry.path) ?? "clean"}" class:dir={row.entry.isDir}>{row.entry.name}</span>
+            <span class="name git-{statusOf?.(row.entry.path) ?? "clean"}" class:dir={row.entry.isDir}>{row.label}</span>
           </div>
         {/each}
       </div>

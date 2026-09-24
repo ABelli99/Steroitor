@@ -31,6 +31,16 @@ class Terminals {
     return id;
   }
 
+  /** Cambio di cartella: chiude tutti i terminali e, se ce n'erano, ne riapre uno solo in `cwd`. */
+  async relocate(cwd: string | null) {
+    if (!this.sessions.length) return;
+    const showingTerminal = this.activeId !== null;
+    for (const session of [...this.sessions]) this.close(session.id);
+    this.#count = 0;
+    await this.open(cwd);
+    if (!showingTerminal) this.activeId = null;
+  }
+
   attach(id: number, sink: Sink) {
     this.#sinks.set(id, sink);
     for (const chunk of this.#pending.get(id) ?? []) sink(chunk);

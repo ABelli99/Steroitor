@@ -12,6 +12,7 @@
   import { showPanel } from "./lib/ui/panels";
   import { closeMenu, menuState, openMenu } from "./lib/ui/menu.svelte";
   import { track } from "./lib/ui/activity.svelte";
+  import { terminals } from "./lib/terminal/terminals.svelte";
   import { gitClone, gitInit, repoNameFromUrl } from "./lib/git/clone";
   import { message } from "@tauri-apps/plugin-dialog";
   import { askText } from "./lib/ui/prompt.svelte";
@@ -57,6 +58,7 @@
     if (!folder) return;
     await tree.open(folder);
     await connectRepo(folder);
+    terminals.relocate(git?.root ?? folder).catch(console.error);
     layout.explorerVisible = true;
     saveLayout();
   }

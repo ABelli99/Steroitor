@@ -3,10 +3,17 @@ import { listDir, listFiles, watchFolder, type Entry } from "../backend";
 import { fileName, isInsideDir as isInside } from "../workspace/files";
 
 export interface Row {
+  /** Elemento su cui agiscono le azioni: in una catena compattata è l'ultima cartella. */
   entry: Entry;
+  /** Prima cartella della catena: è quella che si espande o comprime. */
+  head: string;
+  /** Nome mostrato, es. "dir1/dir2" per una catena compattata. */
+  label: string;
   depth: number;
   expanded: boolean;
 }
+
+const MAX_CHAIN = 32;
 
 export interface TreeSnapshot {
   folder: string | null;
@@ -52,10 +59,15 @@ export class FileTree {
     return this.expand(dir);
   }
 
+  /** Espande `dir` e, se contiene solo una cartella, anche quella: la catena si compatta in una riga. */
   async expand(dir: string) {
     if (dir === this.root) return;
-    if (!this.#children.has(dir) && !(await this.#load(dir))) return;
-    this.#expanded.add(dir);
+    let current: string | undefined = dir;
+    for (let step = 0; current && step < MAX_CHAIN; step++) {
+      if (!this.#children.has(current) && !(await this.#load(current))) break;
+      this.#expanded.add(current);
+      current = this.#onlyDir(current)?.path;
+    }
     this.#emitChange();
   }
 
@@ -106,13 +118,27 @@ export class FileTree {
     for (const key of [...this.#expanded]) if (isInside(key, dir)) this.#expanded.delete(key);
   }
 
+  #onlyDir(dir: string): Entry | null {
+    const children = this.#children.get(dir);
+    return children?.length === 1 && children[0].isDir ? children[0] : null;
+  }
+
   #flatten(): Row[] {
     const rows: Row[] = [];
     const walk = (dir: string, depth: number) => {
       for (const entry of this.#children.get(dir) ?? []) {
-        const expanded = entry.isDir && this.#expanded.has(entry.path);
-        rows.push({ entry, depth, expanded });
-        if (expanded) walk(entry.path, depth + 1);
+        if (!entry.isDir || !this.#expanded.has(entry.path)) {
+          rows.push({ entry, head: entry.path, label: entry.name, depth, expanded: false });
+          continue;
+        }
+        let tail = entry;
+        const names = [entry.name];
+        for (let next = this.#onlyDir(tail.path); next && this.#expanded.has(next.path) && names.length < MAX_CHAIN; next = this.#onlyDir(tail.path)) {
+          names.push(next.name);
+          tail = next;
+        }
+        rows.push({ entry: tail, head: entry.path, label: names.join("/"), depth, expanded: true });
+        walk(tail.path, depth + 1);
       }
     };
     if (this.root) walk(this.root, 0);
