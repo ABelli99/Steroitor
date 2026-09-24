@@ -1,13 +1,27 @@
 <script lang="ts">
   import { languageName } from "../editor/languages";
   import { eolLabel } from "../workspace/files";
+  import type { GitRepo } from "../git/repo.svelte";
   import type { Workspace } from "../workspace/workspace.svelte";
 
-  let { workspace }: { workspace: Workspace } = $props();
+  interface Props {
+    workspace: Workspace;
+    git: GitRepo | null;
+    onshowgit: () => void;
+  }
+
+  let { workspace, git, onshowgit }: Props = $props();
   const tab = $derived(workspace.active);
+  const branch = $derived(git?.branch ?? null);
+  const branchLabel = $derived(branch ? (branch.head ?? `HEAD staccato (${branch.oid?.slice(0, 7) ?? "?"})`) : null);
 </script>
 
 <footer class="status">
+  {#if branch}
+    <button class="vcs" title={branch.upstream ? `Upstream: ${branch.upstream}` : "Nessun upstream"} onclick={onshowgit}>
+      ⎇ {branchLabel}{#if branch.ahead} ↑{branch.ahead}{/if}{#if branch.behind} ↓{branch.behind}{/if}
+    </button>
+  {/if}
   <span class="spacer"></span>
   {#if tab}
     <span>
@@ -45,6 +59,10 @@
 
   .spacer {
     flex: 1;
+  }
+
+  .vcs {
+    color: var(--fg);
   }
 
   .on {

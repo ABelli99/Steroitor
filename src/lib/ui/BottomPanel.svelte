@@ -1,5 +1,9 @@
 <script lang="ts">
+  import type { GitRepo } from "../git/repo.svelte";
+  import ConsolePanel from "./ConsolePanel.svelte";
   import { layout, saveLayout } from "./layout.svelte";
+
+  let { git }: { git: GitRepo | null } = $props();
 
   const tabs = [
     { id: "console", label: "Console" },
@@ -20,11 +24,15 @@
       </button>
     {/each}
   </div>
-  <div class="content" tabindex="-1" data-shortcut-context={layout.panelTab === "git" ? "git" : "editor"}>
+  <div class="content" tabindex="-1" data-panel-content data-shortcut-context={layout.panelTab === "git" ? "git" : "editor"}>
     {#if layout.panelTab === "console"}
-      <p class="empty">Nessun comando eseguito.</p>
+      <ConsolePanel />
+    {:else if git}
+      {#await import("../git/GitPanel.svelte") then { default: GitPanel }}
+        <GitPanel repo={git} />
+      {/await}
     {:else}
-      <p class="empty">Nessun repository Git rilevato.</p>
+      <p class="empty">Nessun repository Git nella cartella aperta.</p>
     {/if}
   </div>
 </section>
@@ -53,8 +61,8 @@
 
   .content {
     flex: 1;
-    overflow: auto;
-    padding: 8px 12px;
+    min-height: 0;
+    overflow: hidden;
     font-family: var(--mono);
     font-size: 12px;
     user-select: text;
@@ -62,7 +70,7 @@
   }
 
   .empty {
-    margin: 0;
+    margin: 8px 12px;
     color: var(--fg-muted);
   }
 </style>

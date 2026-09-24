@@ -4,6 +4,7 @@
   import type { FileTree, Row } from "../explorer/tree.svelte";
   import { samePath } from "../workspace/files";
   import type { Workspace } from "../workspace/workspace.svelte";
+  import type { FileStatus } from "../git/api";
   import ContextMenu, { type MenuItem } from "./ContextMenu.svelte";
 
   interface Props {
@@ -11,9 +12,10 @@
     workspace: Workspace;
     actions: ExplorerActions;
     onopenfolder: () => void;
+    statusOf?: (path: string) => FileStatus | null;
   }
 
-  let { tree, workspace, actions, onopenfolder }: Props = $props();
+  let { tree, workspace, actions, onopenfolder, statusOf }: Props = $props();
 
   const ROW_HEIGHT = 22;
   const OVERSCAN = 10;
@@ -146,7 +148,7 @@
             oncontextmenu={(e) => openMenu(e, row.entry)}
           >
             <span class="chevron">{row.entry.isDir ? (row.expanded ? "▾" : "▸") : ""}</span>
-            <span class="name" class:dir={row.entry.isDir}>{row.entry.name}</span>
+            <span class="name git-{statusOf?.(row.entry.path) ?? "clean"}" class:dir={row.entry.isDir}>{row.entry.name}</span>
           </div>
         {/each}
       </div>
@@ -247,6 +249,23 @@
   .name {
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .git-added {
+    color: var(--git-added);
+  }
+
+  .git-modified {
+    color: var(--git-modified);
+  }
+
+  .git-untracked,
+  .git-conflict {
+    color: var(--git-untracked);
+  }
+
+  .git-ignored {
+    color: var(--git-ignored);
   }
 
   .empty {

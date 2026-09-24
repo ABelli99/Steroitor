@@ -1,5 +1,6 @@
 mod explorer;
 mod files;
+mod git;
 mod session;
 mod startup;
 mod watcher;
@@ -22,6 +23,10 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .manage(watcher::FolderWatcher::default())
+        .setup(|app| {
+            app.manage(git::GitConfig::load(app.handle()));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             explorer::list_dir,
             explorer::list_files,
@@ -32,6 +37,12 @@ pub fn run() {
             explorer::reveal_in_os,
             files::read_text_file,
             files::write_text_file,
+            git::git_version,
+            git::git_repo_root,
+            git::git_status,
+            git::git_branches,
+            git::git_log,
+            git::git_head_content,
             session::load_session,
             session::save_session,
             startup::startup_files,

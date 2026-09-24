@@ -40,3 +40,5 @@ export const deleteToTrash = (path: string) => invoke<void>("delete_to_trash", {
 export const revealInOs = (path: string) => invoke<void>("reveal_in_os", { path });
 
 export const watchFolder = (path: string | null) => invoke<void>("watch_folder", { path });
+
+export const gitRepoRoot = (path: string) => invoke<string | null>("git_repo_root", { path });

@@ -1,9 +1,9 @@
 import { EditorView, type ViewUpdate } from "@codemirror/view";
-import { EditorState, Text, type TransactionSpec } from "@codemirror/state";
+import { EditorState, Text, type Extension, type TransactionSpec } from "@codemirror/state";
 import { message, open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "../backend";
 import { detectLanguage, loadLanguage } from "../editor/languages";
-import { createState, languageSlot, wrapExtension, wrapSlot } from "../editor/setup";
+import { createState, gitSlot, languageSlot, wrapExtension, wrapSlot } from "../editor/setup";
 import { detectEol, fileName, isInsideDir, samePath, type Eol } from "./files";
 import type { SessionData, SessionTab } from "./session";
 
@@ -181,6 +181,10 @@ export class Workspace {
       this.#applyLanguage(tab, detectLanguage(tab.path));
     }
     this.#emitChange();
+  }
+
+  configureGit(id: string, extension: Extension) {
+    this.#dispatch(id, { effects: gitSlot.reconfigure(extension) });
   }
 
   setEol(eol: Eol) {

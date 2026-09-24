@@ -11,6 +11,7 @@ import { editorTheme } from "./theme";
 
 export const languageSlot = new Compartment();
 export const wrapSlot = new Compartment();
+export const gitSlot = new Compartment();
 
 export const wrapExtension = (enabled: boolean): Extension => (enabled ? EditorView.lineWrapping : []);
 
@@ -19,6 +20,7 @@ export function createState(content: string, wrap: boolean, onUpdate: (update: V
     doc: content,
     extensions: [
       lineNumbers(),
+      gitSlot.of([]),
       highlightActiveLineGutter(),
       highlightSpecialChars(),
       history(),

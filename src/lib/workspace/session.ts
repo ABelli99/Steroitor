@@ -25,7 +25,7 @@ export async function readSession(): Promise<SessionData | null> {
   const raw = await loadSession().catch(() => null);
   if (!raw) return null;
   try {
-    const data = JSON.parse(raw) as SessionData;
+    const data = JSON.parse(raw.replace(/^\uFEFF/, "")) as SessionData;
     return data.version === 1 ? data : null;
   } catch {
     return null;

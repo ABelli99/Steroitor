@@ -37,6 +37,13 @@ impl ChangeFilter {
     }
 }
 
+/// Cambi dentro .git che alterano branch, index o refs (esclusi oggetti e lock).
+fn touches_git_metadata(root: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root.join(".git")) else { return false };
+    let is_lock = path.extension().is_some_and(|extension| extension == "lock");
+    !is_lock && !relative.starts_with("objects") && !relative.starts_with("logs")
+}
+
 /// Directory il cui contenuto è cambiato: il frontend ricarica solo quelle già aperte.
 fn changed_dirs(filter: &ChangeFilter, paths: impl Iterator<Item = PathBuf>) -> Vec<String> {
     paths
@@ -58,6 +65,9 @@ pub fn watch_folder(app: AppHandle, watcher: State<FolderWatcher>, path: Option<
     let filter = ChangeFilter::new(&root);
     let mut debouncer = new_debouncer(DEBOUNCE, move |result: DebounceEventResult| {
         let Ok(events) = result else { return };
+        if events.iter().any(|event| touches_git_metadata(&filter.root, &event.path)) {
+            let _ = app.emit("git-changed", ());
+        }
         let dirs = changed_dirs(&filter, events.into_iter().map(|event| event.path));
         if !dirs.is_empty() {
             let _ = app.emit("fs-changed", dirs);
@@ -86,6 +96,18 @@ mod tests {
         assert!(!filter.is_relevant(&root.join("target").join("debug").join("app.exe")));
         assert!(!filter.is_relevant(&root.join("build.log")));
         assert!(!filter.is_relevant(Path::new("C:\\elsewhere\\file.txt")));
+    }
+
+    #[test]
+    fn detects_relevant_git_metadata_changes() {
+        let root = Path::new("C:\\repo");
+        let git = root.join(".git");
+        assert!(touches_git_metadata(root, &git.join("HEAD")));
+        assert!(touches_git_metadata(root, &git.join("index")));
+        assert!(touches_git_metadata(root, &git.join("refs").join("heads").join("main")));
+        assert!(!touches_git_metadata(root, &git.join("index.lock")));
+        assert!(!touches_git_metadata(root, &git.join("objects").join("ab").join("cdef")));
+        assert!(!touches_git_metadata(root, &root.join("src").join("HEAD")));
     }
 
     #[test]

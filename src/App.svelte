@@ -3,7 +3,9 @@
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { appReady, startupFiles } from "./lib/backend";
+  import { appReady, gitRepoRoot, startupFiles } from "./lib/backend";
+  import { listenToGitCommands } from "./lib/console/console.svelte";
+  import type { GitRepo } from "./lib/git/repo.svelte";
   import { installShortcuts } from "./lib/shortcuts";
   import { Workspace } from "./lib/workspace/workspace.svelte";
   import { FileTree } from "./lib/explorer/tree.svelte";
@@ -24,6 +26,7 @@
   const tree = new FileTree();
   const actions = new ExplorerActions(tree, workspace);
   let quickOpen = $state(false);
+  let git = $state<GitRepo | null>(null);
   const appWindow = getCurrentWindow();
 
   $effect(() => {
@@ -41,8 +44,28 @@
     const folder = await open({ directory: true });
     if (!folder) return;
     await tree.open(folder);
+    await connectRepo(folder);
     layout.explorerVisible = true;
     saveLayout();
+  }
+
+  /** Il modulo Git si carica solo se la cartella è dentro un repository. */
+  async function connectRepo(folder: string) {
+    git?.dispose();
+    git = null;
+    const root = await gitRepoRoot(folder).catch(() => null);
+    if (!root) return;
+    const { GitRepo } = await import("./lib/git/repo.svelte");
+    const repo = new GitRepo(root, workspace);
+    git = repo;
+    await repo.refresh();
+  }
+
+  function showGitPanel() {
+    layout.panelVisible = true;
+    layout.panelTab = "git";
+    saveLayout();
+    requestAnimationFrame(() => document.querySelector<HTMLElement>("[data-panel-content]")?.focus());
   }
 
   function closeQuickOpen() {
@@ -53,6 +76,7 @@
   onMount(() => {
     const session = persistSession(workspace, tree);
     const cleanups: Array<() => void> = [session.stop];
+    listenToGitCommands().then((unlisten) => cleanups.push(unlisten));
 
     cleanups.push(
       installShortcuts({
@@ -66,6 +90,7 @@
         "Ctrl+Shift+Tab": { editor: () => workspace.cycle(-1) },
         "Alt+Z": { editor: () => workspace.toggleWrap() },
         "Alt+1": { editor: toggleExplorer, git: toggleExplorer },
+        "Alt+9": { editor: showGitPanel, git: showGitPanel },
         "Ctrl+P": { editor: () => (quickOpen = !quickOpen), git: () => (quickOpen = !quickOpen) },
       }),
     );
@@ -73,14 +98,22 @@
     (async () => {
       const saved = await readSession();
       if (saved) await workspace.restore(saved);
-      if (saved?.folder) await tree.open(saved.folder, saved.expanded);
+      if (saved?.folder) {
+        await tree.open(saved.folder, saved.expanded);
+        connectRepo(saved.folder);
+      }
       for (const path of await startupFiles()) await workspace.openPath(path);
       if (workspace.tabs.length === 0) workspace.newUntitled();
       workspace.focusEditor();
       appReady();
     })();
 
-    listen<string[]>("fs-changed", (event) => tree.refresh(event.payload)).then((unlisten) => cleanups.push(unlisten));
+    listen<string[]>("fs-changed", (event) => {
+      tree.refresh(event.payload);
+      git?.scheduleStatus();
+    }).then((unlisten) => cleanups.push(unlisten));
+
+    listen("git-changed", () => git?.refresh()).then((unlisten) => cleanups.push(unlisten));
 
     listen<string[]>("open-files", async (event) => {
       for (const path of event.payload) await workspace.openPath(path);
@@ -97,7 +130,7 @@
   <div class="main">
     {#if layout.explorerVisible}
       <div class="explorer" style:width="{layout.explorerWidth}px">
-        <Explorer {tree} {workspace} {actions} onopenfolder={openFolder} />
+        <Explorer {tree} {workspace} {actions} onopenfolder={openFolder} statusOf={git ? (path) => git!.statusOf(path) : undefined} />
       </div>
       <Splitter
         direction="horizontal"
@@ -117,10 +150,10 @@
       onend={saveLayout}
     />
     <div class="bottom" style:height="{layout.panelHeight}px">
-      <BottomPanel />
+      <BottomPanel {git} />
     </div>
   {/if}
-  <StatusBar {workspace} />
+  <StatusBar {workspace} {git} onshowgit={showGitPanel} />
 </div>
 
 {#if quickOpen}

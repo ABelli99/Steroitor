@@ -31,7 +31,7 @@ Se la risposta a una delle tre è "no", va in backlog.
 Si misurano da F0 in poi (`npm run measure`, oppure `-SkipBuild` lanciando lo script direttamente).
 Una fase non è chiusa se sfora un limite.
 
-Ultima misura (F2, build release): installer 1,8 MB · RAM 73–81 MB · avvio 510–640 ms.
+Ultima misura (F3, build release): installer 1,8 MB · RAM 74–78 MB · avvio 480–610 ms.
 
 **Decisione:** WebView2 gira con `--disable-gpu` (`tauri.conf.json` → `additionalBrowserArgs`).
 Risparmia ~40 MB (processo GPU). Costo: rendering software, da tenere d'occhio su
@@ -95,7 +95,7 @@ Se l'app si fermasse qui, dovrebbe già sostituire Notepad/Notepad++ per l'uso b
 
 ---
 
-### F3 — Git in sola lettura
+### F3 — Git in sola lettura — implementata, in verifica manuale
 
 Tutto il modulo Git si carica **solo** se la cartella aperta contiene `.git`.
 
@@ -107,6 +107,11 @@ Tutto il modulo Git si carica **solo** se la cartella aperta contiene `.git`.
 - Tab **Git**: lista branch (locali + remoti) e log con commit id, data, autore, messaggio. Paginato (es. 200 commit alla volta)
 
 **Uscita:** apro un repo e vedo stato, branch e history senza aver scritto una riga di Git.
+
+Note di implementazione:
+- Path di git configurabile con `gitPath` in `%APPDATA%/it.overzoom.steroitor/settings.json` (niente UI per ora).
+- La Console nasconde di default i comandi in background riusciti (status, show, rev-parse); un checkbox li mostra.
+- Cambi a branch/index fatti da fuori (terminale) si vedono solo se `.git` è dentro la cartella aperta.
 
 ---
 

@@ -9,7 +9,7 @@ pub struct TextFile {
     bom: bool,
 }
 
-fn decode(bytes: &[u8]) -> TextFile {
+pub fn decode(bytes: &[u8]) -> TextFile {
     if let Some((encoding, bom_len)) = Encoding::for_bom(bytes) {
         let (text, _) = encoding.decode_without_bom_handling(&bytes[bom_len..]);
         return TextFile { content: text.into_owned(), encoding: encoding.name().into(), bom: true };
