@@ -138,3 +138,11 @@ export const OPERATION_LABELS: Record<Operation, string> = {
   "cherry-pick": "Cherry-pick",
   revert: "Revert",
 };
+
+export interface ConflictVersions {
+  base: string | null;
+  ours: string | null;
+  theirs: string | null;
+}
+
+export const gitConflictVersions = (root: string, path: string) => invoke<ConflictVersions>("git_conflict_versions", { root, path });

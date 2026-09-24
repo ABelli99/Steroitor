@@ -138,6 +138,7 @@
 
     listen<string[]>("fs-changed", (event) => {
       tree.refresh(event.payload);
+      workspace.reloadCleanIn(event.payload);
       git?.scheduleStatus();
     }).then((unlisten) => cleanups.push(unlisten));
 
@@ -195,7 +196,11 @@
   <ContextMenu x={menu.x} y={menu.y} items={menu.items} onclose={() => (menu = null)} />
 {/if}
 
-{#if diffState.request && git}
+{#if diffState.request?.kind === "merge" && git}
+  {#await import("./lib/git/MergeTool.svelte") then { default: MergeTool }}
+    <MergeTool repo={git} path={diffState.request.path} onclose={() => (diffState.request = null)} />
+  {/await}
+{:else if diffState.request && git}
   {#await import("./lib/git/DiffDialog.svelte") then { default: DiffDialog }}
     <DiffDialog root={git.root} request={diffState.request} onclose={() => (diffState.request = null)} />
   {/await}

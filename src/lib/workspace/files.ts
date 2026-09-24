@@ -10,6 +10,8 @@ export const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
 const normalize = (path: string) => path.replace(/\//g, "\\").toLowerCase();
 
+export const parentDir = (path: string) => path.replace(/[\\/][^\\/]*$/, "");
+
 export const samePath = (a: string, b: string) => normalize(a) === normalize(b);
 
 export function isInsideDir(path: string, dir: string) {

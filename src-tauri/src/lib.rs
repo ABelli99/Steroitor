@@ -70,6 +70,7 @@ pub fn run() {
             git::commands::git_last_commit_message,
             git::commands::git_head_is_pushed,
             git::commands::git_stashes,
+            git::commands::git_conflict_versions,
             session::load_session,
             session::save_session,
             startup::startup_files,

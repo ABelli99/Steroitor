@@ -3,7 +3,7 @@
   import { OPERATION_LABELS, type StatusEntry } from "./api";
   import DiffView from "./DiffView.svelte";
   import type { GitRepo } from "./repo.svelte";
-  import { diffState, gitSelection } from "./selection.svelte";
+  import { diffState, fileRequest, gitSelection } from "./selection.svelte";
   import { commitDraft, submitCommit } from "./commitDraft.svelte";
 
   let { repo }: { repo: GitRepo } = $props();
@@ -89,7 +89,7 @@
           aria-selected={entry === selected}
           title={entry.path}
           onclick={() => select(entry)}
-          ondblclick={() => (diffState.request = { kind: "file", file: { path: entry.path, status: entry.status } })}
+          ondblclick={() => (diffState.request = fileRequest({ path: entry.path, status: entry.status }))}
           onkeydown={() => {}}
         >
           <input
@@ -103,6 +103,15 @@
           <span class="letter git-{entry.status}">{LETTERS[entry.status] ?? "?"}</span>
           <span class="name git-{entry.status}">{fileName(entry.path)}</span>
           <span class="dir">{relativeDir(entry.path)}</span>
+          {#if entry.status === "conflict"}
+            <button
+              class="resolve"
+              onclick={(e) => {
+                e.stopPropagation();
+                diffState.request = { kind: "merge", path: entry.path };
+              }}>Risolvi…</button
+            >
+          {/if}
         </div>
       {:else}
         <p class="empty">Nessuna modifica.</p>
@@ -211,6 +220,12 @@
     width: 10px;
     font-family: var(--mono);
     font-weight: 600;
+  }
+
+  .resolve {
+    margin-left: auto;
+    padding: 0 6px;
+    color: var(--accent);
   }
 
   .dir {

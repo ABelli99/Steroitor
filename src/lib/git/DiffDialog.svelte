@@ -13,7 +13,9 @@
   let patch = $state<string[] | null>(null);
   let error = $state<string | null>(null);
 
-  const title = $derived(request.kind === "file" ? fileName(request.file.path) : `Commit ${request.hash.slice(0, 7)}`);
+  const title = $derived(
+    request.kind === "file" ? fileName(request.file.path) : request.kind === "commit" ? `Commit ${request.hash.slice(0, 7)}` : fileName(request.path),
+  );
   const lineClass = (line: string) =>
     line.startsWith("+++") || line.startsWith("---") ? "meta" : line.startsWith("+") ? "add" : line.startsWith("-") ? "del" : line.startsWith("@@") ? "hunk" : line.startsWith("diff ") ? "file" : "";
 

@@ -1,10 +1,10 @@
 import { EditorView, type ViewUpdate } from "@codemirror/view";
-import { EditorState, Text, type Extension, type TransactionSpec } from "@codemirror/state";
+import { EditorState, Text, Transaction, type Extension, type TransactionSpec } from "@codemirror/state";
 import { message, open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "../backend";
 import { detectLanguage, loadLanguage } from "../editor/languages";
 import { blameSlot, createState, gitSlot, languageSlot, wrapExtension, wrapSlot } from "../editor/setup";
-import { detectEol, fileName, isInsideDir, samePath, type Eol } from "./files";
+import { detectEol, fileName, isInsideDir, parentDir, samePath, type Eol } from "./files";
 import type { SessionData, SessionTab } from "./session";
 
 export interface Tab {
@@ -183,6 +183,20 @@ export class Workspace {
     this.#emitChange();
   }
 
+  /** Ricarica da disco le tab senza modifiche; quelle con modifiche non salvate restano intatte. */
+  async reloadClean(paths: string[]) {
+    for (const path of paths) {
+      const tab = this.tabs.find((candidate) => candidate.path && samePath(candidate.path, path));
+      if (tab && !tab.dirty) await this.#reload(tab);
+    }
+  }
+
+  /** Come `reloadClean`, per tutte le tab che stanno direttamente in una delle cartelle indicate. */
+  reloadCleanIn(dirs: string[]) {
+    const inDirs = this.tabs.filter((tab) => tab.path && dirs.some((dir) => samePath(parentDir(tab.path!), dir)));
+    return this.reloadClean(inDirs.map((tab) => tab.path!));
+  }
+
   configureGit(id: string, extension: Extension) {
     this.#dispatch(id, { effects: gitSlot.reconfigure(extension) });
   }
@@ -259,6 +273,23 @@ export class Workspace {
       eol: meta.eol,
       baseline,
     });
+  }
+
+  async #reload(tab: Tab) {
+    const file = await readTextFile(tab.path!).catch(() => null);
+    if (!file || tab.dirty) return;
+    const text = Text.of(file.content.split(/\r\n|\r|\n/));
+    const doc = this.#stateOf(tab.id).doc;
+    if (!doc.eq(text)) {
+      this.#dispatch(tab.id, {
+        changes: { from: 0, to: doc.length, insert: file.content },
+        annotations: Transaction.addToHistory.of(false),
+      });
+    }
+    const eol = detectEol(file.content, DEFAULT_EOL);
+    Object.assign(tab, { encoding: file.encoding, bom: file.bom, eol });
+    this.#baselines.set(tab.id, { text: this.#stateOf(tab.id).doc, encoding: file.encoding, bom: file.bom, eol });
+    this.#refreshDirty(tab);
   }
 
   #addTab(spec: NewTab): string {

@@ -1,8 +1,9 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use super::parse::{parse_blame, parse_log, parse_stashes, BlameLine, Commit, Operation, Stash, LOG_FORMAT, STASH_FORMAT};
 use super::runner::{repo_relative, Git};
+use crate::files::decode;
 
 #[derive(Deserialize, Default, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -19,6 +20,14 @@ pub enum ResetMode {
     Soft,
     Mixed,
     Hard,
+}
+
+/// Le tre versioni di un file in conflitto: antenato comune, nostra (HEAD) e loro.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct ConflictVersions {
+    pub base: Option<String>,
+    pub ours: Option<String>,
+    pub theirs: Option<String>,
 }
 
 const OPERATION_MARKERS: [(&str, Operation); 5] = [
@@ -130,6 +139,16 @@ impl Git {
         Ok(parse_blame(&raw))
     }
 
+    pub fn conflict_versions(&self, root: &str, path: &str) -> Result<ConflictVersions, String> {
+        let relative = repo_relative(Path::new(root), path)?;
+        let stage = |number: u8| -> Result<Option<String>, String> {
+            let spec = format!(":{number}:{relative}");
+            let output = self.run(Path::new(root), &["show", &spec], true)?;
+            Ok(output.success.then(|| decode(&output.stdout).content))
+        };
+        Ok(ConflictVersions { base: stage(1)?, ours: stage(2)?, theirs: stage(3)? })
+    }
+
     pub fn last_commit_message(&self, root: &str) -> Result<String, String> {
         self.text(Path::new(root), &["log", "-1", "--format=%B"], true).map(|message| message.trim_end().to_owned())
     }
@@ -216,6 +235,14 @@ mod tests {
         assert!(git.merge(&root, "feature").is_err());
         assert_eq!(git.operation(&root).unwrap(), Some(Operation::Merge));
         assert_eq!(status_of(&git, &root, &file).map(|s| s.0), Some(FileStatus::Conflict));
+        let versions = git.conflict_versions(&root, &file).unwrap();
+        assert_eq!(
+            versions,
+            ConflictVersions { base: Some("base
+".into()), ours: Some("main
+".into()), theirs: Some("feature
+".into()) }
+        );
 
         git.abort_operation(&root).unwrap();
         assert_eq!(git.operation(&root).unwrap(), None);

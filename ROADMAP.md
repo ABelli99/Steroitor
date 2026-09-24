@@ -31,8 +31,8 @@ Se la risposta a una delle tre è "no", va in backlog.
 Si misurano da F0 in poi (`npm run measure`, oppure `-SkipBuild` lanciando lo script direttamente).
 Una fase non è chiusa se sfora un limite.
 
-Ultima misura (F5, build release): installer 1,9 MB · RAM 75–78 MB · avvio 500–640 ms, primo avvio dopo la build 990 ms (anche con profilo WebView2 vuoto).
-Outlier: un singolo avvio da 1,3 s subito dopo una build (cache file del sistema operativo fredda), non riproducibile.
+Ultima misura (F6.1, build release): installer 1,9 MB · RAM 77–80 MB · avvio a regime 510–550 ms.
+**Rischio aperto:** il primo avvio dopo una build (cache file del sistema operativo fredda) arriva a 1,0–1,3 s, oltre il limite; a regime e con profilo WebView2 vuoto resta ~500 ms. Da ricontrollare dopo un riavvio del PC.
 
 **Decisione:** WebView2 gira con `--disable-gpu` (`tauri.conf.json` → `additionalBrowserArgs`).
 Risparmia ~40 MB (processo GPU). Costo: rendering software, da tenere d'occhio su
@@ -161,7 +161,7 @@ Note di implementazione:
 Si parte solo a roadmap completata. Ogni voce resta soggetta ai budget di performance.
 In ordine di priorità:
 
-1. Merge tool a 3 vie (Yours / Result / Theirs)
+1. ✅ Merge tool a 3 vie (Yours / Result / Theirs) — apribile da "Risolvi…" o doppio click su un file in conflitto; F7 / Shift+F7 tra i conflitti
 2. Terminale interattivo vero (xterm.js + PTY) come seconda sotto-tab della Console
 3. Commit parziale per hunk / riga, stage/rollback dal gutter
 4. Clone da URL e `git init` dall'UI

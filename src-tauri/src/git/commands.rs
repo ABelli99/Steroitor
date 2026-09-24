@@ -1,6 +1,6 @@
 use tauri::AppHandle;
 
-use super::history::{LogFilter, ResetMode};
+use super::history::{ConflictVersions, LogFilter, ResetMode};
 use super::parse::{BlameLine, Branch, Commit, RepoStatus, Stash};
 use super::runner::Git;
 use crate::files::TextFile;
@@ -173,4 +173,9 @@ pub async fn git_head_is_pushed(app: AppHandle, root: String) -> Result<bool, St
 #[tauri::command]
 pub async fn git_stashes(app: AppHandle, root: String) -> Result<Vec<Stash>, String> {
     with_git(app, move |git| git.stashes(&root)).await
+}
+
+#[tauri::command]
+pub async fn git_conflict_versions(app: AppHandle, root: String, path: String) -> Result<ConflictVersions, String> {
+    with_git(app, move |git| git.conflict_versions(&root, &path)).await
 }
