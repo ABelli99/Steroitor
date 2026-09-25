@@ -1,6 +1,6 @@
 <script lang="ts">
   import { focusProjectWindow, type ProjectWindow } from "../backend";
-  import { folderName, projects } from "./projects.svelte";
+  import { folderInitial, folderName, projects } from "./projects.svelte";
   import icon from "../../../src-tauri/icons/32x32.png";
 
   let hint = $state<{ text: string; top: number } | null>(null);
@@ -21,6 +21,7 @@
       onmouseleave={() => (hint = null)}
     >
       <img src={icon} alt="" />
+      <span class="initial">{folderInitial(window.folder)}</span>
     </button>
   {/each}
 </nav>
@@ -44,6 +45,7 @@
   }
 
   button {
+    position: relative;
     display: grid;
     place-items: center;
     width: 28px;
@@ -61,6 +63,20 @@
   img {
     width: 20px;
     height: 20px;
+  }
+
+  .initial {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    min-width: 13px;
+    padding: 0 2px;
+    border-radius: 3px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 13px;
   }
 
   .hint {
