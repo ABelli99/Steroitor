@@ -63,7 +63,10 @@ export class Workspace {
     this.#view = new EditorView({ parent });
     const active = this.activeId && this.#states.get(this.activeId);
     if (active) this.#view.setState(active);
+    const autosave = () => this.#autosave(this.activeId);
+    this.#view.contentDOM.addEventListener("blur", autosave);
     return () => {
+      this.#view?.contentDOM.removeEventListener("blur", autosave);
       this.#persistActiveState();
       this.#view?.destroy();
       this.#view = null;
@@ -151,6 +154,7 @@ export class Workspace {
   activate(id: string) {
     const target = this.#states.get(id);
     if (!target || id === this.activeId) return;
+    this.#autosave(this.activeId);
     this.#persistActiveState();
     this.activeId = id;
     this.#view?.setState(target);
@@ -339,6 +343,12 @@ export class Workspace {
       if (neighbour) this.activate(neighbour.id);
     }
     this.#emitChange();
+  }
+
+  /** Salvataggio automatico quando si lascia un file; i file senza percorso restano al salvataggio manuale. */
+  #autosave(id: string | null) {
+    const tab = this.#tab(id);
+    if (tab?.path && tab.dirty) this.#writeTo(tab, tab.path);
   }
 
   async #writeTo(tab: Tab, path: string): Promise<boolean> {

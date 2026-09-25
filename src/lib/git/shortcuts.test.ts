@@ -18,15 +18,16 @@ describe("keyOf", () => {
 });
 
 describe("gitShortcuts", () => {
-  const bindings = gitShortcuts({ repo: () => null, workspace: {} as Workspace, openVcsMenu: () => {} });
+  const bindings = gitShortcuts({ repo: () => null, workspace: {} as Workspace, openVcsMenu: () => {}, openTerminal: () => {} });
 
   it("leaves Ctrl+D to the editor (select next occurrence) outside Git panels", () => {
     expect(bindings["Ctrl+D"].git).toBeTypeOf("function");
     expect(bindings["Ctrl+D"].editor).toBeUndefined();
   });
 
-  it("uses Ctrl+T for a new tab in the editor and for Update in Git panels", () => {
+  it("uses Ctrl+T for a new terminal outside Git panels and for Update in Git panels", () => {
     expect(bindings["Ctrl+T"].editor).toBeTypeOf("function");
+    expect(bindings["Ctrl+T"].terminal).toBe(bindings["Ctrl+T"].editor);
     expect(bindings["Ctrl+T"].git).toBeTypeOf("function");
     expect(bindings["Ctrl+T"].editor).not.toBe(bindings["Ctrl+T"].git);
   });

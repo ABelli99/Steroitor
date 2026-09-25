@@ -221,7 +221,8 @@ Dopo l’abilitazione devono comparire: VCS widget, indicatori colori, tab Git p
 
 **Scorciatoie contestuali:** `Ctrl+D` e `Ctrl+T` eseguono l'azione Git solo quando il focus
 è nella tab Git o nel pannello Commit. Con il focus nell'editor (o altrove) valgono
-rispettivamente come "seleziona occorrenza successiva" e "nuova tab".
+rispettivamente come "seleziona occorrenza successiva" e "nuovo terminale" (apre una console
+e ci sposta il focus).
 
 ### Workflow tipici da supportare
 

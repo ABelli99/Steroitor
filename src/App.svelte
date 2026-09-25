@@ -28,6 +28,7 @@
   import TabBar from "./lib/ui/TabBar.svelte";
   import Editor from "./lib/ui/Editor.svelte";
   import BottomPanel from "./lib/ui/BottomPanel.svelte";
+  import { openTerminal } from "./lib/terminal/openTerminal";
   import StatusBar from "./lib/ui/StatusBar.svelte";
   import Splitter from "./lib/ui/Splitter.svelte";
   import QuickOpen from "./lib/ui/QuickOpen.svelte";
@@ -143,7 +144,12 @@
         "Alt+Z": { editor: () => workspace.toggleWrap() },
         "Alt+1": { editor: toggleExplorer, git: toggleExplorer, terminal: toggleExplorer },
         "Ctrl+P": { editor: () => (quickOpen = !quickOpen), git: () => (quickOpen = !quickOpen) },
-        ...gitShortcuts({ repo: () => git, workspace, openVcsMenu: () => openVcsMenu() }),
+        ...gitShortcuts({
+          repo: () => git,
+          workspace,
+          openVcsMenu: () => openVcsMenu(),
+          openTerminal: () => openTerminal(git?.root ?? tree.root),
+        }),
       }),
     );
 

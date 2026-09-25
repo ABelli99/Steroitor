@@ -195,7 +195,7 @@ Alcune scorciatoie cambiano significato in base a **dove si trova il focus**:
 | Scorciatoia | Focus su tab Git / Commit | Focus sull'editor (o altrove) |
 |---|---|---|
 | `Ctrl+D` | Show Diff del commit/file selezionato | Seleziona occorrenza successiva |
-| `Ctrl+T` | Update / Pull | Nuova tab |
+| `Ctrl+T` | Update / Pull | Nuovo terminale nella tab Console |
 
 Implementazione: un keymap unico con resolver per contesto (`git` | `editor`), deciso
 dal focus corrente e non dalla semplice visibilità della tab. Così con la tab Git

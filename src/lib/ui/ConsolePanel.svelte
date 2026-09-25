@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { message } from "@tauri-apps/plugin-dialog";
+  import { openTerminal } from "../terminal/openTerminal";
   import { terminals } from "../terminal/terminals.svelte";
   import GitCommandLog from "./GitCommandLog.svelte";
 
@@ -8,8 +8,8 @@
   /** null = log dei comandi Git, altrimenti l'id del terminale mostrato. */
   const showing = $derived(terminals.activeId);
 
-  async function openTerminal() {
-    await terminals.open(cwd).catch((error) => message(String(error), { title: "Terminale non disponibile", kind: "error" }));
+  function closeOnMiddleClick(event: MouseEvent, id: number) {
+    if (event.button === 1) terminals.close(id);
   }
 </script>
 
@@ -19,12 +19,18 @@
       Comandi Git
     </button>
     {#each terminals.sessions as session (session.id)}
-      <span class="subtab" class:active={showing === session.id} class:exited={session.exited}>
+      <span
+        class="subtab"
+        class:active={showing === session.id}
+        class:exited={session.exited}
+        role="presentation"
+        onauxclick={(e) => closeOnMiddleClick(e, session.id)}
+      >
         <button role="tab" aria-selected={showing === session.id} onclick={() => (terminals.activeId = session.id)}>{session.title}</button>
         <button class="close" aria-label="Chiudi {session.title}" onclick={() => terminals.close(session.id)}>×</button>
       </span>
     {/each}
-    <button class="add" title="Nuovo terminale" onclick={openTerminal}>+ Terminale</button>
+    <button class="add" title="Nuovo terminale" onclick={() => openTerminal(cwd)}>+ Terminale</button>
   </div>
 
   <div class="body">
