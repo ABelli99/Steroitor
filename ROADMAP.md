@@ -186,7 +186,7 @@ Presenti nel CLAUDE.md ma incompatibili con "notepad leggero":
 | GPG signing, protected branches, SSH built-in | Si delega a Git di sistema e alla sua config |
 | Auto-fetch | Traffico e processi in background non richiesti |
 
-**Eccezione decisa (1.2):** più progetti nella stessa finestra, come tab nella barra laterale sinistra, e
+**Eccezione decisa (1.1):** più progetti nella stessa finestra, come tab nella barra laterale sinistra, e
 trascinabili fuori in una finestra propria. Ogni progetto ha il suo watcher, il suo stato Git e i suoi
 terminali, quindi il costo è quello indicato sopra, moltiplicato per i progetti aperti. Per contenerlo, un
 progetto ripristinato all'avvio non si carica finché non lo apri. Il budget RAM vale per un progetto solo.

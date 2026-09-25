@@ -41,7 +41,7 @@
     project.start().catch(console.error);
   }
 
-  /** Prima della 1.2 la finestra aveva una sola sessione: diventa il primo progetto. */
+  /** Prima della 1.1 la finestra aveva una sola sessione: diventa il primo progetto. */
   async function initialState(): Promise<{ projects: Project[]; active: string | null }> {
     const saved = await windowState().catch(() => null);
     if (saved) return { projects: saved.projects.map((ref) => new Project(ref.id, ref.folder)), active: saved.active };

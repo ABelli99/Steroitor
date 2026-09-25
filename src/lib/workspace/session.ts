@@ -32,7 +32,7 @@ function parse(raw: string | null): SessionData | null {
   }
 }
 
-/** Sessione salvata per `folder`; prima della 1.2 ce n'era una sola, che vale ancora per la sua cartella. */
+/** Sessione salvata per `folder`; prima della 1.1 ce n'era una sola, che vale ancora per la sua cartella. */
 export async function readSession(folder: string | null): Promise<SessionData | null> {
   const saved = parse(await loadSession(folder).catch(() => null));
   if (saved || !folder) return saved;
