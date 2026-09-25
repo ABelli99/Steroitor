@@ -1,64 +1,79 @@
 import { fileName } from "../workspace/files";
+import type { GlyphName } from "./fileGlyphs";
 
-export interface FileBadge {
-  label: string;
+export interface FileIcon {
+  glyph: GlyphName;
   color: string;
-  dark?: boolean;
 }
 
-const badge = (label: string, color: string, dark = false): FileBadge => ({ label, color, dark });
+const icon = (glyph: GlyphName, color: string): FileIcon => ({ glyph, color });
 
-const javascript = badge("JS", "#e8c547", true);
-const typescript = badge("TS", "#3178c6");
-const shell = badge(">_", "#4e9a3f");
-const image = badge("IM", "#9b59b6");
-const config = badge("CF", "#6c707e");
-const markup = badge("<>", "#e0632e");
-const c = badge("C", "#5d6c8c");
-const cpp = badge("C+", "#5d6c8c");
+const muted = "var(--fg-muted)";
+const javascript = icon("code", "#d4a72c");
+const typescript = icon("code", "#3178c6");
+const react = icon("atom", "#1ba2c7");
+const python = icon("python", "");
+const shell = icon("terminal", "#4e9a3f");
+const script = icon("terminal", muted);
+const image = icon("image", "#9b59b6");
+const config = icon("sliders", muted);
+const git = icon("git", "#f05033");
+const c = icon("hexagon", "#6b7fa8");
+const cpp = icon("hexagon", "#00599c");
+const html = icon("shield", "#e0632e");
+const json = icon("braces", "#c99a2e");
+const yaml = icon("list", "#cb4b3e");
+const markdown = icon("markdown", "#4a7fc1");
+const text = icon("text", muted);
 
-const byExtension: Record<string, FileBadge> = {
+const byExtension: Record<string, FileIcon> = {
   js: javascript, mjs: javascript, cjs: javascript,
   ts: typescript, mts: typescript, cts: typescript,
-  jsx: badge("JX", "#1ba2c7"), tsx: badge("TX", "#1ba2c7"),
-  py: badge("Py", "#3572a5"), pyw: badge("Py", "#3572a5"),
-  java: badge("J", "#e76f00"),
-  kt: badge("K", "#7f52ff"), kts: badge("K", "#7f52ff"),
-  rs: badge("RS", "#b7410e"),
-  go: badge("GO", "#00add8"),
+  jsx: react, tsx: react,
+  py: python, pyw: python,
+  java: icon("cup", "#e76f00"),
+  kt: icon("kotlin", "#7f52ff"), kts: icon("kotlin", "#7f52ff"),
+  rs: icon("gear", "#b7410e"),
+  go: icon("code", "#00add8"),
   c, h: c, cpp, cc: cpp, hpp: cpp,
-  cs: badge("C#", "#68217a"),
-  rb: badge("RB", "#cc342d"),
-  php: badge("P", "#777bb3"),
-  swift: badge("SW", "#f05138"),
-  svelte: badge("S", "#ff3e00"),
-  vue: badge("V", "#41b883"),
-  html: markup, htm: markup, xml: markup, svg: badge("<>", "#d4a017", true),
-  css: badge("#", "#2965f1"), scss: badge("#", "#cd6799"), less: badge("#", "#1d365d"),
-  json: badge("{}", "#c99a2e"), jsonc: badge("{}", "#c99a2e"),
-  yml: badge("Y", "#cb4b3e"), yaml: badge("Y", "#cb4b3e"),
-  toml: badge("T", "#9c4221"), ini: config, env: config, conf: config,
-  md: badge("M", "#4a7fc1"), markdown: badge("M", "#4a7fc1"),
-  sql: badge("DB", "#336791"),
+  cs: icon("hexagon", "#9b4f96"),
+  rb: icon("gem", "#cc342d"),
+  php: icon("code", "#777bb3"),
+  swift: icon("code", "#f05138"),
+  svelte: icon("svelte", "#ff3e00"),
+  vue: icon("vue", "#41b883"),
+  html, htm: html,
+  xml: icon("brackets", "#e0632e"),
+  svg: icon("bezier", "#d4a017"),
+  css: icon("hash", "#2965f1"), scss: icon("hash", "#cd6799"), less: icon("hash", "#3d6fb0"),
+  json, jsonc: json,
+  yml: yaml, yaml,
+  toml: icon("list", "#9c4221"),
+  ini: config, env: config, conf: config,
+  md: markdown, markdown,
+  sql: icon("database", "#336791"),
   sh: shell, bash: shell, zsh: shell,
-  ps1: badge(">_", "#2671be"), bat: badge(">_", "#6c707e"), cmd: badge(">_", "#6c707e"),
+  ps1: icon("terminal", "#2671be"), bat: script, cmd: script,
   png: image, jpg: image, jpeg: image, gif: image, webp: image, ico: image, bmp: image,
-  lock: badge("LK", "#6c707e"),
+  lock: icon("lock", muted),
+  txt: text, log: text,
 };
 
-const byName: Record<string, FileBadge> = {
-  ".gitignore": badge("G", "#f05033"),
-  ".gitattributes": badge("G", "#f05033"),
-  ".gitmodules": badge("G", "#f05033"),
-  dockerfile: badge("D", "#1d63ed"),
+const byName: Record<string, FileIcon> = {
+  ".gitignore": git,
+  ".gitattributes": git,
+  ".gitmodules": git,
   ".env": config,
+  dockerfile: icon("docker", "#1d63ed"),
 };
 
-/** Badge per nome file o estensione; `null` → icona file generica. */
-export function fileBadge(path: string): FileBadge | null {
+const generic = icon("file", muted);
+
+/** Icona per nome file speciale o estensione, altrimenti quella generica. */
+export function fileIcon(path: string): FileIcon {
   const name = fileName(path).toLowerCase();
   if (byName[name]) return byName[name];
   const dot = name.lastIndexOf(".");
-  if (dot <= 0) return null;
-  return byExtension[name.slice(dot + 1)] ?? null;
+  if (dot <= 0) return generic;
+  return byExtension[name.slice(dot + 1)] ?? generic;
 }

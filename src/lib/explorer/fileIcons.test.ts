@@ -1,19 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { fileBadge } from "./fileIcons";
+import { fileIcon } from "./fileIcons";
 
-describe("fileBadge", () => {
+describe("fileIcon", () => {
   it("matches by extension, case-insensitive", () => {
-    expect(fileBadge("src/App.TS")?.label).toBe("TS");
+    expect(fileIcon("src/App.TS")).toEqual({ glyph: "code", color: "#3178c6" });
   });
 
   it("prefers special file names", () => {
-    expect(fileBadge("repo/.gitignore")?.label).toBe("G");
-    expect(fileBadge("Dockerfile")?.label).toBe("D");
+    expect(fileIcon("repo/.gitignore").glyph).toBe("git");
+    expect(fileIcon("Dockerfile").glyph).toBe("docker");
   });
 
   it("falls back to the generic icon", () => {
-    expect(fileBadge("notes.xyz")).toBeNull();
-    expect(fileBadge("README")).toBeNull();
-    expect(fileBadge(".hidden")).toBeNull();
+    expect(fileIcon("notes.xyz").glyph).toBe("file");
+    expect(fileIcon("README").glyph).toBe("file");
+    expect(fileIcon(".hidden").glyph).toBe("file");
   });
 });
