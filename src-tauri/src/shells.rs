@@ -1,6 +1,8 @@
 use portable_pty::CommandBuilder;
 use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(target_os = "windows", test))]
+use std::path::PathBuf;
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Shell {
