@@ -42,3 +42,18 @@ export const revealInOs = (path: string) => invoke<void>("reveal_in_os", { path 
 export const watchFolder = (path: string | null) => invoke<void>("watch_folder", { path });
 
 export const gitRepoRoot = (path: string) => invoke<string | null>("git_repo_root", { path });
+
+export interface ProjectWindow {
+  label: string;
+  folder: string | null;
+}
+
+export const projectWindows = () => invoke<ProjectWindow[]>("project_windows");
+
+export const windowFolder = () => invoke<string | null>("window_folder");
+
+export const setWindowFolder = (folder: string | null) => invoke<void>("set_window_folder", { folder });
+
+export const focusProjectWindow = (label: string) => invoke<void>("focus_project_window", { label });
+
+export const openProjectWindow = (folder: string) => invoke<void>("open_project_window", { folder });

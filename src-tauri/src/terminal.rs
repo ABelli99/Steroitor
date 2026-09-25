@@ -5,11 +5,12 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 use crate::shells;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{Emitter, Manager, State, WebviewWindow};
 
 const READ_BUFFER: usize = 8 * 1024;
 
 struct Session {
+    owner: String,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
@@ -19,6 +20,20 @@ struct Session {
 pub struct Terminals {
     sessions: Mutex<HashMap<u32, Session>>,
     next_id: AtomicU32,
+}
+
+impl Terminals {
+    /// Chiude le shell di una finestra che non esiste più.
+    pub fn close_owned_by(&self, label: &str) {
+        let Ok(mut sessions) = self.sessions.lock() else { return };
+        sessions.retain(|_, session| {
+            if session.owner != label {
+                return true;
+            }
+            let _ = session.killer.kill();
+            false
+        });
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -59,7 +74,7 @@ struct Spawned {
     child: Box<dyn Child + Send + Sync>,
 }
 
-fn spawn(mut command: CommandBuilder, cwd: Option<&str>, cols: u16, rows: u16) -> Result<Spawned, String> {
+fn spawn(owner: &str, mut command: CommandBuilder, cwd: Option<&str>, cols: u16, rows: u16) -> Result<Spawned, String> {
     let pair = native_pty_system()
         .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| e.to_string())?;
@@ -73,7 +88,7 @@ fn spawn(mut command: CommandBuilder, cwd: Option<&str>, cols: u16, rows: u16) -
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let killer = child.clone_killer();
-    Ok(Spawned { session: Session { master: pair.master, writer, killer }, reader, child })
+    Ok(Spawned { session: Session { owner: owner.to_owned(), master: pair.master, writer, killer }, reader, child })
 }
 
 #[derive(Serialize)]
@@ -84,7 +99,7 @@ pub struct OpenedTerminal {
 
 #[tauri::command]
 pub fn terminal_open(
-    app: AppHandle,
+    window: WebviewWindow,
     terminals: State<Terminals>,
     cwd: Option<String>,
     shell: Option<String>,
@@ -92,11 +107,14 @@ pub fn terminal_open(
     rows: u16,
 ) -> Result<OpenedTerminal, String> {
     let shell = shells::resolve(shell.as_deref())?;
-    let Spawned { session, mut reader, mut child } = spawn(shell.command(), cwd.as_deref(), cols, rows)?;
+    let Spawned { session, mut reader, mut child } = spawn(window.label(), shell.command(), cwd.as_deref(), cols, rows)?;
+    let app = window.app_handle().clone();
+    let label = window.label().to_owned();
     let id = terminals.next_id.fetch_add(1, Ordering::Relaxed) + 1;
     terminals.sessions.lock().map_err(|e| e.to_string())?.insert(id, session);
 
     let output = app.clone();
+    let output_label = label.clone();
     std::thread::spawn(move || {
         let mut chunker = Utf8Chunker::default();
         let mut buffer = [0u8; READ_BUFFER];
@@ -106,7 +124,7 @@ pub fn terminal_open(
             }
             let data = chunker.push(&buffer[..count]);
             if !data.is_empty() {
-                let _ = output.emit("terminal-output", TerminalOutput { id, data });
+                let _ = output.emit_to(output_label.as_str(), "terminal-output", TerminalOutput { id, data });
             }
         }
     });
@@ -116,7 +134,7 @@ pub fn terminal_open(
         if let Ok(mut sessions) = app.state::<Terminals>().sessions.lock() {
             sessions.remove(&id);
         }
-        let _ = app.emit("terminal-exit", TerminalExit { id, code });
+        let _ = app.emit_to(label.as_str(), "terminal-exit", TerminalExit { id, code });
     });
     Ok(OpenedTerminal { id, shell: shell.name })
 }
@@ -185,8 +203,8 @@ mod tests {
             command
         };
 
-        let Spawned { session, mut reader, mut child } = spawn(command, None, 80, 24).unwrap();
-        let Session { master, mut writer, mut killer } = session;
+        let Spawned { session, mut reader, mut child } = spawn("test", command, None, 80, 24).unwrap();
+        let Session { master, mut writer, mut killer, .. } = session;
         let (found, received) = std::sync::mpsc::channel();
 
         std::thread::spawn(move || {

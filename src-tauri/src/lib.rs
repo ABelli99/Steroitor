@@ -6,9 +6,10 @@ mod shells;
 mod startup;
 mod terminal;
 mod watcher;
+mod windows;
 
 use std::path::Path;
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, WindowEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -17,15 +18,26 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             let files = startup::resolve_paths(argv.into_iter().skip(1), Path::new(&cwd));
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
-            let _ = app.emit("open-files", files);
+            let Some(window) = windows::primary(app) else { return };
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+            let _ = window.emit_to(window.label(), "open-files", files);
         }))
         .plugin(tauri_plugin_dialog::init())
         .manage(watcher::FolderWatcher::default())
         .manage(terminal::Terminals::default())
+        .manage(windows::Projects::default())
+        .on_window_event(|window, event| {
+            if !matches!(event, WindowEvent::Destroyed) {
+                return;
+            }
+            let app = window.app_handle();
+            let label = window.label();
+            app.state::<windows::Projects>().remove(label);
+            app.state::<watcher::FolderWatcher>().forget(label);
+            app.state::<terminal::Terminals>().close_owned_by(label);
+            windows::broadcast(app);
+        })
         .setup(|app| {
             app.manage(git::GitConfig::load(app.handle()));
             Ok(())
@@ -92,6 +104,11 @@ pub fn run() {
             terminal::terminal_write,
             terminal::terminal_resize,
             terminal::terminal_close,
+            windows::project_windows,
+            windows::window_folder,
+            windows::set_window_folder,
+            windows::focus_project_window,
+            windows::open_project_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

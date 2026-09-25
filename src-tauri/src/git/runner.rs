@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 const CONSOLE_OUTPUT_LIMIT: usize = 16 * 1024;
 const SETTINGS_FILE: &str = "settings.json";
@@ -68,15 +68,17 @@ impl Git {
         Self { executable: executable.into(), sink }
     }
 
-    pub fn from_app(app: &AppHandle) -> Self {
+    /// I comandi finiscono nella Console della sola finestra che li ha lanciati.
+    pub fn for_window(window: &WebviewWindow) -> Self {
+        let app = window.app_handle().clone();
         let config = app.state::<GitConfig>();
         let executable = config.executable.read().map(|value| value.clone()).unwrap_or_else(|_| "git".into());
-        let app = app.clone();
+        let label = window.label().to_owned();
         Self::new(
             executable,
             Box::new(move |mut log| {
                 log.id = app.state::<GitConfig>().next_id.fetch_add(1, Ordering::Relaxed);
-                let _ = app.emit("git-command", log);
+                let _ = app.emit_to(label.as_str(), "git-command", log);
             }),
         )
     }

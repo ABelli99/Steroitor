@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { settings } from "../settings.svelte";
 
 export interface Shell {
@@ -92,9 +92,10 @@ class Terminals {
   }
 
   #listen() {
+    const appWindow = getCurrentWebviewWindow();
     this.#listening ??= Promise.all([
-      listen<{ id: number; data: string }>("terminal-output", (event) => this.#deliver(event.payload.id, event.payload.data)),
-      listen<{ id: number; code: number | null }>("terminal-exit", (event) => {
+      appWindow.listen<{ id: number; data: string }>("terminal-output", (event) => this.#deliver(event.payload.id, event.payload.data)),
+      appWindow.listen<{ id: number; code: number | null }>("terminal-exit", (event) => {
         const session = this.sessions.find((candidate) => candidate.id === event.payload.id);
         if (session) session.exited = true;
         this.#deliver(event.payload.id, `\r\n\x1b[2m[processo terminato${event.payload.code === null ? "" : `, codice ${event.payload.code}`}]\x1b[0m\r\n`);

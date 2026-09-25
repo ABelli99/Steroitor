@@ -1,4 +1,4 @@
-import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 export interface ConsoleEntry {
   id: number;
@@ -38,4 +38,4 @@ class ConsoleLog {
 
 export const consoleLog = new ConsoleLog();
 
-export const listenToGitCommands = () => listen<ConsoleEntry>("git-command", (event) => consoleLog.push(event.payload));
+export const listenToGitCommands = () => getCurrentWebviewWindow().listen<ConsoleEntry>("git-command", (event) => consoleLog.push(event.payload));

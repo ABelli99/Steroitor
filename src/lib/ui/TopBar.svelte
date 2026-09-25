@@ -2,7 +2,14 @@
   import type { Workspace } from "../workspace/workspace.svelte";
   import { layout, saveLayout } from "./layout.svelte";
 
-  let { workspace, onopenfolder, onclone }: { workspace: Workspace; onopenfolder: () => void; onclone: () => void } = $props();
+  interface Props {
+    workspace: Workspace;
+    onopenfolder: () => void;
+    onnewwindow: () => void;
+    onclone: () => void;
+  }
+
+  let { workspace, onopenfolder, onnewwindow, onclone }: Props = $props();
 
   function toggle(key: "explorerVisible" | "panelVisible") {
     layout[key] = !layout[key];
@@ -15,8 +22,7 @@
   <button title="Apri (Ctrl+O)" onclick={() => workspace.openDialog()}>Apri</button>
   <button title="Apri cartella" onclick={onopenfolder}>Apri cartella</button>
   <button title="Clona un repository Git" onclick={onclone}>Clona</button>
-  <button title="Salva (Ctrl+S)" onclick={() => workspace.save()}>Salva</button>
-  <button title="Salva con nome (Ctrl+Shift+S)" onclick={() => workspace.saveAs()}>Salva con nome</button>
+  <button title="Apri un progetto in una nuova finestra" onclick={onnewwindow}>Nuova finestra</button>
   <span class="spacer"></span>
   <button title="Explorer (Alt+1)" class:on={layout.explorerVisible} onclick={() => toggle("explorerVisible")}>
     Explorer

@@ -1,9 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { listen } from "@tauri-apps/api/event";
-  import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { appReady, gitRepoRoot, startupFiles } from "./lib/backend";
+  import { appReady, gitRepoRoot, openProjectWindow, setWindowFolder, startupFiles, windowFolder } from "./lib/backend";
   import { listenToGitCommands } from "./lib/console/console.svelte";
   import type { GitRepo } from "./lib/git/repo.svelte";
   import { gitShortcuts } from "./lib/git/shortcuts";
@@ -24,6 +23,8 @@
   import { persistSession, readSession } from "./lib/workspace/session";
   import { clamp, layout, saveLayout } from "./lib/ui/layout.svelte";
   import TopBar from "./lib/ui/TopBar.svelte";
+  import ProjectBar from "./lib/ui/ProjectBar.svelte";
+  import { projects } from "./lib/ui/projects.svelte";
   import Explorer from "./lib/ui/Explorer.svelte";
   import TabBar from "./lib/ui/TabBar.svelte";
   import Editor from "./lib/ui/Editor.svelte";
@@ -40,7 +41,7 @@
   let quickOpen = $state(false);
   let cloneOpen = $state(false);
   let git = $state<GitRepo | null>(null);
-  const appWindow = getCurrentWindow();
+  const appWindow = getCurrentWebviewWindow();
 
   $effect(() => {
     const tab = workspace.active;
@@ -56,11 +57,18 @@
   async function openFolder(folder?: string | null) {
     folder ??= await open({ directory: true });
     if (!folder) return;
+    await setWindowFolder(folder);
     await tree.open(folder);
     await connectRepo(folder);
     terminals.relocate(git?.root ?? folder).catch(console.error);
     layout.explorerVisible = true;
     saveLayout();
+  }
+
+  async function openInNewWindow() {
+    const folder = await open({ directory: true });
+    if (!folder) return;
+    await openProjectWindow(folder).catch((error) => message(String(error), { title: "Nuova finestra non riuscita", kind: "error" }));
   }
 
   function cloneRepository() {
@@ -131,6 +139,7 @@
     const session = persistSession(workspace, tree);
     const cleanups: Array<() => void> = [session.stop];
     listenToGitCommands().then((unlisten) => cleanups.push(unlisten));
+    projects.track().then((unlisten) => cleanups.push(unlisten));
 
     cleanups.push(
       installShortcuts({
@@ -156,24 +165,26 @@
     (async () => {
       const saved = await readSession();
       if (saved) await workspace.restore(saved);
-      if (saved?.folder) {
-        await tree.open(saved.folder, saved.expanded);
-        connectRepo(saved.folder);
+      const folder = (await windowFolder()) ?? saved?.folder;
+      if (folder) {
+        await setWindowFolder(folder);
+        await tree.open(folder, saved?.folder === folder ? saved.expanded : undefined);
+        connectRepo(folder);
       }
       for (const path of await startupFiles()) await workspace.openPath(path);
       workspace.focusEditor();
       appReady();
     })();
 
-    listen<string[]>("fs-changed", (event) => {
+    appWindow.listen<string[]>("fs-changed", (event) => {
       tree.refresh(event.payload);
       workspace.reloadCleanIn(event.payload);
       git?.scheduleStatus();
     }).then((unlisten) => cleanups.push(unlisten));
 
-    listen("git-changed", () => git?.refresh()).then((unlisten) => cleanups.push(unlisten));
+    appWindow.listen("git-changed", () => git?.refresh()).then((unlisten) => cleanups.push(unlisten));
 
-    listen<string[]>("open-files", async (event) => {
+    appWindow.listen<string[]>("open-files", async (event) => {
       for (const path of event.payload) await workspace.openPath(path);
     }).then((unlisten) => cleanups.push(unlisten));
 
@@ -184,8 +195,11 @@
 </script>
 
 <div class="app">
-  <TopBar {workspace} onopenfolder={() => openFolder()} onclone={cloneRepository} />
+  <TopBar {workspace} onopenfolder={() => openFolder()} onnewwindow={openInNewWindow} onclone={cloneRepository} />
   <div class="main">
+    {#if projects.windows.length > 1}
+      <ProjectBar />
+    {/if}
     {#if layout.explorerVisible}
       <div class="explorer" style:width="{layout.explorerWidth}px">
         <Explorer {tree} {workspace} {actions} onopenfolder={() => openFolder()} onclone={cloneRepository} statusOf={git ? (path) => git!.statusOf(path) : undefined}

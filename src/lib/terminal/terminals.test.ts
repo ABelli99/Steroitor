@@ -9,7 +9,7 @@ vi.mock("@tauri-apps/api/core", () => ({
     return command === "terminal_open" ? { id: ++nextId, shell: "PowerShell" } : undefined;
   },
 }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({ getCurrentWebviewWindow: () => ({ listen: async () => () => {} }) }));
 
 const { terminals } = await import("./terminals.svelte");
 
