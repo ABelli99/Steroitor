@@ -7,9 +7,11 @@ interface Settings {
   warnCrlf: boolean;
   /** Ultima cartella in cui si è clonato un repository. */
   cloneParent: string;
+  /** Id della shell per i nuovi terminali; vuoto = la prima rilevata. */
+  terminalShell: string;
 }
 
-const defaults: Settings = { updateMethod: "merge", warnCrlf: true, cloneParent: "" };
+const defaults: Settings = { updateMethod: "merge", warnCrlf: true, cloneParent: "", terminalShell: "" };
 
 function load(): Settings {
   try {

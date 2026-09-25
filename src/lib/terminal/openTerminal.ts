@@ -5,9 +5,9 @@ import { terminals } from "./terminals.svelte";
 const TERMINAL_INPUT = ".terminal:not(.hidden) .xterm-helper-textarea";
 
 /** Nuovo terminale in `cwd`, mostrato nella tab Console con il focus sul prompt. */
-export async function openTerminal(cwd: string | null) {
+export async function openTerminal(cwd: string | null, shell?: string) {
   try {
-    await terminals.open(cwd);
+    await terminals.open(cwd, shell);
   } catch (error) {
     await message(String(error), { title: "Terminale non disponibile", kind: "error" });
     return;

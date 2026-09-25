@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
+use crate::shells;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 const READ_BUFFER: usize = 8 * 1024;
@@ -52,17 +53,6 @@ impl Utf8Chunker {
     }
 }
 
-fn default_shell() -> CommandBuilder {
-    #[cfg(target_os = "windows")]
-    {
-        let mut command = CommandBuilder::new("powershell.exe");
-        command.arg("-NoLogo");
-        command
-    }
-    #[cfg(not(target_os = "windows"))]
-    CommandBuilder::new(std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into()))
-}
-
 struct Spawned {
     session: Session,
     reader: Box<dyn Read + Send>,
@@ -86,9 +76,23 @@ fn spawn(mut command: CommandBuilder, cwd: Option<&str>, cols: u16, rows: u16) -
     Ok(Spawned { session: Session { master: pair.master, writer, killer }, reader, child })
 }
 
+#[derive(Serialize)]
+pub struct OpenedTerminal {
+    id: u32,
+    shell: String,
+}
+
 #[tauri::command]
-pub fn terminal_open(app: AppHandle, terminals: State<Terminals>, cwd: Option<String>, cols: u16, rows: u16) -> Result<u32, String> {
-    let Spawned { session, mut reader, mut child } = spawn(default_shell(), cwd.as_deref(), cols, rows)?;
+pub fn terminal_open(
+    app: AppHandle,
+    terminals: State<Terminals>,
+    cwd: Option<String>,
+    shell: Option<String>,
+    cols: u16,
+    rows: u16,
+) -> Result<OpenedTerminal, String> {
+    let shell = shells::resolve(shell.as_deref())?;
+    let Spawned { session, mut reader, mut child } = spawn(shell.command(), cwd.as_deref(), cols, rows)?;
     let id = terminals.next_id.fetch_add(1, Ordering::Relaxed) + 1;
     terminals.sessions.lock().map_err(|e| e.to_string())?.insert(id, session);
 
@@ -114,7 +118,7 @@ pub fn terminal_open(app: AppHandle, terminals: State<Terminals>, cwd: Option<St
         }
         let _ = app.emit("terminal-exit", TerminalExit { id, code });
     });
-    Ok(id)
+    Ok(OpenedTerminal { id, shell: shell.name })
 }
 
 fn with_session<T>(terminals: &State<Terminals>, id: u32, action: impl FnOnce(&mut Session) -> Result<T, String>) -> Result<T, String> {

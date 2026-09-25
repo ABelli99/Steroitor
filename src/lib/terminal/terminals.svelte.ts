@@ -1,5 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { settings } from "../settings.svelte";
+
+export interface Shell {
+  id: string;
+  name: string;
+}
 
 export interface TerminalSession {
   id: number;
@@ -16,19 +22,30 @@ type Sink = (data: string) => void;
 class Terminals {
   sessions = $state<TerminalSession[]>([]);
   activeId = $state<number | null>(null);
+  shells = $state<Shell[]>([]);
 
   #sinks = new Map<number, Sink>();
   #pending = new Map<number, string[]>();
   #listening: Promise<unknown> | null = null;
-  #count = 0;
 
-  async open(cwd: string | null, cols = 80, rows = 24) {
+  async loadShells() {
+    this.shells = await invoke<Shell[]>("terminal_shells");
+  }
+
+  /** `shell` è l'id di una shell rilevata; senza, quella predefinita nelle impostazioni (o la prima trovata). */
+  async open(cwd: string | null, shell = settings.terminalShell || null, cols = 80, rows = 24) {
     await this.#listen();
-    const id = await invoke<number>("terminal_open", { cwd, cols, rows });
-    this.#count += 1;
-    this.sessions.push({ id, title: `Terminale ${this.#count}`, exited: false });
-    this.activeId = id;
-    return id;
+    const opened = await invoke<{ id: number; shell: string }>("terminal_open", { cwd, shell, cols, rows });
+    this.sessions.push({ id: opened.id, title: this.#titleFor(opened.shell), exited: false });
+    this.activeId = opened.id;
+    return opened.id;
+  }
+
+  #titleFor(shell: string) {
+    const taken = new Set(this.sessions.map((session) => session.title));
+    let title = shell;
+    for (let n = 2; taken.has(title); n++) title = `${shell} (${n})`;
+    return title;
   }
 
   /** Cambio di cartella: chiude tutti i terminali e, se ce n'erano, ne riapre uno solo in `cwd`. */
@@ -36,7 +53,6 @@ class Terminals {
     if (!this.sessions.length) return;
     const showingTerminal = this.activeId !== null;
     for (const session of [...this.sessions]) this.close(session.id);
-    this.#count = 0;
     await this.open(cwd);
     if (!showingTerminal) this.activeId = null;
   }

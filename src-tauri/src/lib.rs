@@ -2,6 +2,7 @@ mod explorer;
 mod files;
 mod git;
 mod session;
+mod shells;
 mod startup;
 mod terminal;
 mod watcher;
@@ -86,6 +87,7 @@ pub fn run() {
             startup::startup_files,
             startup::app_ready,
             watcher::watch_folder,
+            shells::terminal_shells,
             terminal::terminal_open,
             terminal::terminal_write,
             terminal::terminal_resize,

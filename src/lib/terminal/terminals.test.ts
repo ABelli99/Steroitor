@@ -6,7 +6,7 @@ let nextId = 0;
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: async (command: string, args: Record<string, unknown>) => {
     calls.push({ command, args });
-    return command === "terminal_open" ? ++nextId : undefined;
+    return command === "terminal_open" ? { id: ++nextId, shell: "PowerShell" } : undefined;
   },
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
@@ -28,7 +28,7 @@ describe("terminals.relocate", () => {
 
     expect(calls.filter((call) => call.command === "terminal_close")).toHaveLength(2);
     expect(calls.filter((call) => call.command === "terminal_open").map((call) => call.args.cwd)).toEqual(["C:\\nuovo"]);
-    expect(terminals.sessions.map((session) => session.title)).toEqual(["Terminale 1"]);
+    expect(terminals.sessions.map((session) => session.title)).toEqual(["PowerShell"]);
   });
 
   it("does nothing when no terminal is open", async () => {
@@ -42,5 +42,20 @@ describe("terminals.relocate", () => {
     await terminals.relocate("C:\\nuovo");
     expect(terminals.activeId).toBeNull();
     expect(terminals.sessions).toHaveLength(1);
+  });
+});
+
+describe("terminals.open", () => {
+  beforeEach(() => {
+    for (const session of [...terminals.sessions]) terminals.close(session.id);
+  });
+
+  it("numbers terminals of the same shell, reusing freed titles", async () => {
+    await terminals.open(null);
+    const second = await terminals.open(null);
+    await terminals.open(null);
+    terminals.close(second);
+    await terminals.open(null);
+    expect(terminals.sessions.map((session) => session.title)).toEqual(["PowerShell", "PowerShell (3)", "PowerShell (2)"]);
   });
 });
