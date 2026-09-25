@@ -169,7 +169,7 @@ mod tests {
         let root = sandbox.repo("repo");
         fs::create_dir_all(Path::new(&root).join("nuova")).unwrap();
         let file = write(&root, "nuova/file.txt", "x\n");
-        assert_eq!(status_of(&git(), &root, &file.replace('/', "\\")), Some((FileStatus::Untracked, false, true)));
+        assert_eq!(status_of(&git(), &root, &file.replace('/', std::path::MAIN_SEPARATOR_STR)), Some((FileStatus::Untracked, false, true)));
     }
 
     #[test]

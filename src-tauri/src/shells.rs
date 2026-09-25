@@ -27,15 +27,18 @@ impl Shell {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn find_in_path(name: &str) -> Option<PathBuf> {
     let paths = std::env::var_os("PATH")?;
     std::env::split_paths(&paths).map(|dir| dir.join(name)).find(|candidate| candidate.is_file())
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn existing(path: PathBuf) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+#[cfg(any(target_os = "windows", test))]
 /// `bash.exe` dell'installazione di Git for Windows che contiene `git` (`<root>\cmd\git.exe`).
 fn git_bash_beside(git: &Path) -> Option<PathBuf> {
     existing(git.parent()?.parent()?.join("bin").join("bash.exe"))

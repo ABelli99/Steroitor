@@ -93,7 +93,7 @@ mod tests {
         assert_eq!(second[0].status, "M");
         assert_eq!(git.file_at(&root, "HEAD^", &a).unwrap().as_deref(), Some("uno\n"));
         assert_eq!(git.file_at(&root, "HEAD", &a).unwrap().as_deref(), Some("due\n"));
-        assert_eq!(git.file_at(&root, "HEAD", &format!("{root}\\manca.txt")).unwrap(), None);
+        assert_eq!(git.file_at(&root, "HEAD", &format!("{root}{}manca.txt", std::path::MAIN_SEPARATOR)).unwrap(), None);
     }
 
     #[test]
