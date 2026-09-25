@@ -2,10 +2,11 @@
 # Uso: npm run measure            (build + misura)
 #      powershell -File scripts/measure.ps1 -SkipBuild
 #      powershell -File scripts/measure.ps1 -SkipBuild -Repo C:\percorso\repo   (misura informativa con un repo aperto)
+#      powershell -File scripts/measure.ps1 -SkipBuild -Dir src-tauri\target\release\steroitor_v1.1.0   (misura una release)
 #
-# La sessione dell'utente viene messa da parte e ripristinata: la misura parte sempre dallo stesso stato
-# (nessuna cartella, un solo file), altrimenti conterebbe le tab e i repo lasciati aperti.
-param([switch]$SkipBuild, [string]$Repo = "")
+# Sessioni, finestre e progetti dell'utente vengono messi da parte e ripristinati: la misura parte sempre dallo
+# stesso stato (un progetto, nessuna cartella, un solo file), altrimenti conterebbe le tab e i repo lasciati aperti.
+param([switch]$SkipBuild, [string]$Repo = "", [string]$Dir = "")
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
@@ -18,8 +19,14 @@ if (-not $SkipBuild) {
     Pop-Location
 }
 
-$exe = Join-Path $release "steroitor.exe"
-$installer = Get-ChildItem (Join-Path $release "bundle\nsis\*.exe") | Sort-Object LastWriteTime | Select-Object -Last 1
+if ($Dir) {
+    $folder = if ([IO.Path]::IsPathRooted($Dir)) { $Dir } else { Join-Path $root $Dir }
+    $exe = Join-Path $folder "steroitor.exe"
+    $installer = Get-ChildItem (Join-Path $folder "*setup.exe") | Select-Object -First 1
+} else {
+    $exe = Join-Path $release "steroitor.exe"
+    $installer = Get-ChildItem (Join-Path $release "bundle\nsis\*.exe") | Sort-Object LastWriteTime | Select-Object -Last 1
+}
 
 function Get-ProcessTree([int]$rootId) {
     $all = Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId
@@ -47,9 +54,12 @@ Remove-Item $marker -ErrorAction SilentlyContinue
 
 $dataDir = Join-Path $env:APPDATA "it.overzoom.steroitor"
 $sessionFile = Join-Path $dataDir "session.json"
-$sessionBackup = "$sessionFile.measure-backup"
+$userState = @("session.json", "windows.json", "sessions") | ForEach-Object { Join-Path $dataDir $_ }
 New-Item -ItemType Directory -Force $dataDir | Out-Null
-if (Test-Path $sessionFile) { Move-Item $sessionFile $sessionBackup -Force }
+foreach ($item in $userState) {
+    if (Test-Path "$item.measure-backup") { throw "Backup di una misura precedente ancora presente: $item.measure-backup" }
+    if (Test-Path $item) { Move-Item $item "$item.measure-backup" -Force }
+}
 $session = @{ version = 1; wrap = $false; tabs = @(); folder = $(if ($Repo) { $Repo } else { $null }); expanded = @() }
 [IO.File]::WriteAllText($sessionFile, ($session | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding $false))
 
@@ -69,8 +79,10 @@ try {
 finally {
     if ($process) { Get-ProcessTree $process.Id | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }
     Start-Sleep -Milliseconds 300
-    Remove-Item $sessionFile -ErrorAction SilentlyContinue
-    if (Test-Path $sessionBackup) { Move-Item $sessionBackup $sessionFile -Force }
+    foreach ($item in $userState) {
+        Remove-Item $item -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path "$item.measure-backup") { Move-Item "$item.measure-backup" $item -Force }
+    }
 }
 
 $results = @(
