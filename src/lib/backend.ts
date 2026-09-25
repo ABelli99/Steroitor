@@ -11,9 +11,9 @@ export const readTextFile = (path: string) => invoke<TextFile>("read_text_file",
 export const writeTextFile = (path: string, content: string, encoding: string, bom: boolean) =>
   invoke<void>("write_text_file", { path, content, encoding, bom });
 
-export const loadSession = () => invoke<string | null>("load_session");
+export const loadSession = (folder: string | null) => invoke<string | null>("load_session", { folder });
 
-export const saveSession = (data: string) => invoke<void>("save_session", { data });
+export const saveSession = (folder: string | null, data: string) => invoke<void>("save_session", { folder, data });
 
 export const startupFiles = () => invoke<string[]>("startup_files");
 
@@ -39,23 +39,26 @@ export const deleteToTrash = (path: string) => invoke<void>("delete_to_trash", {
 
 export const revealInOs = (path: string) => invoke<void>("reveal_in_os", { path });
 
-export const watchFolder = (path: string | null) => invoke<void>("watch_folder", { path });
+export const watchFolder = (project: string, path: string | null) => invoke<void>("watch_folder", { project, path });
 
 export const gitRepoRoot = (path: string) => invoke<string | null>("git_repo_root", { path });
 
-export interface ProjectWindow {
-  label: string;
+export interface ProjectRef {
+  id: string;
   folder: string | null;
 }
 
-export const projectWindows = () => invoke<ProjectWindow[]>("project_windows");
+export interface WindowState {
+  projects: ProjectRef[];
+  active: string | null;
+}
 
-export const windowFolder = () => invoke<string | null>("window_folder");
+export const windowState = () => invoke<WindowState | null>("window_state");
 
-export const setWindowFolder = (folder: string | null) => invoke<void>("set_window_folder", { folder });
+export const setWindowState = (state: WindowState) => invoke<void>("set_window_state", { state });
 
-export const focusProjectWindow = (label: string) => invoke<void>("focus_project_window", { label });
+export const locateProject = (folder: string) => invoke<{ window: string; project: string } | null>("locate_project", { folder });
 
-export const closeProjectWindow = (label: string) => invoke<void>("close_project_window", { label });
+export const activateProject = (window: string, project: string) => invoke<void>("activate_project", { window, project });
 
-export const openProjectWindow = (folder: string) => invoke<void>("open_project_window", { folder });
+export const detachProject = (project: ProjectRef, x: number, y: number) => invoke<void>("detach_project", { project, x, y });

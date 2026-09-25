@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { keyOf } from "../shortcuts";
 import type { Workspace } from "../workspace/workspace.svelte";
+import type { CommitDraft } from "./commitDraft.svelte";
+import type { DiffState, GitSelection } from "./selection.svelte";
 import { gitShortcuts } from "./shortcuts";
 
 const key = (key: string, modifiers: Partial<Record<"ctrlKey" | "altKey" | "shiftKey", boolean>> = {}, code = "") =>
@@ -18,7 +20,15 @@ describe("keyOf", () => {
 });
 
 describe("gitShortcuts", () => {
-  const bindings = gitShortcuts({ repo: () => null, workspace: {} as Workspace, openVcsMenu: () => {}, openTerminal: () => {} });
+  const bindings = gitShortcuts({
+    repo: () => null,
+    workspace: {} as Workspace,
+    commitDraft: { message: "", amend: false } as CommitDraft,
+    selection: { commit: null, file: null } as GitSelection,
+    diff: { request: null } as DiffState,
+    openVcsMenu: () => {},
+    openTerminal: () => {},
+  });
 
   it("leaves Ctrl+D to the editor (select next occurrence) outside Git panels", () => {
     expect(bindings["Ctrl+D"].git).toBeTypeOf("function");

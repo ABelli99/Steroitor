@@ -14,7 +14,7 @@ import { gitGutter } from "./gutter";
 import { GitHistory } from "./history";
 import { hunkMenu } from "./hunkActions";
 import { toText } from "./hunks";
-import { diffState } from "./selection.svelte";
+import type { DiffState } from "./selection.svelte";
 
 const STATUS_DELAY_MS = 300;
 const TITLE = "Git";
@@ -48,6 +48,7 @@ export class GitRepo {
   constructor(
     readonly root: string,
     readonly workspace: Workspace,
+    readonly diff: DiffState,
   ) {
     this.#unsubscribe = workspace.onChange(() => this.#syncGutters());
   }
@@ -178,7 +179,7 @@ export class GitRepo {
       await message(String(error), { title: "Annotate non disponibile", kind: "error" });
       return null;
     });
-    if (lines) this.#setBlame(tabId, blameGutter(lines, (hash) => (diffState.request = { kind: "commit", hash })));
+    if (lines) this.#setBlame(tabId, blameGutter(lines, (hash) => (this.diff.request = { kind: "commit", hash })));
   }
 
   #setBlame(tabId: string, extension: ReturnType<typeof blameGutter> | null) {

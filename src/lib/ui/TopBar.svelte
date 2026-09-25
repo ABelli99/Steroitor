@@ -5,11 +5,11 @@
   interface Props {
     workspace: Workspace;
     onopenfolder: () => void;
-    onnewwindow: () => void;
+    onnewproject: () => void;
     onclone: () => void;
   }
 
-  let { workspace, onopenfolder, onnewwindow, onclone }: Props = $props();
+  let { workspace, onopenfolder, onnewproject, onclone }: Props = $props();
 
   function toggle(key: "explorerVisible" | "panelVisible") {
     layout[key] = !layout[key];
@@ -22,7 +22,7 @@
   <button title="Apri (Ctrl+O)" onclick={() => workspace.openDialog()}>Apri</button>
   <button title="Apri cartella" onclick={onopenfolder}>Apri cartella</button>
   <button title="Clona un repository Git" onclick={onclone}>Clona</button>
-  <button title="Apri un progetto in una nuova finestra" onclick={onnewwindow}>Nuova finestra</button>
+  <button title="Apri una cartella in una nuova tab progetto" onclick={onnewproject}>Nuovo progetto</button>
   <span class="spacer"></span>
   <button title="Explorer (Alt+1)" class:on={layout.explorerVisible} onclick={() => toggle("explorerVisible")}>
     Explorer

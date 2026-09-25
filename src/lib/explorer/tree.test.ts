@@ -29,7 +29,7 @@ describe("FileTree compact folders", () => {
   const labels = (tree: InstanceType<typeof FileTree>) => tree.rows.map((row) => `${row.depth}:${row.label}`);
 
   it("merges a chain of single folders into one row when expanded", async () => {
-    const tree = new FileTree();
+    const tree = new FileTree("p");
     await tree.open("/r");
     await tree.expand("/r/dir1");
     expect(labels(tree)).toEqual(["0:dir1/dir2", "1:file1", "1:file2", "0:other", "0:readme.md"]);
@@ -40,7 +40,7 @@ describe("FileTree compact folders", () => {
   });
 
   it("collapses the whole chain from its head and restores it on expand", async () => {
-    const tree = new FileTree();
+    const tree = new FileTree("p");
     await tree.open("/r");
     await tree.expand("/r/dir1");
     tree.collapse("/r/dir1");
@@ -50,7 +50,7 @@ describe("FileTree compact folders", () => {
   });
 
   it("does not compact folders with more than one child", async () => {
-    const tree = new FileTree();
+    const tree = new FileTree("p");
     await tree.open("/r");
     await tree.expand("/r/other");
     expect(labels(tree)).toContain("0:other");

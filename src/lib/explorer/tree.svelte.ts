@@ -21,6 +21,8 @@ export interface TreeSnapshot {
 }
 
 export class FileTree {
+  constructor(readonly project: string) {}
+
   root = $state<string | null>(null);
   selected = $state<string | null>(null);
   rootName = $derived(this.root ? fileName(this.root) : null);
@@ -44,13 +46,13 @@ export class FileTree {
     for (const dir of byDepth) {
       if (isInside(dir, root) && (await this.#load(dir))) this.#expanded.add(dir);
     }
-    await watchFolder(root).catch(console.error);
+    await watchFolder(this.project, root).catch(console.error);
     this.#emitChange();
   }
 
   close() {
     this.#reset();
-    watchFolder(null).catch(console.error);
+    watchFolder(this.project, null).catch(console.error);
     this.#emitChange();
   }
 

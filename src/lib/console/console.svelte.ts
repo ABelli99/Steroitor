@@ -1,5 +1,3 @@
-import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-
 export interface ConsoleEntry {
   id: number;
   command: string;
@@ -14,7 +12,7 @@ export interface ConsoleEntry {
 
 const MAX_ENTRIES = 500;
 
-class ConsoleLog {
+export class ConsoleLog {
   entries = $state.raw<ConsoleEntry[]>([]);
   showBackground = $state(false);
   hidden = $derived(this.showBackground ? 0 : this.entries.filter((entry) => entry.background && entry.code === 0).length);
@@ -35,7 +33,3 @@ class ConsoleLog {
       .join("\n\n");
   }
 }
-
-export const consoleLog = new ConsoleLog();
-
-export const listenToGitCommands = () => getCurrentWebviewWindow().listen<ConsoleEntry>("git-command", (event) => consoleLog.push(event.payload));

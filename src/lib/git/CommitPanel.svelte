@@ -3,17 +3,19 @@
   import { OPERATION_LABELS, type StatusEntry } from "./api";
   import DiffView from "./DiffView.svelte";
   import type { GitRepo } from "./repo.svelte";
-  import { diffState, fileRequest, gitSelection } from "./selection.svelte";
-  import { commitDraft, submitCommit } from "./commitDraft.svelte";
+  import { fileRequest } from "./selection.svelte";
+  import { submitCommit } from "./commitDraft.svelte";
+  import { useProject } from "../project/context";
 
   let { repo }: { repo: GitRepo } = $props();
+  const { commitDraft, selection, diff } = useProject();
 
   const LETTERS: Record<string, string> = { added: "A", modified: "M", deleted: "D", conflict: "C", untracked: "U" };
 
   const changes = $derived([...repo.changes].sort((a, b) => a.path.localeCompare(b.path)));
   const allStaged = $derived(changes.length > 0 && changes.every((entry) => entry.staged && !entry.unstaged));
   const someStaged = $derived(changes.some((entry) => entry.staged));
-  const selected = $derived(changes.find((entry) => entry.path === gitSelection.file?.path) ?? null);
+  const selected = $derived(changes.find((entry) => entry.path === selection.file?.path) ?? null);
   const hasMessage = $derived(commitDraft.message.trim().length > 0);
   const canCommit = $derived(!repo.busy && hasMessage && (commitDraft.amend || repo.staged > 0));
   const operation = $derived(repo.operation ? OPERATION_LABELS[repo.operation] : null);
@@ -32,11 +34,11 @@
   }
 
   function select(entry: StatusEntry) {
-    gitSelection.file = { path: entry.path, status: entry.status };
+    selection.file = { path: entry.path, status: entry.status };
   }
 
   async function commit(andPush: boolean) {
-    if (canCommit) await submitCommit(repo, andPush);
+    if (canCommit) await submitCommit(repo, commitDraft, andPush);
   }
 
   async function toggleAmend() {
@@ -89,7 +91,7 @@
           aria-selected={entry === selected}
           title={entry.path}
           onclick={() => select(entry)}
-          ondblclick={() => (diffState.request = fileRequest({ path: entry.path, status: entry.status }))}
+          ondblclick={() => (diff.request = fileRequest({ path: entry.path, status: entry.status }))}
           onkeydown={() => {}}
         >
           <input
@@ -108,7 +110,7 @@
               class="resolve"
               onclick={(e) => {
                 e.stopPropagation();
-                diffState.request = { kind: "merge", path: entry.path };
+                diff.request = { kind: "merge", path: entry.path };
               }}>Risolvi…</button
             >
           {/if}

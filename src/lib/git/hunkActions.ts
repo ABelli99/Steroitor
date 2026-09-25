@@ -7,7 +7,6 @@ import { gitIndexContent, gitStageContent } from "./api";
 import type { HunkClick } from "./gutter";
 import { chunksInLines, firstLine, lastLine, rollbackChange, stagedContent, toText } from "./hunks";
 import type { GitRepo } from "./repo.svelte";
-import { diffState } from "./selection.svelte";
 
 /** Mette in stage le modifiche del buffer nelle righe [from, to], senza toccare il file su disco. */
 async function stageLines(repo: GitRepo, tabId: string, path: string, buffer: Text, from: number, to: number) {
@@ -39,7 +38,7 @@ export function hunkMenu(repo: GitRepo, tabId: string, path: string): HunkClick 
     items.push({
       label: "Mostra diff del file",
       separatorBefore: true,
-      run: () => (diffState.request = { kind: "file", file: { path, status: repo.statusOf(path) ?? "modified" } }),
+      run: () => (repo.diff.request = { kind: "file", file: { path, status: repo.statusOf(path) ?? "modified" } }),
     });
     openMenu(event.clientX, event.clientY, items);
   };

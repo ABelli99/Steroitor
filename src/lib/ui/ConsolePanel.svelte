@@ -1,11 +1,12 @@
 <script lang="ts">
   import { saveSettings, settings } from "../settings.svelte";
   import { openTerminal } from "../terminal/openTerminal";
-  import { terminals } from "../terminal/terminals.svelte";
+  import { useProject } from "../project/context";
   import ContextMenu, { type MenuItem } from "./ContextMenu.svelte";
   import GitCommandLog from "./GitCommandLog.svelte";
 
   let { cwd }: { cwd: string | null } = $props();
+  const { terminals } = useProject();
 
   /** null = log dei comandi Git, altrimenti l'id del terminale mostrato. */
   const showing = $derived(terminals.activeId);
@@ -27,7 +28,7 @@
     const mark = (id: string) => (settings.terminalShell === id ? "● " : "   ");
     const choices = [{ id: "", name: "Automatica" }, ...terminals.shells];
     return [
-      ...terminals.shells.map((shell) => ({ label: `Nuovo ${shell.name}`, run: () => openTerminal(cwd, shell.id) })),
+      ...terminals.shells.map((shell) => ({ label: `Nuovo ${shell.name}`, run: () => openTerminal(terminals, cwd, shell.id) })),
       ...choices.map((shell, index) => ({
         label: `${mark(shell.id)}Predefinita: ${shell.name}`,
         separatorBefore: index === 0,
@@ -58,7 +59,7 @@
         <button class="close" aria-label="Chiudi {session.title}" onclick={() => terminals.close(session.id)}>×</button>
       </span>
     {/each}
-    <button class="add" title="Nuovo terminale (Ctrl+T)" onclick={() => openTerminal(cwd)}>+ Terminale</button>
+    <button class="add" title="Nuovo terminale (Ctrl+T)" onclick={() => openTerminal(terminals, cwd)}>+ Terminale</button>
     <button class="add shells" title="Scegli la shell" aria-label="Scegli la shell" onclick={openShellMenu}>
       <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg>
     </button>

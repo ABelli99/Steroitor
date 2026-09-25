@@ -2,7 +2,7 @@
   import { languageName } from "../editor/languages";
   import { eolLabel } from "../workspace/files";
   import type { GitRepo } from "../git/repo.svelte";
-  import { activity } from "./activity.svelte";
+  import { useProject } from "../project/context";
   import type { Workspace } from "../workspace/workspace.svelte";
 
   interface Props {
@@ -12,6 +12,7 @@
   }
 
   let { workspace, git, onvcsmenu }: Props = $props();
+  const { activity } = useProject();
   const tab = $derived(workspace.active);
   const branch = $derived(git?.branch ?? null);
   const branchLabel = $derived(branch ? (branch.head ?? `HEAD staccato (${branch.oid?.slice(0, 7) ?? "?"})`) : null);

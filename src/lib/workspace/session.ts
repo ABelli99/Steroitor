@@ -1,6 +1,6 @@
 import { loadSession, saveSession } from "../backend";
 import type { FileTree, TreeSnapshot } from "../explorer/tree.svelte";
-import type { Eol } from "./files";
+import { samePath, type Eol } from "./files";
 import type { Workspace } from "./workspace.svelte";
 
 export interface SessionTab {
@@ -22,15 +22,22 @@ export interface SessionData extends Partial<TreeSnapshot> {
 
 const SAVE_DELAY_MS = 1000;
 
-export async function readSession(): Promise<SessionData | null> {
-  const raw = await loadSession().catch(() => null);
+function parse(raw: string | null): SessionData | null {
   if (!raw) return null;
   try {
-    const data = JSON.parse(raw.replace(/^\uFEFF/, "")) as SessionData;
+    const data = JSON.parse(raw.replace(/^﻿/, "")) as SessionData;
     return data.version === 1 ? data : null;
   } catch {
     return null;
   }
+}
+
+/** Sessione salvata per `folder`; prima della 1.2 ce n'era una sola, che vale ancora per la sua cartella. */
+export async function readSession(folder: string | null): Promise<SessionData | null> {
+  const saved = parse(await loadSession(folder).catch(() => null));
+  if (saved || !folder) return saved;
+  const legacy = parse(await loadSession(null).catch(() => null));
+  return legacy?.folder && samePath(legacy.folder, folder) ? legacy : null;
 }
 
 export function persistSession(workspace: Workspace, tree: FileTree) {
@@ -40,7 +47,7 @@ export function persistSession(workspace: Workspace, tree: FileTree) {
     clearTimeout(timer);
     timer = undefined;
     const data: SessionData = { ...workspace.snapshot(), ...tree.snapshot() };
-    await saveSession(JSON.stringify(data)).catch(console.error);
+    await saveSession(tree.root, JSON.stringify(data)).catch(console.error);
   };
 
   const schedule = () => {

@@ -26,20 +26,22 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(watcher::FolderWatcher::default())
         .manage(terminal::Terminals::default())
-        .manage(windows::Projects::default())
         .on_window_event(|window, event| {
             if !matches!(event, WindowEvent::Destroyed) {
                 return;
             }
             let app = window.app_handle();
             let label = window.label();
-            app.state::<windows::Projects>().remove(label);
-            app.state::<watcher::FolderWatcher>().forget(label);
-            app.state::<terminal::Terminals>().close_owned_by(label);
-            windows::broadcast(app);
+            let windows = app.state::<windows::Windows>();
+            windows.window_destroyed(label);
+            windows.persist();
+            app.state::<watcher::FolderWatcher>().forget_window(label);
+            app.state::<terminal::Terminals>().close_window(label);
         })
         .setup(|app| {
             app.manage(git::GitConfig::load(app.handle()));
+            app.manage(windows::Windows::load(app.handle()));
+            windows::restore_extra_windows(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -104,12 +106,11 @@ pub fn run() {
             terminal::terminal_write,
             terminal::terminal_resize,
             terminal::terminal_close,
-            windows::project_windows,
-            windows::window_folder,
-            windows::set_window_folder,
-            windows::focus_project_window,
-            windows::close_project_window,
-            windows::open_project_window,
+            windows::window_state,
+            windows::set_window_state,
+            windows::locate_project,
+            windows::activate_project,
+            windows::detach_project,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -24,7 +24,7 @@ pub struct Terminals {
 
 impl Terminals {
     /// Chiude le shell di una finestra che non esiste più.
-    pub fn close_owned_by(&self, label: &str) {
+    pub fn close_window(&self, label: &str) {
         let Ok(mut sessions) = self.sessions.lock() else { return };
         sessions.retain(|_, session| {
             if session.owner != label {
@@ -38,12 +38,14 @@ impl Terminals {
 
 #[derive(Serialize, Clone)]
 struct TerminalOutput {
+    project: String,
     id: u32,
     data: String,
 }
 
 #[derive(Serialize, Clone)]
 struct TerminalExit {
+    project: String,
     id: u32,
     code: Option<u32>,
 }
@@ -101,6 +103,7 @@ pub struct OpenedTerminal {
 pub fn terminal_open(
     window: WebviewWindow,
     terminals: State<Terminals>,
+    project: String,
     cwd: Option<String>,
     shell: Option<String>,
     cols: u16,
@@ -115,6 +118,7 @@ pub fn terminal_open(
 
     let output = app.clone();
     let output_label = label.clone();
+    let output_project = project.clone();
     std::thread::spawn(move || {
         let mut chunker = Utf8Chunker::default();
         let mut buffer = [0u8; READ_BUFFER];
@@ -124,7 +128,7 @@ pub fn terminal_open(
             }
             let data = chunker.push(&buffer[..count]);
             if !data.is_empty() {
-                let _ = output.emit_to(output_label.as_str(), "terminal-output", TerminalOutput { id, data });
+                let _ = output.emit_to(output_label.as_str(), "terminal-output", TerminalOutput { project: output_project.clone(), id, data });
             }
         }
     });
@@ -134,7 +138,7 @@ pub fn terminal_open(
         if let Ok(mut sessions) = app.state::<Terminals>().sessions.lock() {
             sessions.remove(&id);
         }
-        let _ = app.emit_to(label.as_str(), "terminal-exit", TerminalExit { id, code });
+        let _ = app.emit_to(label.as_str(), "terminal-exit", TerminalExit { project, id, code });
     });
     Ok(OpenedTerminal { id, shell: shell.name })
 }

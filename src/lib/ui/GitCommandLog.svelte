@@ -1,6 +1,9 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { consoleLog, type ConsoleEntry } from "../console/console.svelte";
+  import type { ConsoleEntry } from "../console/console.svelte";
+  import { useProject } from "../project/context";
+
+  const consoleLog = useProject().console;
 
   let list = $state<HTMLElement>();
   let stickToBottom = true;

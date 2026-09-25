@@ -1,10 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-
-vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
-vi.mock("@tauri-apps/api/webviewWindow", () => ({ getCurrentWebviewWindow: () => ({ label: "main" }) }));
-vi.mock("../backend", () => ({ projectWindows: async () => [] }));
-
-const { folderInitial, folderName } = await import("./projects.svelte");
+import { describe, expect, it } from "vitest";
+import { folderInitial, folderName } from "./projects";
 
 describe("folderInitial", () => {
   it("uses the first letter or digit of the folder name", () => {

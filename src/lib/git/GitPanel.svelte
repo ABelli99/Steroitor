@@ -8,9 +8,10 @@
   import { layoutGraph } from "./graph";
   import type { GitRepo } from "./repo.svelte";
   import Chevron from "../ui/Chevron.svelte";
-  import { diffState, gitSelection } from "./selection.svelte";
+  import { useProject } from "../project/context";
 
   let { repo }: { repo: GitRepo } = $props();
+  const { selection, diff } = useProject();
 
   const PAGE_SIZE = 200;
   const FILTER_DELAY_MS = 300;
@@ -69,7 +70,7 @@
   let generation = 0;
 
   $effect(() => {
-    gitSelection.commit = selected?.hash ?? null;
+    selection.commit = selected?.hash ?? null;
   });
 
   $effect(() => {
@@ -142,7 +143,7 @@
       y: event.clientY,
       items: [
         { label: "Copia commit ID", run: () => navigator.clipboard.writeText(commit.hash) },
-        { label: "Mostra modifiche", hint: "Ctrl+D", run: () => (diffState.request = { kind: "commit", hash: commit.hash }) },
+        { label: "Mostra modifiche", hint: "Ctrl+D", run: () => (diff.request = { kind: "commit", hash: commit.hash }) },
         { label: "Checkout (detached)", run: () => history.checkoutCommit(commit.hash), separatorBefore: true },
         { label: "Nuovo branch da qui…", run: () => history.branchFrom(commit.hash) },
         { label: "Crea tag…", run: () => history.tag(commit.hash) },
@@ -229,7 +230,7 @@
           style:transform="translateY({index * ROW_HEIGHT}px)"
           style:grid-template-columns="{filtered ? '' : `${lanes * LANE_WIDTH}px `}64px 1fr 140px 110px"
           onclick={() => (selected = commit)}
-          ondblclick={() => (diffState.request = { kind: "commit", hash: commit.hash })}
+          ondblclick={() => (diff.request = { kind: "commit", hash: commit.hash })}
           oncontextmenu={(e) => commitMenu(e, commit)}
           onkeydown={() => {}}
         >

@@ -1,3 +1,4 @@
+use serde::Serialize;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
@@ -10,15 +11,27 @@ use tauri::{Emitter, State, WebviewWindow};
 const DEBOUNCE: Duration = Duration::from_millis(200);
 const ALWAYS_SKIPPED: &[&str] = &[".git", "node_modules"];
 
+struct Watch {
+    window: String,
+    _debouncer: Debouncer<RecommendedWatcher>,
+}
+
+/// Un watcher per progetto; gli eventi vanno alla finestra che lo ospita.
 #[derive(Default)]
-pub struct FolderWatcher(Mutex<HashMap<String, Debouncer<RecommendedWatcher>>>);
+pub struct FolderWatcher(Mutex<HashMap<String, Watch>>);
 
 impl FolderWatcher {
-    pub fn forget(&self, label: &str) {
-        if let Ok(mut watchers) = self.0.lock() {
-            watchers.remove(label);
+    pub fn forget_window(&self, label: &str) {
+        if let Ok(mut watches) = self.0.lock() {
+            watches.retain(|_, watch| watch.window != label);
         }
     }
+}
+
+#[derive(Serialize, Clone)]
+struct FsChanged {
+    project: String,
+    dirs: Vec<String>,
 }
 
 struct ChangeFilter {
@@ -64,28 +77,29 @@ fn changed_dirs(filter: &ChangeFilter, paths: impl Iterator<Item = PathBuf>) -> 
 }
 
 #[tauri::command]
-pub fn watch_folder(window: WebviewWindow, watcher: State<FolderWatcher>, path: Option<String>) -> Result<(), String> {
-    let label = window.label().to_owned();
-    let mut watchers = watcher.0.lock().map_err(|e| e.to_string())?;
-    watchers.remove(&label);
+pub fn watch_folder(window: WebviewWindow, watcher: State<FolderWatcher>, project: String, path: Option<String>) -> Result<(), String> {
+    let mut watches = watcher.0.lock().map_err(|e| e.to_string())?;
+    watches.remove(&project);
     let Some(path) = path else { return Ok(()) };
 
     let root = PathBuf::from(&path);
     let filter = ChangeFilter::new(&root);
+    let label = window.label().to_owned();
     let target = label.clone();
+    let id = project.clone();
     let mut debouncer = new_debouncer(DEBOUNCE, move |result: DebounceEventResult| {
         let Ok(events) = result else { return };
         if events.iter().any(|event| touches_git_metadata(&filter.root, &event.path)) {
-            let _ = window.emit_to(target.as_str(), "git-changed", ());
+            let _ = window.emit_to(target.as_str(), "git-changed", id.clone());
         }
         let dirs = changed_dirs(&filter, events.into_iter().map(|event| event.path));
         if !dirs.is_empty() {
-            let _ = window.emit_to(target.as_str(), "fs-changed", dirs);
+            let _ = window.emit_to(target.as_str(), "fs-changed", FsChanged { project: id.clone(), dirs });
         }
     })
     .map_err(|e| e.to_string())?;
     debouncer.watcher().watch(&root, RecursiveMode::Recursive).map_err(|e| e.to_string())?;
-    watchers.insert(label, debouncer);
+    watches.insert(project, Watch { window: label, _debouncer: debouncer });
     Ok(())
 }
 

@@ -16,17 +16,19 @@ export interface TerminalSession {
 type Sink = (data: string) => void;
 
 /**
- * Sessioni PTY aperte. L'output può arrivare prima che il frontend conosca l'id (o prima che la
+ * Sessioni PTY aperte di un progetto. L'output può arrivare prima che il frontend conosca l'id (o prima che la
  * vista xterm sia montata): resta in coda finché qualcuno si collega.
  */
-class Terminals {
+export class Terminals {
   sessions = $state<TerminalSession[]>([]);
   activeId = $state<number | null>(null);
   shells = $state<Shell[]>([]);
 
   #sinks = new Map<number, Sink>();
   #pending = new Map<number, string[]>();
-  #listening: Promise<unknown> | null = null;
+  #listening: Promise<Array<() => void>> | null = null;
+
+  constructor(readonly project: string) {}
 
   async loadShells() {
     this.shells = await invoke<Shell[]>("terminal_shells");
@@ -35,7 +37,7 @@ class Terminals {
   /** `shell` è l'id di una shell rilevata; senza, quella predefinita nelle impostazioni (o la prima trovata). */
   async open(cwd: string | null, shell = settings.terminalShell || null, cols = 80, rows = 24) {
     await this.#listen();
-    const opened = await invoke<{ id: number; shell: string }>("terminal_open", { cwd, shell, cols, rows });
+    const opened = await invoke<{ id: number; shell: string }>("terminal_open", { project: this.project, cwd, shell, cols, rows });
     this.sessions.push({ id: opened.id, title: this.#titleFor(opened.shell), exited: false });
     this.activeId = opened.id;
     return opened.id;
@@ -83,6 +85,14 @@ class Terminals {
     if (this.activeId === id) this.activeId = this.sessions.at(Math.max(0, index - 1))?.id ?? null;
   }
 
+  /** Progetto chiuso: shell terminate e niente più eventi. */
+  async dispose() {
+    for (const session of [...this.sessions]) this.close(session.id);
+    const unlisteners = await this.#listening;
+    unlisteners?.forEach((unlisten) => unlisten());
+    this.#listening = null;
+  }
+
   #deliver(id: number, data: string) {
     const sink = this.#sinks.get(id);
     if (sink) return sink(data);
@@ -94,8 +104,11 @@ class Terminals {
   #listen() {
     const appWindow = getCurrentWebviewWindow();
     this.#listening ??= Promise.all([
-      appWindow.listen<{ id: number; data: string }>("terminal-output", (event) => this.#deliver(event.payload.id, event.payload.data)),
-      appWindow.listen<{ id: number; code: number | null }>("terminal-exit", (event) => {
+      appWindow.listen<{ project: string; id: number; data: string }>("terminal-output", (event) => {
+        if (event.payload.project === this.project) this.#deliver(event.payload.id, event.payload.data);
+      }),
+      appWindow.listen<{ project: string; id: number; code: number | null }>("terminal-exit", (event) => {
+        if (event.payload.project !== this.project) return;
         const session = this.sessions.find((candidate) => candidate.id === event.payload.id);
         if (session) session.exited = true;
         this.#deliver(event.payload.id, `\r\n\x1b[2m[processo terminato${event.payload.code === null ? "" : `, codice ${event.payload.code}`}]\x1b[0m\r\n`);
@@ -104,5 +117,3 @@ class Terminals {
     return this.#listening;
   }
 }
-
-export const terminals = new Terminals();

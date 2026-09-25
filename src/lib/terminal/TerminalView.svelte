@@ -3,9 +3,10 @@
   import { Terminal } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
   import "@xterm/xterm/css/xterm.css";
-  import { terminals } from "./terminals.svelte";
+  import { useProject } from "../project/context";
 
   let { id, visible }: { id: number; visible: boolean } = $props();
+  const { terminals } = useProject();
 
   let host = $state<HTMLElement>();
   let terminal: Terminal | null = null;

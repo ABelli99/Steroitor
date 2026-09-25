@@ -1,303 +1,166 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-  import { open } from "@tauri-apps/plugin-dialog";
-  import { appReady, gitRepoRoot, openProjectWindow, setWindowFolder, startupFiles, windowFolder } from "./lib/backend";
-  import { listenToGitCommands } from "./lib/console/console.svelte";
-  import type { GitRepo } from "./lib/git/repo.svelte";
-  import { gitShortcuts } from "./lib/git/shortcuts";
-  import { diffState } from "./lib/git/selection.svelte";
-  import { vcsMenuItems } from "./lib/git/vcsMenu";
-  import { showPanel } from "./lib/ui/panels";
-  import { closeMenu, menuState, openMenu } from "./lib/ui/menu.svelte";
-  import { terminals } from "./lib/terminal/terminals.svelte";
-  import { gitInit } from "./lib/git/clone";
-  import { message } from "@tauri-apps/plugin-dialog";
-  import ContextMenu, { type MenuItem } from "./lib/ui/ContextMenu.svelte";
-  import type { Entry } from "./lib/backend";
-  import { isInsideDir, samePath } from "./lib/workspace/files";
-  import { installShortcuts } from "./lib/shortcuts";
-  import { Workspace } from "./lib/workspace/workspace.svelte";
-  import { FileTree } from "./lib/explorer/tree.svelte";
-  import { ExplorerActions } from "./lib/explorer/actions";
-  import { persistSession, readSession } from "./lib/workspace/session";
-  import { clamp, layout, saveLayout } from "./lib/ui/layout.svelte";
-  import TopBar from "./lib/ui/TopBar.svelte";
+  import { message, open } from "@tauri-apps/plugin-dialog";
+  import {
+    activateProject, appReady, detachProject, locateProject, setWindowState, startupFiles, windowState, type WindowState,
+  } from "./lib/backend";
+  import type { ConsoleEntry } from "./lib/console/console.svelte";
+  import { Project } from "./lib/project/project.svelte";
+  import ProjectView from "./lib/project/ProjectView.svelte";
+  import { commandOwner, moveTo } from "./lib/project/routing";
+  import ContextMenu from "./lib/ui/ContextMenu.svelte";
+  import { layout, saveLayout } from "./lib/ui/layout.svelte";
+  import { closeMenu, menuState } from "./lib/ui/menu.svelte";
   import ProjectBar from "./lib/ui/ProjectBar.svelte";
-  import { projects } from "./lib/ui/projects.svelte";
-  import Explorer from "./lib/ui/Explorer.svelte";
-  import TabBar from "./lib/ui/TabBar.svelte";
-  import Editor from "./lib/ui/Editor.svelte";
-  import BottomPanel from "./lib/ui/BottomPanel.svelte";
-  import { openTerminal } from "./lib/terminal/openTerminal";
-  import StatusBar from "./lib/ui/StatusBar.svelte";
-  import Splitter from "./lib/ui/Splitter.svelte";
-  import QuickOpen from "./lib/ui/QuickOpen.svelte";
   import PromptDialog from "./lib/ui/PromptDialog.svelte";
+  import { readSession } from "./lib/workspace/session";
 
-  const workspace = new Workspace();
-  const tree = new FileTree();
-  const actions = new ExplorerActions(tree, workspace);
-  let quickOpen = $state(false);
-  let cloneOpen = $state(false);
-  let git = $state<GitRepo | null>(null);
+  const MAIN_WINDOW = "main";
+  /** Il rilascio indica dove finisce la barra del titolo della nuova finestra, non il suo angolo. */
+  const DETACH_OFFSET = { x: 80, y: 12 };
+
   const appWindow = getCurrentWebviewWindow();
+  let projects = $state<Project[]>([]);
+  let activeId = $state<string | null>(null);
+  let ready = $state(false);
+
+  const byId = (id: string | null) => projects.find((project) => project.id === id);
 
   $effect(() => {
-    const tab = workspace.active;
-    const title = tab ? `${tab.dirty ? "● " : ""}${tab.name} — Steroitor` : "Steroitor";
-    appWindow.setTitle(title);
+    if (!ready) return;
+    const state: WindowState = { projects: projects.map((project) => ({ id: project.id, folder: project.folder })), active: activeId };
+    setWindowState(state).catch(console.error);
   });
 
-  const toggleExplorer = () => {
-    layout.explorerVisible = !layout.explorerVisible;
-    saveLayout();
-  };
+  function activate(id: string) {
+    const project = byId(id);
+    if (!project) return;
+    activeId = id;
+    project.mounted = true;
+    project.start().catch(console.error);
+  }
 
-  async function openFolder(folder?: string | null) {
-    folder ??= await open({ directory: true });
-    if (!folder) return;
-    await setWindowFolder(folder);
-    await tree.open(folder);
-    await connectRepo(folder);
-    terminals.relocate(git?.root ?? folder).catch(console.error);
+  /** Prima della 1.2 la finestra aveva una sola sessione: diventa il primo progetto. */
+  async function initialState(): Promise<{ projects: Project[]; active: string | null }> {
+    const saved = await windowState().catch(() => null);
+    if (saved) return { projects: saved.projects.map((ref) => new Project(ref.id, ref.folder)), active: saved.active };
+    const legacy = await readSession(null);
+    const project = new Project(undefined, legacy?.folder ?? null);
+    return { projects: [project], active: project.id };
+  }
+
+  /** Se la cartella è già aperta in un progetto lo mostra, anche se sta in un'altra finestra. */
+  async function reveal(folder: string) {
+    const found = await locateProject(folder).catch(() => null);
+    if (!found) return false;
+    if (found.window === appWindow.label) activate(found.project);
+    else await activateProject(found.window, found.project).catch(console.error);
+    return true;
+  }
+
+  const pickFolder = async () => (await open({ directory: true })) ?? null;
+
+  async function newProject() {
+    const folder = await pickFolder();
+    if (!folder || (await reveal(folder))) return;
+    const project = new Project(undefined, folder);
+    projects.push(project);
+    activate(project.id);
+  }
+
+  async function openFolderIn(project: Project, folder?: string) {
+    const target = folder ?? (await pickFolder());
+    if (!target || (await reveal(target))) return;
+    await project.openFolder(target);
     layout.explorerVisible = true;
     saveLayout();
   }
 
-  async function openInNewWindow() {
-    const folder = await open({ directory: true });
-    if (!folder) return;
-    await openProjectWindow(folder).catch((error) => message(String(error), { title: "Nuova finestra non riuscita", kind: "error" }));
+  async function closeProject(id: string) {
+    const project = byId(id);
+    if (!project || projects.length < 2) return;
+    const index = projects.indexOf(project);
+    if (activeId === id) activate((projects[index + 1] ?? projects[index - 1]).id);
+    projects.splice(index, 1);
+    await tick();
+    await project.dispose();
   }
 
-  function cloneRepository() {
-    cloneOpen = true;
-  }
-
-  async function onCloned(folder: string) {
-    cloneOpen = false;
-    await openFolder(folder);
-  }
-
-  async function initRepository() {
-    if (!tree.root) return;
-    try {
-      await gitInit(tree.root);
-      await connectRepo(tree.root);
-    } catch (error) {
-      await message(String(error), { title: "git init non riuscito", kind: "error" });
-    }
-  }
-
-  /** Il modulo Git si carica solo se la cartella è dentro un repository. */
-  async function connectRepo(folder: string) {
-    git?.dispose();
-    git = null;
-    const root = await gitRepoRoot(folder).catch(() => null);
-    if (!root) return;
-    const { GitRepo } = await import("./lib/git/repo.svelte");
-    const repo = new GitRepo(root, workspace);
-    git = repo;
-    await repo.refresh();
-  }
-
-  function openVcsMenu(x = 8, y = window.innerHeight - 28) {
-    if (!git) return;
-    const open = (items: MenuItem[]) => openMenu(x, y, items);
-    open(vcsMenuItems(git, { openCommit: () => showPanel("commit", "#commit-message"), open }));
-  }
-
-  function blameItem(tabId: string, path: string): MenuItem[] {
-    if (!git || !isInsideDir(path, git.root)) return [];
-    const active = git.annotated.has(tabId);
-    return [{ label: active ? "Chiudi annotazioni" : "Annotate con Git Blame", run: () => git?.toggleBlame(tabId, path) }];
-  }
-
-  function openGutterMenu(event: MouseEvent) {
-    const tab = workspace.active;
-    const items = tab?.path ? blameItem(tab.id, tab.path) : [];
-    openMenu(event.clientX, event.clientY, items);
-  }
-
-  function explorerGitItems(entry: Entry): MenuItem[] {
-    if (!git || entry.isDir || !isInsideDir(entry.path, git.root)) return [];
-    const annotate = async () => {
-      await workspace.openPath(entry.path);
-      const tab = workspace.tabs.find((candidate) => candidate.path && samePath(candidate.path, entry.path));
-      if (tab && !git?.annotated.has(tab.id)) git?.toggleBlame(tab.id, entry.path);
-    };
-    return [{ label: "Annotate con Git Blame", run: annotate, separatorBefore: true }];
-  }
-
-  function closeQuickOpen() {
-    quickOpen = false;
-    workspace.focusEditor();
+  async function detach(id: string, screenX: number, screenY: number) {
+    const project = byId(id);
+    if (!project || projects.length < 2) return;
+    const ref = { id: project.id, folder: project.folder };
+    await closeProject(id);
+    await detachProject(ref, screenX - DETACH_OFFSET.x, screenY - DETACH_OFFSET.y).catch((error) =>
+      message(String(error), { title: "Nuova finestra non riuscita", kind: "error" }),
+    );
   }
 
   onMount(() => {
-    const session = persistSession(workspace, tree);
-    const cleanups: Array<() => void> = [session.stop];
-    listenToGitCommands().then((unlisten) => cleanups.push(unlisten));
-    projects.track().then((unlisten) => cleanups.push(unlisten));
+    const cleanups: Array<() => void> = [];
+    const track = (listening: Promise<() => void>) => listening.then((unlisten) => cleanups.push(unlisten));
 
-    cleanups.push(
-      installShortcuts({
-        "Ctrl+N": { editor: () => workspace.newUntitled() },
-        "Ctrl+O": { editor: () => workspace.openDialog() },
-        "Ctrl+S": { editor: () => workspace.save() },
-        "Ctrl+Shift+S": { editor: () => workspace.saveAs() },
-        "Ctrl+W": { editor: () => workspace.close() },
-        "Ctrl+Tab": { editor: () => workspace.cycle(1) },
-        "Ctrl+Shift+Tab": { editor: () => workspace.cycle(-1) },
-        "Alt+Z": { editor: () => workspace.toggleWrap() },
-        "Alt+1": { editor: toggleExplorer, git: toggleExplorer, terminal: toggleExplorer },
-        "Ctrl+P": { editor: () => (quickOpen = !quickOpen), git: () => (quickOpen = !quickOpen) },
-        ...gitShortcuts({
-          repo: () => git,
-          workspace,
-          openVcsMenu: () => openVcsMenu(),
-          openTerminal: () => openTerminal(git?.root ?? tree.root),
-        }),
+    track(appWindow.listen<{ project: string; dirs: string[] }>("fs-changed", (event) => byId(event.payload.project)?.onFilesChanged(event.payload.dirs)));
+    track(appWindow.listen<string>("git-changed", (event) => byId(event.payload)?.git?.refresh()));
+    track(appWindow.listen<ConsoleEntry>("git-command", (event) => commandOwner(projects, event.payload.cwd, activeId)?.console.push(event.payload)));
+    track(appWindow.listen<string>("activate-project", (event) => activate(event.payload)));
+    track(
+      appWindow.listen<string[]>("open-files", async (event) => {
+        const project = byId(activeId);
+        for (const path of event.payload) await project?.workspace.openPath(path);
       }),
     );
+    track(appWindow.onCloseRequested(() => Promise.all(projects.map((project) => project.flush())).then(() => {})));
 
     (async () => {
-      const saved = await readSession();
-      if (saved) await workspace.restore(saved);
-      const folder = (await windowFolder()) ?? saved?.folder;
-      if (folder) {
-        await setWindowFolder(folder);
-        await tree.open(folder, saved?.folder === folder ? saved.expanded : undefined);
-        connectRepo(folder);
-      }
-      for (const path of await startupFiles()) await workspace.openPath(path);
-      workspace.focusEditor();
+      const initial = await initialState();
+      projects = initial.projects;
+      activate(byId(initial.active) ? initial.active! : projects[0].id);
+      ready = true;
+      const project = byId(activeId)!;
+      await project.start();
+      if (appWindow.label === MAIN_WINDOW) for (const path of await startupFiles()) await project.workspace.openPath(path);
+      project.workspace.focusEditor();
       appReady();
     })();
-
-    appWindow.listen<string[]>("fs-changed", (event) => {
-      tree.refresh(event.payload);
-      workspace.reloadCleanIn(event.payload);
-      git?.scheduleStatus();
-    }).then((unlisten) => cleanups.push(unlisten));
-
-    appWindow.listen("git-changed", () => git?.refresh()).then((unlisten) => cleanups.push(unlisten));
-
-    appWindow.listen<string[]>("open-files", async (event) => {
-      for (const path of event.payload) await workspace.openPath(path);
-    }).then((unlisten) => cleanups.push(unlisten));
-
-    appWindow.onCloseRequested(() => session.flush()).then((unlisten) => cleanups.push(unlisten));
 
     return () => cleanups.forEach((cleanup) => cleanup());
   });
 </script>
 
 <div class="app">
-  <TopBar {workspace} onopenfolder={() => openFolder()} onnewwindow={openInNewWindow} onclone={cloneRepository} />
-  <div class="main">
-    {#if projects.windows.length > 1}
-      <ProjectBar />
-    {/if}
-    {#if layout.explorerVisible}
-      <div class="explorer" style:width="{layout.explorerWidth}px">
-        <Explorer {tree} {workspace} {actions} onopenfolder={() => openFolder()} onclone={cloneRepository} statusOf={git ? (path) => git!.statusOf(path) : undefined}
-          extraItems={explorerGitItems}
-        />
-      </div>
-      <Splitter
-        direction="horizontal"
-        ondrag={(delta) => (layout.explorerWidth = clamp(layout.explorerWidth + delta, 140, 600))}
-        onend={saveLayout}
+  {#if projects.length > 1}
+    <ProjectBar
+      {projects}
+      {activeId}
+      onactivate={activate}
+      onclose={closeProject}
+      onmove={(id, toIndex) => (projects = moveTo(projects, id, toIndex))}
+      ondetach={detach}
+    />
+  {/if}
+  {#each projects as project (project.id)}
+    {#if project.mounted}
+      <ProjectView
+        {project}
+        active={project.id === activeId}
+        onopenfolder={(folder) => openFolderIn(project, folder)}
+        onnewproject={newProject}
       />
     {/if}
-    <div class="center">
-      <TabBar {workspace} />
-      <Editor {workspace} ongutterMenu={openGutterMenu} />
-    </div>
-  </div>
-  <div class="panel-area" class:hidden={!layout.panelVisible}>
-    <Splitter
-      direction="vertical"
-      ondrag={(delta) => (layout.panelHeight = clamp(layout.panelHeight - delta, 80, window.innerHeight - 200))}
-      onend={saveLayout}
-    />
-    <div class="bottom" style:height="{layout.panelHeight}px">
-      <BottomPanel {git} folder={tree.root} oninit={initRepository} onclone={cloneRepository} />
-    </div>
-  </div>
-  <StatusBar {workspace} {git} onvcsmenu={(event) => openVcsMenu(event.clientX, event.clientY)} />
+  {/each}
 </div>
 
-{#if cloneOpen}
-  {#await import("./lib/git/CloneDialog.svelte") then { default: CloneDialog }}
-    <CloneDialog onclose={() => (cloneOpen = false)} oncloned={onCloned} />
-  {/await}
-{/if}
-
-{#if quickOpen}
-  <QuickOpen {tree} {workspace} onclose={closeQuickOpen} />
-{/if}
 <PromptDialog />
 
 {#if menuState.current}
   <ContextMenu x={menuState.current.x} y={menuState.current.y} items={menuState.current.items} onclose={closeMenu} />
 {/if}
 
-{#if diffState.request?.kind === "merge" && git}
-  {#await import("./lib/git/MergeTool.svelte") then { default: MergeTool }}
-    <MergeTool repo={git} path={diffState.request.path} onclose={() => (diffState.request = null)} />
-  {/await}
-{:else if diffState.request && git}
-  {#await import("./lib/git/DiffDialog.svelte") then { default: DiffDialog }}
-    <DiffDialog
-      root={git.root}
-      request={diffState.request}
-      onclose={() => (diffState.request = null)}
-      onopenfile={(path) => {
-        diffState.request = null;
-        workspace.openPath(path);
-      }}
-    />
-  {/await}
-{/if}
-
 <style>
   .app {
     display: flex;
-    flex-direction: column;
     height: 100%;
-  }
-
-  .main {
-    display: flex;
-    flex: 1;
-    min-height: 0;
-  }
-
-  .explorer {
-    flex: none;
-  }
-
-  .center {
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-    min-width: 0;
-  }
-
-  .bottom {
-    flex: none;
-  }
-
-  .panel-area {
-    display: flex;
-    flex-direction: column;
-    flex: none;
-  }
-
-  .hidden {
-    display: none;
   }
 </style>

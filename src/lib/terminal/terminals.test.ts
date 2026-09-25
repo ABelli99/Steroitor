@@ -11,7 +11,8 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 vi.mock("@tauri-apps/api/webviewWindow", () => ({ getCurrentWebviewWindow: () => ({ listen: async () => () => {} }) }));
 
-const { terminals } = await import("./terminals.svelte");
+const { Terminals } = await import("./terminals.svelte");
+const terminals = new Terminals("p");
 
 describe("terminals.relocate", () => {
   beforeEach(() => {

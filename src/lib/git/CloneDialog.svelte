@@ -4,7 +4,7 @@
   import { homeDir } from "@tauri-apps/api/path";
   import { open } from "@tauri-apps/plugin-dialog";
   import { saveSettings, settings } from "../settings.svelte";
-  import { track } from "../ui/activity.svelte";
+  import { useProject } from "../project/context";
   import { parentDir } from "../workspace/files";
   import { gitClone, repoNameFromUrl } from "./clone";
 
@@ -14,6 +14,7 @@
   }
 
   let { onclose, oncloned }: Props = $props();
+  const { activity } = useProject();
 
   type PathState = "missing" | "emptyDir" | "dir" | "file";
 
@@ -70,7 +71,7 @@
     error = null;
     const target = directory.trim();
     try {
-      await track(`Clone di ${repoNameFromUrl(url)}`, () => gitClone(url.trim(), target));
+      await activity.track(`Clone di ${repoNameFromUrl(url)}`, () => gitClone(url.trim(), target));
       settings.cloneParent = parentDir(target);
       saveSettings();
       oncloned(target);
