@@ -158,7 +158,7 @@
               <NodeIcon kind={row.expanded ? "folder-open" : "folder"} />
             {:else}
               <span class="chevron-slot"></span>
-              <NodeIcon kind="file" />
+              <NodeIcon kind="file" path={row.entry.path} />
             {/if}
             <span class="name git-{statusOf?.(row.entry.path) ?? "clean"}" class:dir={row.entry.isDir}>{row.label}</span>
           </div>
