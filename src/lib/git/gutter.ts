@@ -1,11 +1,12 @@
 import { Chunk } from "@codemirror/merge";
 import { RangeSet, RangeSetBuilder, StateField, type Extension, type Text } from "@codemirror/state";
-import { EditorView, gutter, GutterMarker } from "@codemirror/view";
+import { EditorView, gutter, GutterMarker, lineNumberMarkers } from "@codemirror/view";
+import { overviewRuler } from "./overview";
 
 /** Click su un marker: riga cliccata, chunk HEAD↔buffer correnti e baseline (HEAD). */
 export type HunkClick = (view: EditorView, position: number, chunks: readonly Chunk[], baseline: Text, event: MouseEvent) => void;
 
-type ChangeKind = "added" | "modified" | "deleted";
+export type ChangeKind = "added" | "modified" | "deleted";
 
 class ChangeMarker extends GutterMarker {
   constructor(readonly kind: ChangeKind) {
@@ -29,11 +30,37 @@ const markers: Record<ChangeKind, ChangeMarker> = {
   deleted: new ChangeMarker("deleted"),
 };
 
+class ChangedNumberMarker extends GutterMarker {
+  constructor(readonly elementClass: string) {
+    super();
+  }
+}
+
+const numberMarkerOf: Partial<Record<ChangeKind, ChangedNumberMarker>> = {
+  added: new ChangedNumberMarker("cm-git-added-number"),
+  modified: new ChangedNumberMarker("cm-git-modified-number"),
+};
+
 const DIFF_CONFIG = { timeout: 200 };
 
-interface GutterState {
+export interface GutterState {
   chunks: readonly Chunk[];
   markers: RangeSet<GutterMarker>;
+  numbers: RangeSet<GutterMarker>;
+}
+
+function numberMarkers(markers: RangeSet<GutterMarker>): RangeSet<GutterMarker> {
+  const builder = new RangeSetBuilder<GutterMarker>();
+  for (const cursor = markers.iter(); cursor.value; cursor.next()) {
+    const marker = numberMarkerOf[(cursor.value as ChangeMarker).kind];
+    if (marker) builder.add(cursor.from, cursor.from, marker);
+  }
+  return builder.finish();
+}
+
+function gutterState(chunks: readonly Chunk[], baseline: Text, doc: Text): GutterState {
+  const markers = buildMarkers(baseline, chunks, doc);
+  return { chunks, markers, numbers: numberMarkers(markers) };
 }
 
 function allAdded(doc: Text): RangeSet<GutterMarker> {
@@ -65,6 +92,14 @@ export function buildMarkers(baseline: Text, chunks: readonly Chunk[], doc: Text
 }
 
 const theme = EditorView.baseTheme({
+  ".cm-lineNumbers .cm-gutterElement.cm-git-added-number": {
+    color: "var(--line-added-fg)",
+    backgroundColor: "var(--line-added-bg)",
+  },
+  ".cm-lineNumbers .cm-gutterElement.cm-git-modified-number": {
+    color: "var(--line-modified-fg)",
+    backgroundColor: "var(--line-modified-bg)",
+  },
   ".cm-git-gutter": { width: "4px", marginRight: "2px" },
   ".cm-git-gutter .cm-gutterElement": { padding: "0", cursor: "pointer" },
   ".cm-git-added, .cm-git-modified": { width: "3px", height: "100%" },
@@ -84,19 +119,20 @@ const theme = EditorView.baseTheme({
 export function gitGutter(baseline: Text, onClick?: HunkClick): Extension {
   const field = StateField.define<GutterState>({
     create(state) {
-      const chunks = Chunk.build(baseline, state.doc, DIFF_CONFIG);
-      return { chunks, markers: buildMarkers(baseline, chunks, state.doc) };
+      return gutterState(Chunk.build(baseline, state.doc, DIFF_CONFIG), baseline, state.doc);
     },
     update(value, transaction) {
       if (!transaction.docChanged) return value;
       const chunks = Chunk.updateB(value.chunks, baseline, transaction.newDoc, transaction.changes, DIFF_CONFIG);
-      return { chunks, markers: buildMarkers(baseline, chunks, transaction.newDoc) };
+      return gutterState(chunks, baseline, transaction.newDoc);
     },
   });
 
   return [
     field,
     theme,
+    lineNumberMarkers.compute([field], (state) => state.field(field).numbers),
+    overviewRuler((state) => state.field(field).markers),
     gutter({
       class: "cm-git-gutter",
       markers: (view) => view.state.field(field).markers,

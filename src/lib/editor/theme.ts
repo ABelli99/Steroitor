@@ -4,7 +4,15 @@ import { tags as t } from "@lezer/highlight";
 
 const chrome = EditorView.theme({
   "&": { height: "100%", color: "var(--fg)", backgroundColor: "var(--editor-bg)", fontSize: "var(--editor-font-size)" },
-  ".cm-scroller": { fontFamily: "var(--mono)", lineHeight: "1.5" },
+  ".cm-scroller": { fontFamily: "var(--mono)", lineHeight: "1.5", overflowY: "scroll" },
+  ".cm-scroller::-webkit-scrollbar": { width: "12px", height: "12px" },
+  ".cm-scroller::-webkit-scrollbar-thumb": {
+    backgroundColor: "var(--scrollbar-thumb)",
+    backgroundClip: "padding-box",
+    border: "3px solid transparent",
+    borderRadius: "6px",
+  },
+  ".cm-scroller::-webkit-scrollbar-corner": { backgroundColor: "transparent" },
   ".cm-content": { caretColor: "var(--accent)" },
   ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--accent)" },
   "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection": {

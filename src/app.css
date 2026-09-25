@@ -17,6 +17,13 @@
   --git-modified: #1f5fbf;
   --git-untracked: #b0433a;
   --git-ignored: #9e9e9e;
+  --line-added-fg: hsl(140 70% 30%);
+  --line-added-bg: hsl(140 50% 88%);
+  --line-modified-fg: hsl(215 70% 40%);
+  --line-modified-bg: hsl(215 50% 90%);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.22);
+  --folder-fill: #dfe1e5;
+  --folder-stroke: #6c707e;
 
   --hl-keyword: #0033b3;
   --hl-string: #067d17;
@@ -52,6 +59,13 @@
     --git-modified: #6ea8fe;
     --git-untracked: #d9776e;
     --git-ignored: #6f737a;
+    --line-added-fg: hsl(140 70% 58%);
+    --line-added-bg: hsl(140 50% 18%);
+    --line-modified-fg: hsl(215 70% 68%);
+    --line-modified-bg: hsl(215 50% 22%);
+    --scrollbar-thumb: rgba(255, 255, 255, 0.2);
+    --folder-fill: #43454a;
+    --folder-stroke: #9da0a8;
 
     --hl-keyword: #cf8e6d;
     --hl-string: #6aab73;

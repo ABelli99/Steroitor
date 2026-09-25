@@ -7,6 +7,7 @@
   import { absoluteTime, refLabel, relativeTime } from "./format";
   import { layoutGraph } from "./graph";
   import type { GitRepo } from "./repo.svelte";
+  import Chevron from "../ui/Chevron.svelte";
   import { diffState, gitSelection } from "./selection.svelte";
 
   let { repo }: { repo: GitRepo } = $props();
@@ -190,7 +191,7 @@
       {@const node = row.node}
       {#if node.kind === "folder"}
         <button class="folder" style:padding-left="{8 + row.depth * 12}px" onclick={() => toggleFolder(node.key)}>
-          <span class="chevron">{collapsed.has(node.key) ? "▸" : "▾"}</span>{node.name}
+          <Chevron expanded={!collapsed.has(node.key)} />{node.name}
         </button>
       {:else}
         <button
@@ -318,13 +319,9 @@
   }
 
   .branches .folder {
+    display: flex;
+    align-items: center;
     color: var(--fg-muted);
-  }
-
-  .chevron {
-    display: inline-block;
-    width: 12px;
-    font-size: 10px;
   }
 
   .branches .active {

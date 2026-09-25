@@ -6,6 +6,8 @@
   import type { Workspace } from "../workspace/workspace.svelte";
   import type { FileStatus } from "../git/api";
   import ContextMenu, { type MenuItem } from "./ContextMenu.svelte";
+  import Chevron from "./Chevron.svelte";
+  import NodeIcon from "./NodeIcon.svelte";
 
   interface Props {
     tree: FileTree;
@@ -151,7 +153,13 @@
             onkeydown={() => {}}
             oncontextmenu={(e) => openMenu(e, row.entry)}
           >
-            <span class="chevron">{row.entry.isDir ? (row.expanded ? "▾" : "▸") : ""}</span>
+            {#if row.entry.isDir}
+              <Chevron expanded={row.expanded} />
+              <NodeIcon kind={row.expanded ? "folder-open" : "folder"} />
+            {:else}
+              <span class="chevron-slot"></span>
+              <NodeIcon kind="file" />
+            {/if}
             <span class="name git-{statusOf?.(row.entry.path) ?? "clean"}" class:dir={row.entry.isDir}>{row.label}</span>
           </div>
         {/each}
@@ -222,7 +230,7 @@
     height: 22px;
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 2px;
     padding-right: 8px;
     white-space: nowrap;
     cursor: pointer;
@@ -244,11 +252,9 @@
     background: var(--selection);
   }
 
-  .chevron {
+  .chevron-slot {
     flex: none;
-    width: 12px;
-    font-size: 10px;
-    color: var(--fg-muted);
+    width: 16px;
   }
 
   .name {
