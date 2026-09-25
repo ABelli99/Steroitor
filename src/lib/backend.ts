@@ -56,4 +56,6 @@ export const setWindowFolder = (folder: string | null) => invoke<void>("set_wind
 
 export const focusProjectWindow = (label: string) => invoke<void>("focus_project_window", { label });
 
+export const closeProjectWindow = (label: string) => invoke<void>("close_project_window", { label });
+
 export const openProjectWindow = (folder: string) => invoke<void>("open_project_window", { folder });

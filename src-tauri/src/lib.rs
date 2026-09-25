@@ -108,6 +108,7 @@ pub fn run() {
             windows::window_folder,
             windows::set_window_folder,
             windows::focus_project_window,
+            windows::close_project_window,
             windows::open_project_window,
         ])
         .run(tauri::generate_context!())

@@ -98,6 +98,13 @@ pub fn focus_project_window(app: AppHandle, label: String) -> Result<(), String>
     Ok(())
 }
 
+/// Come la X della finestra: passa da CloseRequested, così la finestra salva la sessione prima di chiudersi.
+#[tauri::command]
+pub fn close_project_window(app: AppHandle, label: String) -> Result<(), String> {
+    let window = app.get_webview_window(&label).ok_or("Finestra chiusa")?;
+    window.close().map_err(|e| e.to_string())
+}
+
 /// Se la cartella è già aperta in una finestra porta quella in primo piano, altrimenti ne crea una nuova.
 #[tauri::command]
 pub async fn open_project_window(app: AppHandle, folder: String) -> Result<(), String> {

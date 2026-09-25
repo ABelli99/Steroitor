@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { focusProjectWindow, type ProjectWindow } from "../backend";
+  import { closeProjectWindow, focusProjectWindow, type ProjectWindow } from "../backend";
   import { folderInitial, folderName, projects } from "./projects.svelte";
   import icon from "../../../src-tauri/icons/32x32.png";
 
@@ -9,6 +9,12 @@
     const box = (event.currentTarget as HTMLElement).getBoundingClientRect();
     hint = { text: folderName(window.folder), top: box.top + box.height / 2 };
   }
+
+  function closeOnMiddleClick(event: MouseEvent, window: ProjectWindow) {
+    if (event.button !== 1) return;
+    hint = null;
+    closeProjectWindow(window.label).catch(console.error);
+  }
 </script>
 
 <nav class="bar" aria-label="Finestre aperte">
@@ -17,6 +23,7 @@
       class:current={window.label === projects.current}
       aria-label={folderName(window.folder)}
       onclick={() => focusProjectWindow(window.label)}
+      onauxclick={(event) => closeOnMiddleClick(event, window)}
       onmouseenter={(event) => showHint(event, window)}
       onmouseleave={() => (hint = null)}
     >
