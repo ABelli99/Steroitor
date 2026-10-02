@@ -5,6 +5,7 @@ mod session;
 mod shells;
 mod startup;
 mod terminal;
+mod updates;
 mod watcher;
 mod windows;
 
@@ -107,6 +108,7 @@ pub fn run() {
             terminal::terminal_write,
             terminal::terminal_resize,
             terminal::terminal_close,
+            updates::open_release_page,
             windows::window_state,
             windows::set_window_state,
             windows::locate_project,

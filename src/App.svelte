@@ -14,6 +14,7 @@
   import { closeMenu, menuState } from "./lib/ui/menu.svelte";
   import ProjectBar from "./lib/ui/ProjectBar.svelte";
   import PromptDialog from "./lib/ui/PromptDialog.svelte";
+  import { checkForUpdateLater } from "./lib/ui/updates.svelte";
   import { readSession } from "./lib/workspace/session";
 
   const MAIN_WINDOW = "main";
@@ -123,6 +124,7 @@
       if (appWindow.label === MAIN_WINDOW) for (const path of await startupFiles()) await project.workspace.openPath(path);
       project.workspace.focusEditor();
       appReady();
+      if (appWindow.label === MAIN_WINDOW) checkForUpdateLater();
     })();
 
     return () => cleanups.forEach((cleanup) => cleanup());

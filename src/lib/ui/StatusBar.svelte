@@ -3,6 +3,7 @@
   import { eolLabel } from "../workspace/files";
   import type { GitRepo } from "../git/repo.svelte";
   import { useProject } from "../project/context";
+  import { openUpdate, skipUpdate, updates } from "./updates.svelte";
   import type { Workspace } from "../workspace/workspace.svelte";
 
   interface Props {
@@ -43,6 +44,12 @@
   {/each}
   {#if activity.label}<span class="busy">{activity.label}…</span>{/if}
   <span class="spacer"></span>
+  {#if updates.available}
+    <span class="update">
+      <button title="Apri la pagina della release su GitHub" onclick={openUpdate}>⬆ Steroitor {updates.available.version} disponibile</button>
+      <button class="skip" title="Non avvisare più per questa versione" aria-label="Ignora questa versione" onclick={skipUpdate}>×</button>
+    </span>
+  {/if}
   {#if tab}
     <span>
       Ln {workspace.cursor.line}, Col {workspace.cursor.column}
@@ -93,6 +100,19 @@
 
   .vcs {
     color: var(--fg);
+  }
+
+  .update {
+    display: flex;
+    align-items: center;
+  }
+
+  .update button {
+    color: var(--accent);
+  }
+
+  .update .skip {
+    color: var(--fg-muted);
   }
 
   .vcs.selected {

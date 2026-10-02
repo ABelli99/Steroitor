@@ -196,6 +196,12 @@ le cartelle nascoste. Ogni repository ha stato, branch, log e commit propri; un 
 repository più interno che lo contiene. Un solo watcher per progetto, che legge il `.gitignore` di ogni
 repository. Non c'è il checkout sincronizzato dello stesso branch su tutti i repository.
 
+**Eccezione decisa (post-1.1.1):** controllo della versione su GitHub. Una sola richiesta per avvio, 5 s dopo
+l'apertura e solo dalla finestra principale, alla API delle Release; se ne esiste una più nuova compare un
+avviso nella status bar, che apre la pagina della release o ignora quella versione. Non scarica e non installa
+nulla da solo. La richiesta parte dalla webview (CSP: solo `api.github.com`), così non serve un client HTTP in
+Rust, che costava +0,5 MB di installer.
+
 ---
 
 ## Scorciatoie contestuali

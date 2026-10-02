@@ -9,9 +9,11 @@ interface Settings {
   cloneParent: string;
   /** Id della shell per i nuovi terminali; vuoto = la prima rilevata. */
   terminalShell: string;
+  /** Versione per cui l'utente ha chiuso l'avviso di aggiornamento. */
+  skippedVersion: string;
 }
 
-const defaults: Settings = { updateMethod: "merge", warnCrlf: true, cloneParent: "", terminalShell: "" };
+const defaults: Settings = { updateMethod: "merge", warnCrlf: true, cloneParent: "", terminalShell: "", skippedVersion: "" };
 
 function load(): Settings {
   try {
