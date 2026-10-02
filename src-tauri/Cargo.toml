@@ -1,6 +1,6 @@
 [package]
 name = "steroitor"
-version = "1.1.0"
+version = "1.1.1"
 description = "Notepad potenziato con integrazione Git"
 edition = "2021"
 
