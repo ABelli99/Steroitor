@@ -38,7 +38,7 @@ export function hunkMenu(repo: GitRepo, tabId: string, path: string): HunkClick 
     items.push({
       label: "Mostra diff del file",
       separatorBefore: true,
-      run: () => (repo.diff.request = { kind: "file", file: { path, status: repo.statusOf(path) ?? "modified" } }),
+      run: () => (repo.diff.request = { root: repo.root, kind: "file", file: { path, status: repo.statusOf(path) ?? "modified" } }),
     });
     openMenu(event.clientX, event.clientY, items);
   };

@@ -22,6 +22,7 @@ describe("keyOf", () => {
 describe("gitShortcuts", () => {
   const bindings = gitShortcuts({
     repo: () => null,
+    repoFor: () => null,
     workspace: {} as Workspace,
     commitDraft: { message: "", amend: false } as CommitDraft,
     selection: { commit: null, file: null } as GitSelection,

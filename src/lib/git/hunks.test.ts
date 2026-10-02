@@ -1,10 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { Chunk } from "@codemirror/merge";
 import { EditorState } from "@codemirror/state";
-import { rollbackChange, stagedContent, toText } from "./hunks";
+import { firstChangedLine, rollbackChange, stagedContent, toText } from "./hunks";
 
 const index = toText("uno\ndue\ntre\nquattro\ncinque\n");
 const buffer = toText("UNO\ndue\ntre\nquattro\nCINQUE\n");
+
+describe("firstChangedLine", () => {
+  it("finds the first line that differs from the base", () => {
+    expect(firstChangedLine(index, toText("uno\ndue\nTRE\nquattro\ncinque\n"))).toBe(3);
+    expect(firstChangedLine(index, buffer)).toBe(1);
+  });
+
+  it("points at the line after a deletion and defaults to the first line", () => {
+    expect(firstChangedLine(index, toText("uno\ndue\nquattro\ncinque\n"))).toBe(3);
+    expect(firstChangedLine(index, index)).toBe(1);
+  });
+});
 
 describe("stagedContent", () => {
   it("stages only the change that touches the given lines", () => {

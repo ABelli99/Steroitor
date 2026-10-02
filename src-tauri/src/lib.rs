@@ -57,6 +57,7 @@ pub fn run() {
             files::write_text_file,
             git::commands::git_version,
             git::commands::git_repo_root,
+            git::discover::git_find_repos,
             git::commands::git_status,
             git::commands::git_branches,
             git::commands::git_log,

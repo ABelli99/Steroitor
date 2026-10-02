@@ -4,16 +4,19 @@
   import { gitCommitMessage } from "./api";
   import CommitChanges from "./CommitChanges.svelte";
   import DiffView from "./DiffView.svelte";
-  import type { DiffRequest } from "./selection.svelte";
+  import { canJumpTo } from "./jumpToSource";
+  import type { DiffRequest, FileSelection } from "./selection.svelte";
 
   interface Props {
     root: string;
     request: DiffRequest;
     onclose: () => void;
     onopenfile: (path: string) => void;
+    /** Apre il file del diff nell'editor sulla prima riga modificata. */
+    onjump: (file: FileSelection) => void;
   }
 
-  let { root, request, onclose, onopenfile }: Props = $props();
+  let { root, request, onclose, onopenfile, onjump }: Props = $props();
 
   let dialog = $state<HTMLElement>();
   let subject = $state("");
@@ -44,6 +47,10 @@
       <span class="title">{title}</span>
       {#if request.kind === "file"}<span class="path">{request.file.path}</span>{/if}
       <span class="spacer"></span>
+      {#if request.kind === "file" && canJumpTo(request.file)}
+        {@const file = request.file}
+        <button title="Apri nell'editor alla prima modifica" onclick={() => onjump(file)}>Apri nell'editor</button>
+      {/if}
       <button onclick={onclose}>Chiudi</button>
     </header>
     <div class="body">

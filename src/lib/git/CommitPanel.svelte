@@ -5,6 +5,7 @@
   import type { GitRepo } from "./repo.svelte";
   import { fileRequest } from "./selection.svelte";
   import { submitCommit } from "./commitDraft.svelte";
+  import { canJumpTo, jumpToSource } from "./jumpToSource";
   import { useProject } from "../project/context";
 
   let { repo }: { repo: GitRepo } = $props();
@@ -37,6 +38,9 @@
     selection.file = { path: entry.path, status: entry.status };
   }
 
+  /** Dal diff al sorgente: apre il file sulla prima riga modificata, per correggerlo subito. */
+  const jumpTo = (entry: StatusEntry) => jumpToSource(repo.workspace, repo.root, entry);
+
   async function commit(andPush: boolean) {
     if (canCommit) await submitCommit(repo, commitDraft, andPush);
   }
@@ -54,6 +58,11 @@
   }
 
   function onListKeyDown(event: KeyboardEvent) {
+    if (event.key === "F4" && selected) {
+      event.preventDefault();
+      jumpTo(selected);
+      return;
+    }
     const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
     if (event.key === " " && selected) {
       event.preventDefault();
@@ -91,7 +100,7 @@
           aria-selected={entry === selected}
           title={entry.path}
           onclick={() => select(entry)}
-          ondblclick={() => (diff.request = fileRequest({ path: entry.path, status: entry.status }))}
+          ondblclick={() => (diff.request = fileRequest(repo.root, { path: entry.path, status: entry.status }))}
           onkeydown={() => {}}
         >
           <input
@@ -105,12 +114,25 @@
           <span class="letter git-{entry.status}">{LETTERS[entry.status] ?? "?"}</span>
           <span class="name git-{entry.status}">{fileName(entry.path)}</span>
           <span class="dir">{relativeDir(entry.path)}</span>
+          {#if canJumpTo(entry)}
+            <button
+              class="jump"
+              title="Apri nell'editor alla prima modifica (F4)"
+              aria-label="Apri {fileName(entry.path)} nell'editor"
+              onclick={(e) => {
+                e.stopPropagation();
+                jumpTo(entry);
+              }}
+            >
+              <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M6 3H3v10h10v-3M9 2h5v5M14 2L7 9" /></svg>
+            </button>
+          {/if}
           {#if entry.status === "conflict"}
             <button
               class="resolve"
               onclick={(e) => {
                 e.stopPropagation();
-                diff.request = { kind: "merge", path: entry.path };
+                diff.request = { root: repo.root, kind: "merge", path: entry.path };
               }}>Risolvi…</button
             >
           {/if}
@@ -158,6 +180,12 @@
 
   <div class="preview">
     {#if selected}
+      <div class="preview-header">
+        <span class="path" title={selected.path}>{selected.path}</span>
+        {#if canJumpTo(selected)}
+          <button title="Apri nell'editor alla prima modifica (F4)" onclick={() => jumpTo(selected)}>Apri nell'editor</button>
+        {/if}
+      </div>
       <DiffView root={repo.root} file={{ path: selected.path, status: selected.status }} />
     {:else}
       <p class="empty">Seleziona un file per vedere le modifiche.</p>
@@ -222,6 +250,30 @@
     width: 10px;
     font-family: var(--mono);
     font-weight: 600;
+  }
+
+  .jump {
+    display: grid;
+    place-items: center;
+    margin-left: auto;
+    padding: 1px 4px;
+    color: var(--fg-muted);
+    visibility: hidden;
+  }
+
+  .jump svg {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+  }
+
+  .file:hover .jump,
+  .file.selected .jump {
+    visibility: visible;
+  }
+
+  .jump:hover {
+    color: var(--accent);
   }
 
   .resolve {
@@ -319,8 +371,35 @@
   }
 
   .preview {
+    display: flex;
+    flex-direction: column;
     flex: 1;
     min-width: 0;
+  }
+
+  .preview-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: none;
+    padding: 2px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .preview-header .path {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--fg-muted);
+    direction: rtl;
+    text-align: left;
+  }
+
+  .preview-header button {
+    flex: none;
+    color: var(--accent);
   }
 
   .empty {

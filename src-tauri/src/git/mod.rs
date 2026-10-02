@@ -1,5 +1,6 @@
 mod changes;
 pub mod commands;
+pub mod discover;
 mod history;
 mod ops;
 mod parse;

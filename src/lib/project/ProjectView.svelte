@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import type { Entry } from "../backend";
+  import { jumpToSource } from "../git/jumpToSource";
   import { gitShortcuts } from "../git/shortcuts";
   import { vcsMenuItems } from "../git/vcsMenu";
   import { installShortcuts } from "../shortcuts";
@@ -17,7 +18,7 @@
   import StatusBar from "../ui/StatusBar.svelte";
   import TabBar from "../ui/TabBar.svelte";
   import TopBar from "../ui/TopBar.svelte";
-  import { isInsideDir, samePath } from "../workspace/files";
+  import { samePath } from "../workspace/files";
   import { provideProject } from "./context";
   import type { Project } from "./project.svelte";
 
@@ -35,6 +36,7 @@
 
   const { workspace, tree, actions } = $derived(project);
   const git = $derived(project.git);
+  const mergeRepo = $derived(project.repos.find((repo) => project.diff.request && samePath(repo.root, project.diff.request.root)) ?? null);
   let quickOpen = $state(false);
   let cloneOpen = $state(false);
 
@@ -64,6 +66,7 @@
       "Ctrl+P": { editor: () => (quickOpen = !quickOpen), git: () => (quickOpen = !quickOpen) },
       ...gitShortcuts({
         repo: () => project.git,
+        repoFor: (path) => project.repoFor(path),
         workspace,
         commitDraft: project.commitDraft,
         selection: project.selection,
@@ -84,16 +87,18 @@
     onopenfolder(folder);
   }
 
-  function openVcsMenu(x = 8, y = window.innerHeight - 28) {
-    if (!git) return;
+  function openVcsMenu(x = 8, y = window.innerHeight - 28, repo = git) {
+    if (!repo) return;
+    project.select(repo);
     const open = (items: MenuItem[]) => openMenu(x, y, items);
-    open(vcsMenuItems(git, { openCommit: () => showPanel("commit", "#commit-message"), open }));
+    open(vcsMenuItems(repo, { openCommit: () => showPanel("commit", "#commit-message"), open }));
   }
 
   function blameItem(tabId: string, path: string): MenuItem[] {
-    if (!git || !isInsideDir(path, git.root)) return [];
-    const annotated = git.annotated.has(tabId);
-    return [{ label: annotated ? "Chiudi annotazioni" : "Annotate con Git Blame", run: () => git?.toggleBlame(tabId, path) }];
+    const repo = project.repoFor(path);
+    if (!repo) return [];
+    const annotated = repo.annotated.has(tabId);
+    return [{ label: annotated ? "Chiudi annotazioni" : "Annotate con Git Blame", run: () => repo.toggleBlame(tabId, path) }];
   }
 
   function openGutterMenu(event: MouseEvent) {
@@ -103,11 +108,12 @@
   }
 
   function explorerGitItems(entry: Entry): MenuItem[] {
-    if (!git || entry.isDir || !isInsideDir(entry.path, git.root)) return [];
+    const repo = entry.isDir ? null : project.repoFor(entry.path);
+    if (!repo) return [];
     const annotate = async () => {
       await workspace.openPath(entry.path);
       const tab = workspace.tabs.find((candidate) => candidate.path && samePath(candidate.path, entry.path));
-      if (tab && !git?.annotated.has(tab.id)) git?.toggleBlame(tab.id, entry.path);
+      if (tab && !repo.annotated.has(tab.id)) repo.toggleBlame(tab.id, entry.path);
     };
     return [{ label: "Annotate con Git Blame", run: annotate, separatorBefore: true }];
   }
@@ -129,7 +135,7 @@
           {actions}
           onopenfolder={() => onopenfolder()}
           onclone={() => (cloneOpen = true)}
-          statusOf={git ? (path) => git!.statusOf(path) : undefined}
+          statusOf={project.repos.length ? (path) => project.statusOf(path) : undefined}
           extraItems={explorerGitItems}
         />
       </div>
@@ -154,7 +160,7 @@
       <BottomPanel {git} folder={tree.root} oninit={() => project.initRepository()} onclone={() => (cloneOpen = true)} />
     </div>
   </div>
-  <StatusBar {workspace} {git} onvcsmenu={(event) => openVcsMenu(event.clientX, event.clientY)} />
+  <StatusBar {workspace} repos={project.repos} selected={git} onvcsmenu={(event, repo) => openVcsMenu(event.clientX, event.clientY, repo)} />
 
   {#if cloneOpen}
     {#await import("../git/CloneDialog.svelte") then { default: CloneDialog }}
@@ -166,19 +172,24 @@
     <QuickOpen {tree} {workspace} onclose={closeQuickOpen} />
   {/if}
 
-  {#if project.diff.request?.kind === "merge" && git}
+  {#if project.diff.request?.kind === "merge" && mergeRepo}
     {#await import("../git/MergeTool.svelte") then { default: MergeTool }}
-      <MergeTool repo={git} path={project.diff.request.path} onclose={() => (project.diff.request = null)} />
+      <MergeTool repo={mergeRepo} path={project.diff.request.path} onclose={() => (project.diff.request = null)} />
     {/await}
-  {:else if project.diff.request && git}
+  {:else if project.diff.request}
     {#await import("../git/DiffDialog.svelte") then { default: DiffDialog }}
       <DiffDialog
-        root={git.root}
+        root={project.diff.request.root}
         request={project.diff.request}
         onclose={() => (project.diff.request = null)}
         onopenfile={(path) => {
           project.diff.request = null;
           workspace.openPath(path);
+        }}
+        onjump={(file) => {
+          const root = project.diff.request?.root;
+          project.diff.request = null;
+          if (root) jumpToSource(workspace, root, file);
         }}
       />
     {/await}

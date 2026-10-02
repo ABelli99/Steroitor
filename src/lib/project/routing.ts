@@ -17,6 +17,15 @@ export function moveTo<T extends Identified>(items: T[], id: string, toIndex: nu
   return next;
 }
 
+/** L'elemento con la radice più specifica che contiene `path`. */
+export function innermost<T extends { root: string }>(items: T[], path: string): T | null {
+  let found: T | null = null;
+  for (const item of items) {
+    if (isInsideDir(path, item.root) && (!found || item.root.length > found.root.length)) found = item;
+  }
+  return found;
+}
+
 /**
  * Progetto a cui appartiene un comando Git eseguito in `cwd`: la radice più specifica che lo contiene.
  * A pari radice (due cartelle dello stesso repository) vince il progetto attivo, che è quello su cui si sta lavorando.

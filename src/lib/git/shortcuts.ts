@@ -1,7 +1,6 @@
 import type { Handlers } from "../shortcuts";
 import { layout } from "../ui/layout.svelte";
 import { showPanel } from "../ui/panels";
-import { isInsideDir } from "../workspace/files";
 import type { Workspace } from "../workspace/workspace.svelte";
 import { submitCommit, type CommitDraft } from "./commitDraft.svelte";
 import type { GitRepo } from "./repo.svelte";
@@ -11,6 +10,8 @@ const COMMIT_MESSAGE = "#commit-message";
 
 interface Options {
   repo: () => GitRepo | null;
+  /** Repository a cui appartiene un file: con più repository non è per forza quello selezionato. */
+  repoFor: (path: string) => GitRepo | null;
   workspace: Workspace;
   commitDraft: CommitDraft;
   selection: GitSelection;
@@ -20,7 +21,7 @@ interface Options {
 }
 
 /** Scorciatoie Git (vedi CLAUDE.md). Ctrl+D e Ctrl+T cambiano azione in base al focus. */
-export function gitShortcuts({ repo, workspace, commitDraft, selection, diff, openVcsMenu, openTerminal }: Options): Record<string, Handlers> {
+export function gitShortcuts({ repo, repoFor, workspace, commitDraft, selection, diff, openVcsMenu, openTerminal }: Options): Record<string, Handlers> {
   const both = (run: () => void): Handlers => ({ editor: run, git: run });
   const everywhere = (run: () => void): Handlers => ({ editor: run, git: run, terminal: run });
   const withRepo = (run: (repo: GitRepo) => void) => () => {
@@ -35,10 +36,10 @@ export function gitShortcuts({ repo, workspace, commitDraft, selection, diff, op
       await submitCommit(current, commitDraft, andPush);
     });
 
-  const stageActiveFile = withRepo((current) => {
+  const stageActiveFile = () => {
     const path = workspace.active?.path;
-    if (path && isInsideDir(path, current.root)) current.stage([path]);
-  });
+    if (path) repoFor(path)?.stage([path]);
+  };
 
   const stageSelectedFile = withRepo((current) => {
     if (layout.panelTab === "commit" && selection.file) current.stage([selection.file.path]);
@@ -50,7 +51,7 @@ export function gitShortcuts({ repo, workspace, commitDraft, selection, diff, op
     "Ctrl+Shift+K": both(withRepo((current) => current.push())),
     "Ctrl+Alt+A": { editor: stageActiveFile, git: stageSelectedFile },
     "Ctrl+T": { editor: openTerminal, terminal: openTerminal, git: withRepo((current) => current.update()) },
-    "Ctrl+D": { git: () => showSelectedDiff(selection, diff, layout.panelTab === "commit" ? "commit" : "git") },
+    "Ctrl+D": { git: withRepo((current) => showSelectedDiff(current.root, selection, diff, layout.panelTab === "commit" ? "commit" : "git")) },
     "Alt+9": everywhere(() => showPanel("git")),
     "Alt+`": everywhere(withRepo(() => openVcsMenu())),
   };

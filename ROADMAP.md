@@ -181,7 +181,6 @@ Presenti nel CLAUDE.md ma incompatibili con "notepad leggero":
 | Changelist stile IntelliJ | Duplica la staging area, logica complessa, beneficio basso |
 | Interactive Rebase | UI complessa, uso raro; il terminale basta |
 | Local History | Richiede storage persistente e indicizzazione continua |
-| Multi-repository nello stesso progetto | Moltiplica watcher e stato Git |
 | Integrazione GitHub/GitLab (PR, ecc.) | Dipendenze di rete e auth, fuori dal ruolo di un notepad |
 | GPG signing, protected branches, SSH built-in | Si delega a Git di sistema e alla sua config |
 | Auto-fetch | Traffico e processi in background non richiesti |
@@ -190,6 +189,12 @@ Presenti nel CLAUDE.md ma incompatibili con "notepad leggero":
 trascinabili fuori in una finestra propria. Ogni progetto ha il suo watcher, il suo stato Git e i suoi
 terminali, quindi il costo è quello indicato sopra, moltiplicato per i progetti aperti. Per contenerlo, un
 progetto ripristinato all'avvio non si carica finché non lo apri. Il budget RAM vale per un progetto solo.
+
+**Eccezione decisa (post-1.1.0):** più repository nello stesso progetto, es. `gipso/` con dentro
+`gipso-fe` e `gipso-be`. Si cercano fino a 3 livelli sotto la cartella, saltando `node_modules`, `target` e
+le cartelle nascoste. Ogni repository ha stato, branch, log e commit propri; un file appartiene al
+repository più interno che lo contiene. Un solo watcher per progetto, che legge il `.gitignore` di ogni
+repository. Non c'è il checkout sincronizzato dello stesso branch su tutti i repository.
 
 ---
 

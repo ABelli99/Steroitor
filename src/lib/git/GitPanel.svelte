@@ -143,7 +143,7 @@
       y: event.clientY,
       items: [
         { label: "Copia commit ID", run: () => navigator.clipboard.writeText(commit.hash) },
-        { label: "Mostra modifiche", hint: "Ctrl+D", run: () => (diff.request = { kind: "commit", hash: commit.hash }) },
+        { label: "Mostra modifiche", hint: "Ctrl+D", run: () => (diff.request = { root: repo.root, kind: "commit", hash: commit.hash }) },
         { label: "Checkout (detached)", run: () => history.checkoutCommit(commit.hash), separatorBefore: true },
         { label: "Nuovo branch da qui…", run: () => history.branchFrom(commit.hash) },
         { label: "Crea tag…", run: () => history.tag(commit.hash) },
@@ -230,7 +230,7 @@
           style:transform="translateY({index * ROW_HEIGHT}px)"
           style:grid-template-columns="{filtered ? '' : `${lanes * LANE_WIDTH}px `}64px 1fr 140px 110px"
           onclick={() => (selected = commit)}
-          ondblclick={() => (diff.request = { kind: "commit", hash: commit.hash })}
+          ondblclick={() => (diff.request = { root: repo.root, kind: "commit", hash: commit.hash })}
           oncontextmenu={(e) => commitMenu(e, commit)}
           onkeydown={() => {}}
         >

@@ -7,27 +7,40 @@
 
   interface Props {
     workspace: Workspace;
-    git: GitRepo | null;
-    onvcsmenu: (event: MouseEvent) => void;
+    repos: GitRepo[];
+    selected: GitRepo | null;
+    onvcsmenu: (event: MouseEvent, repo: GitRepo) => void;
   }
 
-  let { workspace, git, onvcsmenu }: Props = $props();
+  let { workspace, repos, selected, onvcsmenu }: Props = $props();
   const { activity } = useProject();
   const tab = $derived(workspace.active);
-  const branch = $derived(git?.branch ?? null);
-  const branchLabel = $derived(branch ? (branch.head ?? `HEAD staccato (${branch.oid?.slice(0, 7) ?? "?"})`) : null);
+  const several = $derived(repos.length > 1);
+
+  const vcsTitle = (repo: GitRepo) => (several ? `Branch e operazioni Git di ${repo.root} (Alt+\` per il repository selezionato)` : "Branch e operazioni Git (Alt+`)");
+
+  const branchLabel = (branch: NonNullable<GitRepo["branch"]>) => branch.head ?? `HEAD staccato (${branch.oid?.slice(0, 7) ?? "?"})`;
 </script>
 
 <footer class="status">
-  {#if branch}
-    <button class="vcs" title="Branch e operazioni Git (Alt+`)" onclick={onvcsmenu}>
-      ⎇ {branchLabel}{#if branch.ahead} ↑{branch.ahead}{/if}{#if branch.behind} ↓{branch.behind}{/if}
-    </button>
-    {#if git?.operation}
-      <span class="operation">{git.operation.toUpperCase()}{#if git.conflicts} · {git.conflicts} conflitti{/if}</span>
+  {#each repos as repo (repo.root)}
+    {#if repo.branch}
+      {@const branch = repo.branch}
+      <button
+        class="vcs"
+        class:selected={several && repo === selected}
+        title={vcsTitle(repo)}
+        onclick={(event) => onvcsmenu(event, repo)}
+      >
+        {#if several}<span class="repo">{repo.name}</span>{/if}
+        ⎇ {branchLabel(branch)}{#if branch.ahead} ↑{branch.ahead}{/if}{#if branch.behind} ↓{branch.behind}{/if}
+      </button>
+      {#if repo.operation}
+        <span class="operation">{repo.operation.toUpperCase()}{#if repo.conflicts} · {repo.conflicts} conflitti{/if}</span>
+      {/if}
+      {#if repo.busy}<span class="busy">{repo.busy}…</span>{/if}
     {/if}
-    {#if git?.busy}<span class="busy">{git.busy}…</span>{/if}
-  {/if}
+  {/each}
   {#if activity.label}<span class="busy">{activity.label}…</span>{/if}
   <span class="spacer"></span>
   {#if tab}
@@ -80,6 +93,14 @@
 
   .vcs {
     color: var(--fg);
+  }
+
+  .vcs.selected {
+    box-shadow: inset 0 -2px 0 var(--accent);
+  }
+
+  .repo {
+    color: var(--fg-muted);
   }
 
   .on {

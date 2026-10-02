@@ -2,7 +2,7 @@ import { Text } from "@codemirror/state";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 import { saveSettings, settings } from "../settings.svelte";
 import { askText } from "../ui/prompt.svelte";
-import { isInsideDir } from "../workspace/files";
+import { fileName, isInsideDir } from "../workspace/files";
 import type { Workspace } from "../workspace/workspace.svelte";
 import {
   gitBlame, gitBranches, gitCommit, gitCreateBranch, gitFetch, gitHeadContent, gitPull, gitPush, gitStage, gitStagedCrlfFiles,
@@ -38,6 +38,7 @@ export class GitRepo {
   /** Tab con le annotazioni blame attive. */
   annotated = $state.raw(new Set<string>());
   readonly history = new GitHistory(this);
+  readonly name: string;
 
   #files = $state.raw(new Map<string, FileStatus>());
   #dirs = $state.raw<Array<[string, FileStatus]>>([]);
@@ -49,7 +50,10 @@ export class GitRepo {
     readonly root: string,
     readonly workspace: Workspace,
     readonly diff: DiffState,
+    /** Con repository annidati un file appartiene solo al più interno che lo contiene. */
+    readonly owns: (path: string) => boolean = (path) => isInsideDir(path, root),
   ) {
+    this.name = fileName(root);
     this.#unsubscribe = workspace.onChange(() => this.#syncGutters());
   }
 
@@ -179,7 +183,7 @@ export class GitRepo {
       await message(String(error), { title: "Annotate non disponibile", kind: "error" });
       return null;
     });
-    if (lines) this.#setBlame(tabId, blameGutter(lines, (hash) => (this.diff.request = { kind: "commit", hash })));
+    if (lines) this.#setBlame(tabId, blameGutter(lines, (hash) => (this.diff.request = { root: this.root, kind: "commit", hash })));
   }
 
   #setBlame(tabId: string, extension: ReturnType<typeof blameGutter> | null) {
@@ -245,7 +249,7 @@ Apri i file (sono in rosso nel pannello Commit), risolvi i marker <<<<<<< / >>>>
   #syncGutters() {
     const open = new Set<string>();
     for (const tab of this.workspace.tabs) {
-      if (!tab.path || !isInsideDir(tab.path, this.root)) continue;
+      if (!tab.path || !this.owns(tab.path)) continue;
       open.add(tab.id);
       if (this.#gutters.get(tab.id) === tab.path) continue;
       this.#gutters.set(tab.id, tab.path);

@@ -162,6 +162,19 @@ export class Workspace {
     this.#view?.focus();
   }
 
+  /** Testo del file mostrato nell'editor, con le modifiche non salvate. */
+  activeText(): Text | null {
+    return this.#view?.state.doc ?? (this.activeId ? (this.#states.get(this.activeId)?.doc ?? null) : null);
+  }
+
+  goToLine(line: number) {
+    const view = this.#view;
+    if (!view) return;
+    const target = view.state.doc.line(Math.min(Math.max(line, 1), view.state.doc.lines));
+    view.dispatch({ selection: { anchor: target.from }, effects: EditorView.scrollIntoView(target.from, { y: "center" }) });
+    view.focus();
+  }
+
   cycle(step: 1 | -1) {
     if (this.tabs.length < 2) return;
     const index = this.tabs.findIndex((tab) => tab.id === this.activeId);

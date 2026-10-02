@@ -8,6 +8,12 @@ const clamp = (position: number, doc: Text) => Math.min(position, doc.length);
 
 export const toText = (content: string) => Text.of(content.split(/\r\n|\r|\n/));
 
+/** Prima riga (da 1) di `current` che differisce da `base`; 1 se non ci sono differenze. */
+export function firstChangedLine(base: Text, current: Text) {
+  const [chunk] = Chunk.build(base, current, DIFF_CONFIG);
+  return chunk ? current.lineAt(clamp(chunk.fromB, current)).number : 1;
+}
+
 export function firstLine(chunk: Chunk, buffer: Text) {
   return buffer.lineAt(clamp(chunk.fromB, buffer)).number;
 }

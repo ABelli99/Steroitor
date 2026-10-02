@@ -43,6 +43,9 @@ export const watchFolder = (project: string, path: string | null) => invoke<void
 
 export const gitRepoRoot = (path: string) => invoke<string | null>("git_repo_root", { path });
 
+/** Repository dentro `root`, lui compreso (es. `gipso/gipso-fe` e `gipso/gipso-be`). */
+export const gitFindRepos = (root: string) => invoke<string[]>("git_find_repos", { root });
+
 export interface ProjectRef {
   id: string;
   folder: string | null;

@@ -102,7 +102,7 @@
     const track = (listening: Promise<() => void>) => listening.then((unlisten) => cleanups.push(unlisten));
 
     track(appWindow.listen<{ project: string; dirs: string[] }>("fs-changed", (event) => byId(event.payload.project)?.onFilesChanged(event.payload.dirs)));
-    track(appWindow.listen<string>("git-changed", (event) => byId(event.payload)?.git?.refresh()));
+    track(appWindow.listen<{ project: string; repo: string }>("git-changed", (event) => byId(event.payload.project)?.onGitChanged(event.payload.repo)));
     track(appWindow.listen<ConsoleEntry>("git-command", (event) => commandOwner(projects, event.payload.cwd, activeId)?.console.push(event.payload)));
     track(appWindow.listen<string>("activate-project", (event) => activate(event.payload)));
     track(

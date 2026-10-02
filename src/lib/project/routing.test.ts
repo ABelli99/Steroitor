@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { commandOwner, moveTo } from "./routing";
+import { commandOwner, innermost, moveTo } from "./routing";
 
 const ids = (items: Array<{ id: string }>) => items.map((item) => item.id).join("");
 
@@ -20,6 +20,22 @@ describe("moveTo", () => {
     expect(ids(moveTo(items, "b", 1))).toBe("abcd");
     expect(ids(moveTo(items, "b", 2))).toBe("abcd");
     expect(moveTo(items, "x", 0)).toBe(items);
+  });
+});
+
+describe("innermost", () => {
+  const outer = { root: "C:\\gipso" };
+  const fe = { root: "C:\\gipso\\gipso-fe" };
+  const be = { root: "C:\\gipso\\gipso-be" };
+
+  it("assigns a file to the deepest repository containing it", () => {
+    expect(innermost([outer, fe, be], "C:\\gipso\\gipso-fe\\src\\main.ts")).toBe(fe);
+    expect(innermost([fe, be, outer], "C:\\gipso\\gipso-be\\pom.xml")).toBe(be);
+    expect(innermost([outer, fe, be], "C:\\gipso\\README.md")).toBe(outer);
+  });
+
+  it("does not confuse siblings sharing a prefix", () => {
+    expect(innermost([fe], "C:\\gipso\\gipso-fe-old\\a.ts")).toBeNull();
   });
 });
 

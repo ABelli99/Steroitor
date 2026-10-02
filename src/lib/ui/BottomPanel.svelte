@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { GitRepo } from "../git/repo.svelte";
+  import { useProject } from "../project/context";
   import ConsolePanel from "./ConsolePanel.svelte";
   import { layout, saveLayout } from "./layout.svelte";
 
@@ -11,6 +12,7 @@
   }
 
   let { git, folder, oninit, onclone }: Props = $props();
+  const project = useProject();
 
   const tabs = [
     { id: "console", label: "Console" },
@@ -34,18 +36,35 @@
   </div>
   <div class="content" tabindex="-1" data-panel-content data-shortcut-context={layout.panelTab === "console" ? "editor" : "git"}>
     <div class="keep-alive" class:hidden={layout.panelTab !== "console"}>
-      <ConsolePanel cwd={git?.root ?? folder} />
+      <ConsolePanel cwd={project.root} />
     </div>
     {#if layout.panelTab === "console"}
       <!-- sempre montata: i terminali devono sopravvivere al cambio di tab -->
-    {:else if git && layout.panelTab === "git"}
-      {#await import("../git/GitPanel.svelte") then { default: GitPanel }}
-        <GitPanel repo={git} />
-      {/await}
     {:else if git}
-      {#await import("../git/CommitPanel.svelte") then { default: CommitPanel }}
-        <CommitPanel repo={git} />
-      {/await}
+      <div class="repo-view">
+        {#if project.repos.length > 1}
+          <div class="repos" role="tablist" aria-label="Repository">
+            {#each project.repos as repo (repo.root)}
+              <button role="tab" aria-selected={repo === git} class:active={repo === git} title={repo.root} onclick={() => project.select(repo)}>
+                {repo.name}{#if repo.changes.length}<span class="count">{repo.changes.length}</span>{/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
+        <div class="repo-content">
+          {#key git.root}
+            {#if layout.panelTab === "git"}
+              {#await import("../git/GitPanel.svelte") then { default: GitPanel }}
+                <GitPanel repo={git} />
+              {/await}
+            {:else}
+              {#await import("../git/CommitPanel.svelte") then { default: CommitPanel }}
+                <CommitPanel repo={git} />
+              {/await}
+            {/if}
+          {/key}
+        </div>
+      </div>
     {:else}
       <div class="empty">
         {#if folder}
@@ -90,6 +109,38 @@
     font-size: 12px;
     user-select: text;
     outline: none;
+  }
+
+  .repo-view {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+
+  .repos {
+    display: flex;
+    flex: none;
+    gap: 2px;
+    padding: 2px 6px;
+    font-family: var(--ui-font);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .repos .active {
+    color: var(--accent);
+  }
+
+  .count {
+    margin-left: 4px;
+    padding: 0 4px;
+    border-radius: 6px;
+    background: var(--hover);
+    color: var(--fg-muted);
+  }
+
+  .repo-content {
+    flex: 1;
+    min-height: 0;
   }
 
   .keep-alive {
