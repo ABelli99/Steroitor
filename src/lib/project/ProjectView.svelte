@@ -98,7 +98,15 @@
     const repo = project.repoFor(path);
     if (!repo) return [];
     const annotated = repo.annotated.has(tabId);
-    return [{ label: annotated ? "Chiudi annotazioni" : "Annotate con Git Blame", run: () => repo.toggleBlame(tabId, path) }];
+    const lines = workspace.selectedLines();
+    const history = (selection: [number, number] | null) => () => (project.diff.request = { root: repo.root, kind: "history", path, lines: selection });
+    return [
+      { label: annotated ? "Chiudi annotazioni" : "Annotate con Git Blame", run: () => repo.toggleBlame(tabId, path) },
+      { label: "Mostra history del file", run: history(null), separatorBefore: true },
+      lines
+        ? { label: `Mostra history della selezione (righe ${lines[0]}–${lines[1]})`, run: history(lines) }
+        : { label: "Mostra history della selezione", disabled: true, run: () => {} },
+    ];
   }
 
   function openGutterMenu(event: MouseEvent) {
@@ -115,7 +123,10 @@
       const tab = workspace.tabs.find((candidate) => candidate.path && samePath(candidate.path, entry.path));
       if (tab && !repo.annotated.has(tab.id)) repo.toggleBlame(tab.id, entry.path);
     };
-    return [{ label: "Annotate con Git Blame", run: annotate, separatorBefore: true }];
+    return [
+      { label: "Annotate con Git Blame", run: annotate, separatorBefore: true },
+      { label: "Mostra history", run: () => (project.diff.request = { root: repo.root, kind: "history", path: entry.path, lines: null }) },
+    ];
   }
 
   function closeQuickOpen() {

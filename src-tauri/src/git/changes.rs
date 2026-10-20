@@ -1,8 +1,10 @@
-//! File cambiati in un commit e contenuto di un file a una revisione, per la vista delle modifiche.
+//! File cambiati in un commit, contenuto di un file a una revisione e history di un file,
+//! per la vista delle modifiche.
 
 use serde::Serialize;
 use std::path::Path;
 
+use super::parse::{parse_log, Commit, LOG_FORMAT};
 use super::runner::{native_path, repo_relative, Git};
 use crate::files::decode;
 
@@ -33,7 +35,70 @@ fn parse_name_status(root: &Path, raw: &str) -> Vec<ChangedFile> {
     files
 }
 
+/// Un commit nella history di un file, con il percorso che il file aveva in quel commit.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct FileRevision {
+    pub commit: Commit,
+    pub path: String,
+    /// Percorso nel parent, se il commit ha rinominato il file.
+    pub old_path: Option<String>,
+}
+
+/// Inizio di ogni commit nell'output di `file_history`: dopo i campi di LOG_FORMAT git aggiunge
+/// le righe `--name-status` (history del file) o la patch (history di un intervallo di righe).
+const REVISION_START: char = '\x1f';
+
+/// Percorso (vecchio, nuovo) del file in un commit, letto da `--name-status` o dalle intestazioni della patch.
+fn revision_paths(details: &str) -> Option<(Option<&str>, &str)> {
+    let mut old = None;
+    for line in details.lines() {
+        if let Some(path) = line.strip_prefix("--- a/") {
+            old = Some(path);
+        } else if let Some(path) = line.strip_prefix("+++ b/") {
+            return Some((old.filter(|old| *old != path), path));
+        } else if let Some((status, paths)) = line.split_once('\t') {
+            if status.starts_with(['R', 'C']) {
+                let (old, new) = paths.split_once('\t')?;
+                return Some((Some(old), new));
+            }
+            if status.len() == 1 {
+                return Some((None, paths));
+            }
+        }
+    }
+    None
+}
+
+fn parse_file_history(root: &Path, raw: &str, current: &str) -> Vec<FileRevision> {
+    raw.split(REVISION_START)
+        .filter_map(|record| {
+            let (fields, details) = record.split_once('\x1e')?;
+            let commit = parse_log(&format!("{fields}\x1e")).pop()?;
+            let (old_path, path) = revision_paths(details).unwrap_or((None, current));
+            Some(FileRevision { commit, path: native_path(root, path), old_path: old_path.map(|old| native_path(root, old)) })
+        })
+        .collect()
+}
+
 impl Git {
+    /// Commit che hanno toccato `path` (seguendo i rename) o, con `lines`, solo quell'intervallo di righe (`git log -L`).
+    pub fn file_history(&self, root: &str, path: &str, lines: Option<(u32, u32)>) -> Result<Vec<FileRevision>, String> {
+        let relative = repo_relative(Path::new(root), path)?;
+        let format = format!("--format=%x1f{}", &LOG_FORMAT["--format=".len()..]);
+        let range = lines.map(|(from, to)| format!("-L{from},{to}:{relative}"));
+        let mut args = vec!["-c", "core.quotePath=false", "log", &format];
+        match range.as_deref() {
+            Some(range) => args.push(range),
+            None => args.extend(["--follow", "-M", "--name-status", "--", &relative]),
+        }
+        match self.text(Path::new(root), &args, false) {
+            Ok(raw) => Ok(parse_file_history(Path::new(root), &raw, &relative)),
+            Err(error) if error.contains("does not have any commits") || error.contains("no path") => Ok(vec![]),
+            Err(error) => Err(error),
+        }
+    }
+
     /// File cambiati da `hash` rispetto al primo parent (o all'albero vuoto per il commit iniziale).
     pub fn commit_changes(&self, root: &str, hash: &str) -> Result<Vec<ChangedFile>, String> {
         let cwd = Path::new(root);
@@ -61,6 +126,27 @@ impl Git {
 mod tests {
     use super::super::testing::{commit_file, git, Sandbox};
     use super::*;
+
+    #[test]
+    fn follows_a_file_and_a_line_range_through_renames() {
+        let sandbox = Sandbox::new("file-history");
+        let root = sandbox.repo("repo");
+        let git = git();
+        commit_file(&git, &root, "a.txt", "uno\ndue\ntre\n", "primo");
+        commit_file(&git, &root, "altro.txt", "x\n", "altro file");
+        git.text(Path::new(&root), &["mv", "a.txt", "b.txt"], false).unwrap();
+        git.commit(&root, "rinomina").unwrap();
+        let file = commit_file(&git, &root, "b.txt", "uno\nDUE\ntre\n", "secondo");
+        commit_file(&git, &root, "b.txt", "uno\nDUE\nTRE\n", "terzo");
+
+        let history = git.file_history(&root, &file, None).unwrap();
+        let summary: Vec<(&str, bool)> = history.iter().map(|r| (r.commit.subject.as_str(), r.path.ends_with("b.txt"))).collect();
+        assert_eq!(summary, [("terzo", true), ("secondo", true), ("rinomina", true), ("primo", false)]);
+        assert!(history[2].old_path.as_deref().is_some_and(|old| old.ends_with("a.txt")));
+
+        let line_two: Vec<String> = git.file_history(&root, &file, Some((2, 2))).unwrap().into_iter().map(|r| r.commit.subject).collect();
+        assert_eq!(line_two, ["secondo", "primo"]);
+    }
 
     #[test]
     fn parses_renames_and_plain_changes() {

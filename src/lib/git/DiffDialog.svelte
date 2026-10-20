@@ -4,6 +4,7 @@
   import { gitCommitMessage } from "./api";
   import CommitChanges from "./CommitChanges.svelte";
   import DiffView from "./DiffView.svelte";
+  import FileHistory from "./FileHistory.svelte";
   import { canJumpTo } from "./jumpToSource";
   import type { DiffRequest, FileSelection } from "./selection.svelte";
 
@@ -22,7 +23,11 @@
   let subject = $state("");
 
   const title = $derived(
-    request.kind === "commit" ? `${request.hash.slice(0, 7)}${subject ? ` · ${subject}` : ""}` : fileName(request.kind === "file" ? request.file.path : request.path),
+    request.kind === "commit"
+      ? `${request.hash.slice(0, 7)}${subject ? ` · ${subject}` : ""}`
+      : request.kind === "history"
+        ? `History di ${fileName(request.path)}${request.lines ? " (selezione)" : ""}`
+        : fileName(request.kind === "file" ? request.file.path : request.path),
   );
 
   onMount(() => {
@@ -46,6 +51,7 @@
     <header>
       <span class="title">{title}</span>
       {#if request.kind === "file"}<span class="path">{request.file.path}</span>{/if}
+      {#if request.kind === "history"}<span class="path">{request.path}</span>{/if}
       <span class="spacer"></span>
       {#if request.kind === "file" && canJumpTo(request.file)}
         {@const file = request.file}
@@ -58,6 +64,8 @@
         <DiffView {root} file={request.file} />
       {:else if request.kind === "commit"}
         <CommitChanges {root} hash={request.hash} {onopenfile} />
+      {:else if request.kind === "history"}
+        <FileHistory {root} path={request.path} lines={request.lines} />
       {/if}
     </div>
   </div>

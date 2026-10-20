@@ -163,3 +163,14 @@ export interface ChangedFile {
 export const gitCommitChanges = (root: string, hash: string) => invoke<ChangedFile[]>("git_commit_changes", { root, hash });
 
 export const gitFileAt = (root: string, revision: string, path: string) => invoke<string | null>("git_file_at", { root, revision, path });
+
+export interface FileRevision {
+  commit: Commit;
+  /** Percorso del file in quel commit (cambia dopo un rename). */
+  path: string;
+  oldPath: string | null;
+}
+
+/** History di un file o, con `lines` (1-based, estremi inclusi), di un intervallo di righe. */
+export const gitFileHistory = (root: string, path: string, lines: [number, number] | null) =>
+  invoke<FileRevision[]>("git_file_history", { root, path, lines });

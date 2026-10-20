@@ -1,6 +1,6 @@
 use tauri::WebviewWindow;
 
-use super::changes::ChangedFile;
+use super::changes::{ChangedFile, FileRevision};
 use super::history::{ConflictVersions, LogFilter, ResetMode};
 use super::parse::{BlameLine, Branch, Commit, RepoStatus, Stash};
 use super::runner::Git;
@@ -210,6 +210,11 @@ pub async fn git_commit_message(window: WebviewWindow, root: String, hash: Strin
 #[tauri::command]
 pub async fn git_commit_changes(window: WebviewWindow, root: String, hash: String) -> Result<Vec<ChangedFile>, String> {
     with_git(window, move |git| git.commit_changes(&root, &hash)).await
+}
+
+#[tauri::command]
+pub async fn git_file_history(window: WebviewWindow, root: String, path: String, lines: Option<(u32, u32)>) -> Result<Vec<FileRevision>, String> {
+    with_git(window, move |git| git.file_history(&root, &path, lines)).await
 }
 
 #[tauri::command]

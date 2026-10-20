@@ -12,7 +12,13 @@ export interface GitSelection {
 }
 
 /** `root` è il repository a cui appartiene: con più repository non è per forza quello selezionato. */
-export type DiffRequest = { root: string } & ({ kind: "file"; file: FileSelection } | { kind: "commit"; hash: string } | { kind: "merge"; path: string });
+export type DiffRequest = { root: string } & (
+  | { kind: "file"; file: FileSelection }
+  | { kind: "commit"; hash: string }
+  | { kind: "merge"; path: string }
+  /** History del file o, con `lines`, di un intervallo di righe (1-based, estremi inclusi). */
+  | { kind: "history"; path: string; lines: [number, number] | null }
+);
 
 /** Diff aperto nel dialog (Ctrl+D, doppio click). */
 export interface DiffState {

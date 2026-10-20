@@ -2,6 +2,7 @@ import { saveSettings, settings, type UpdateMethod } from "../settings.svelte";
 import type { MenuItem } from "../ui/ContextMenu.svelte";
 import { OPERATION_LABELS, type Branch } from "./api";
 import { relativeTime } from "./format";
+import { fileName, isInsideDir } from "../workspace/files";
 import type { GitRepo } from "./repo.svelte";
 
 interface VcsMenuActions {
@@ -50,6 +51,18 @@ function stashItems(repo: GitRepo, actions: VcsMenuActions): MenuItem[] {
   return items;
 }
 
+/** History del file aperto nell'editor e della sua selezione, se il file è in questo repository. */
+function historyItems(repo: GitRepo): MenuItem[] {
+  const path = repo.workspace.active?.path;
+  if (!path || !isInsideDir(path, repo.root)) return [];
+  const lines = repo.workspace.selectedLines();
+  const show = (selection: [number, number] | null) => () => (repo.diff.request = { root: repo.root, kind: "history", path, lines: selection });
+  return [
+    { label: `History di ${fileName(path)}`, separatorBefore: true, run: show(null) },
+    ...(lines ? [{ label: `History della selezione (righe ${lines[0]}–${lines[1]})`, run: show(lines) }] : []),
+  ];
+}
+
 /** Popup del VCS widget: operazioni, metodo di update, stash e branch (con sottomenu). */
 export function vcsMenuItems(repo: GitRepo, actions: VcsMenuActions): MenuItem[] {
   const local = repo.branches.filter((branch) => !branch.remote);
@@ -63,6 +76,7 @@ export function vcsMenuItems(repo: GitRepo, actions: VcsMenuActions): MenuItem[]
     { label: "Commit…", hint: "Ctrl+K", run: actions.openCommit },
     { label: "Push…", hint: "Ctrl+Shift+K", run: () => repo.push() },
     { label: "Fetch", run: () => repo.fetch() },
+    ...historyItems(repo),
     { label: "Nuovo branch…", run: () => repo.newBranch(), separatorBefore: true },
     { label: "Stash modifiche…", run: () => repo.history.stash() },
     { label: `Stash salvati (${repo.stashes.length}) ›`, run: submenu(stashItems(repo, actions)) },

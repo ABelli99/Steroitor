@@ -173,6 +173,17 @@ export class Workspace {
     return this.#view?.state.doc ?? (this.activeId ? (this.#states.get(this.activeId)?.doc ?? null) : null);
   }
 
+  /** Righe (1-based) della selezione principale, o null se non c'è niente di selezionato. */
+  selectedLines(): [number, number] | null {
+    const state = this.#view?.state;
+    const range = state?.selection.main;
+    if (!state || !range || range.empty) return null;
+    const last = state.doc.lineAt(range.to);
+    // Una selezione che finisce a inizio riga non comprende quella riga.
+    const end = range.to === last.from && last.number > 1 ? last.number - 1 : last.number;
+    return [state.doc.lineAt(range.from).number, Math.max(end, state.doc.lineAt(range.from).number)];
+  }
+
   goToLine(line: number) {
     const view = this.#view;
     if (!view) return;

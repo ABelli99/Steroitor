@@ -98,6 +98,7 @@ pub fn run() {
             git::commands::git_reword,
             git::commands::git_commit_changes,
             git::commands::git_file_at,
+            git::commands::git_file_history,
             git::commands::git_commit_message,
             session::load_session,
             session::save_session,
