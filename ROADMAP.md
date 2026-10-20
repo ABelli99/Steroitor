@@ -32,7 +32,7 @@ Si misurano da F0 in poi (`npm run measure`, oppure `-SkipBuild` lanciando lo sc
 Lo script mette da parte la sessione dell'utente e parte sempre da uno stato pulito.
 Una fase non è chiusa se sfora un limite.
 
-Ultima misura (1.1.1, build release, sessione isolata): installer 2,1 MB · RAM 75,7–79,8 MB · avvio a regime 522–610 ms (1.1.0: 472–568 ms).
+Ultima misura (1.1.2, build release, sessione isolata): installer 2,5 MB · RAM 71,8–72,4 MB · avvio a regime 538–690 ms, primo avvio a freddo 1147 ms (1.1.1: 522–610 ms).
 Con un repository aperto (29 commit): RAM 79–83 MB. Con una cartella che contiene due repository (`rndProjects`): RAM 80–82 MB, avvio 552–620 ms. Misura post-F6, con un repository di 329 commit e la tab Git visibile: ~95 MB; prima della virtualizzazione del log era ~130 MB.
 **Rischio aperto:** il primo avvio dopo una build (cache file del sistema operativo fredda) arriva a 1,0–1,3 s, oltre il limite; a regime e con profilo WebView2 vuoto resta ~500 ms. Da ricontrollare dopo un riavvio del PC.
 
