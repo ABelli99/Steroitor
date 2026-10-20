@@ -8,6 +8,7 @@ interface LayoutState {
   panelHeight: number;
   panelVisible: boolean;
   panelTab: PanelTab;
+  commitDetailsWidth: number;
 }
 
 const defaults: LayoutState = {
@@ -16,6 +17,7 @@ const defaults: LayoutState = {
   panelHeight: 200,
   panelVisible: true,
   panelTab: "console",
+  commitDetailsWidth: 300,
 };
 
 function load(): LayoutState {

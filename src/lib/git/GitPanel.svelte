@@ -3,12 +3,15 @@
   import { SvelteSet } from "svelte/reactivity";
   import { buildBranchTree, flattenBranchTree, foldersToCollapse, type BranchNode } from "./branchTree";
   import ContextMenu, { type MenuItem } from "../ui/ContextMenu.svelte";
-  import { gitLog, type Branch, type Commit } from "./api";
+  import { gitCommitChanges, gitLog, type Branch, type ChangedFile, type Commit } from "./api";
   import { absoluteTime, refLabel, relativeTime } from "./format";
   import { layoutGraph } from "./graph";
   import type { GitRepo } from "./repo.svelte";
   import Chevron from "../ui/Chevron.svelte";
   import { useProject } from "../project/context";
+  import Splitter from "../ui/Splitter.svelte";
+  import { clamp, layout, saveLayout } from "../ui/layout.svelte";
+  import { fileName } from "../workspace/files";
 
   let { repo }: { repo: GitRepo } = $props();
   const { selection, diff } = useProject();
@@ -18,6 +21,7 @@
   const ROW_HEIGHT = 22;
   const LANE_WIDTH = 12;
   const MAX_LANES = 12;
+  const STATUS_CLASS: Record<string, string> = { A: "added", M: "modified", D: "deleted", R: "modified", C: "added", T: "modified" };
   const LANE_COLORS = ["#4f8cf7", "#e5a50a", "#2ea043", "#d2527f", "#8b6cf6", "#1fb5b5", "#e0663a"];
 
   let reference = $state<string | null>(null);
@@ -30,6 +34,7 @@
   let loading = $state(false);
   let complete = $state(false);
   let error = $state<string | null>(null);
+  let changes = $state.raw<ChangedFile[] | null>(null);
   let menu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
 
   const local = $derived(repo.branches.filter((branch) => !branch.remote));
@@ -72,6 +77,19 @@
   $effect(() => {
     selection.commit = selected?.hash ?? null;
   });
+
+  $effect(() => {
+    const hash = selected?.hash;
+    changes = null;
+    if (!hash) return;
+    let stale = false;
+    gitCommitChanges(repo.root, hash)
+      .then((files) => !stale && (changes = files))
+      .catch(() => !stale && (changes = []));
+    return () => (stale = true);
+  });
+
+  const relativePath = (path: string) => path.slice(repo.root.length + 1).replaceAll("\\", "/");
 
   $effect(() => {
     const next = { text: text.trim(), author: author.trim(), path: path.trim() };
@@ -267,7 +285,13 @@
   </div>
 
   {#if selected}
-    <aside class="details">
+    {@const hash = selected.hash}
+    <Splitter
+      direction="horizontal"
+      ondrag={(delta) => (layout.commitDetailsWidth = clamp(layout.commitDetailsWidth - delta, 200, 900))}
+      onend={saveLayout}
+    />
+    <aside class="details" style:width="{layout.commitDetailsWidth}px">
       <p class="subject-full">{selected.subject}</p>
       {#if selected.body}<pre>{selected.body}</pre>{/if}
       <dl>
@@ -282,6 +306,22 @@
           <dd class="mono">{selected.parents.map((parent) => parent.slice(0, 7)).join(", ")}</dd>
         {/if}
       </dl>
+      <h4>{changes ? (changes.length === 1 ? "1 file cambiato" : `${changes.length} file cambiati`) : "File cambiati"}</h4>
+      {#if changes}
+        <ul class="changed">
+          {#each changes as file (file.path)}
+            <li title={file.oldPath ? `${relativePath(file.oldPath)} → ${relativePath(file.path)}` : relativePath(file.path)}>
+              <button ondblclick={() => (diff.request = { root: repo.root, kind: "commit", hash })}>
+                <span class="letter git-{STATUS_CLASS[file.status]}">{file.status}</span>
+                <span class="git-{STATUS_CLASS[file.status]}">{fileName(file.path)}</span>
+                <span class="dir">{relativePath(file.path).slice(0, -fileName(file.path).length - 1)}</span>
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="empty">Caricamento…</p>
+      {/if}
     </aside>
   {/if}
 </div>
@@ -459,7 +499,6 @@
 
   .details {
     flex: none;
-    width: 300px;
     overflow: auto;
     padding: 8px 12px;
     border-left: 1px solid var(--border);
@@ -491,6 +530,51 @@
   dd {
     margin: 0;
     word-break: break-all;
+  }
+
+  .changed {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .changed button {
+    display: flex;
+    gap: 6px;
+    width: 100%;
+    padding: 1px 4px;
+    text-align: left;
+    white-space: nowrap;
+  }
+
+  .changed .letter {
+    width: 10px;
+    flex: none;
+    font-family: var(--mono);
+    font-weight: 600;
+  }
+
+  .changed .dir {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--fg-muted);
+  }
+
+  .git-added {
+    color: var(--git-added);
+  }
+
+  .git-modified {
+    color: var(--git-modified);
+  }
+
+  .git-deleted {
+    color: var(--fg-muted);
+    text-decoration: line-through;
+  }
+
+  .details h4 {
+    margin: 12px 0 4px;
   }
 
   .empty {
