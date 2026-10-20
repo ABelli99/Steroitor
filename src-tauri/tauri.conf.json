@@ -30,6 +30,10 @@
     "targets": [
       "nsis"
     ],
+    "resources": {
+      "conpty/conpty.dll": "conpty.dll",
+      "conpty/x64/OpenConsole.exe": "x64/OpenConsole.exe"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

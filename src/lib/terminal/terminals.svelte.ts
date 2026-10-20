@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import type { IWindowsPty } from "@xterm/xterm";
 import { settings } from "../settings.svelte";
 
 export interface Shell {
@@ -11,6 +12,7 @@ export interface TerminalSession {
   id: number;
   title: string;
   exited: boolean;
+  windowsPty?: IWindowsPty;
 }
 
 type Sink = (data: string) => void;
@@ -37,8 +39,8 @@ export class Terminals {
   /** `shell` è l'id di una shell rilevata; senza, quella predefinita nelle impostazioni (o la prima trovata). */
   async open(cwd: string | null, shell = settings.terminalShell || null, cols = 80, rows = 24) {
     await this.#listen();
-    const opened = await invoke<{ id: number; shell: string }>("terminal_open", { project: this.project, cwd, shell, cols, rows });
-    this.sessions.push({ id: opened.id, title: this.#titleFor(opened.shell), exited: false });
+    const opened = await invoke<{ id: number; shell: string; windowsPty?: IWindowsPty }>("terminal_open", { project: this.project, cwd, shell, cols, rows });
+    this.sessions.push({ id: opened.id, title: this.#titleFor(opened.shell), exited: false, windowsPty: opened.windowsPty });
     this.activeId = opened.id;
     return opened.id;
   }

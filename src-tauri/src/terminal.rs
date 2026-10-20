@@ -93,10 +93,32 @@ fn spawn(owner: &str, mut command: CommandBuilder, cwd: Option<&str>, cols: u16,
     Ok(Spawned { session: Session { owner: owner.to_owned(), master: pair.master, writer, killer }, reader, child })
 }
 
+/// Opzione `windowsPty` di xterm.js: quale ConPTY c'è sotto, per allineare a capo e reflow ai suoi.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowsPty {
+    backend: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    build_number: Option<u32>,
+}
+
+/// Con la `conpty.dll` installata accanto all'exe (src-tauri/conpty) portable-pty usa quella, che gestisce
+/// il reflow come la ConPTY di Windows 11 (build 21376+); senza, resta quella di sistema di build ignota.
+fn windows_pty() -> Option<WindowsPty> {
+    if !cfg!(target_os = "windows") {
+        return None;
+    }
+    let sideloaded = std::env::current_exe().ok().and_then(|exe| Some(exe.parent()?.join("conpty.dll").is_file())).unwrap_or(false);
+    Some(WindowsPty { backend: "conpty", build_number: sideloaded.then_some(21376) })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OpenedTerminal {
     id: u32,
     shell: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    windows_pty: Option<WindowsPty>,
 }
 
 #[tauri::command]
@@ -140,7 +162,7 @@ pub fn terminal_open(
         }
         let _ = app.emit_to(label.as_str(), "terminal-exit", TerminalExit { project, id, code });
     });
-    Ok(OpenedTerminal { id, shell: shell.name })
+    Ok(OpenedTerminal { id, shell: shell.name, windows_pty: windows_pty() })
 }
 
 fn with_session<T>(terminals: &State<Terminals>, id: u32, action: impl FnOnce(&mut Session) -> Result<T, String>) -> Result<T, String> {

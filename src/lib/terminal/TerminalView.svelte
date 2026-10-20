@@ -26,6 +26,7 @@
       fontSize: 13,
       cursorBlink: true,
       scrollback: 5000,
+      windowsPty: terminals.sessions.find((session) => session.id === id)?.windowsPty,
       theme: {
         background: cssVar("--editor-bg"),
         foreground: cssVar("--fg"),
