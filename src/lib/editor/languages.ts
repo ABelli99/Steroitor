@@ -7,7 +7,7 @@ interface LanguageDef {
 }
 
 const javascript = (options: { typescript?: boolean; jsx?: boolean } = {}) => () =>
-  import("@codemirror/lang-javascript").then((m) => m.javascript(options));
+  import("./embedded").then((m) => m.scriptWithTemplates(options));
 
 const languages: Record<string, LanguageDef> = {
   javascript: { name: "JavaScript", load: javascript() },

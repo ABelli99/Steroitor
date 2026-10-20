@@ -8,6 +8,10 @@ import { bracketMatching, foldGutter, foldKeymap, indentOnInput } from "@codemir
 import { highlightSelectionMatches, openSearchPanel, searchKeymap } from "@codemirror/search";
 import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import { editorTheme } from "./theme";
+import { definitionLink } from "./definitionLink";
+
+// Ctrl+click porta alla dichiarazione: i cursori multipli passano ad Alt+Shift+click come in IntelliJ.
+const addsCursor = (event: MouseEvent) => event.altKey && event.shiftKey;
 
 export const languageSlot = new Compartment();
 export const wrapSlot = new Compartment();
@@ -34,7 +38,9 @@ export function createState(content: string, wrap: boolean, minimap: Extension, 
       indentOnInput(),
       bracketMatching(),
       closeBrackets(),
-      rectangularSelection(),
+      rectangularSelection({ eventFilter: (event) => event.altKey && !event.shiftKey && event.button === 0 }),
+      EditorView.clickAddsSelectionRange.of(addsCursor),
+      definitionLink,
       crosshairCursor(),
       highlightActiveLine(),
       highlightSelectionMatches(),

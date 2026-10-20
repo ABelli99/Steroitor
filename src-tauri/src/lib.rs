@@ -48,6 +48,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             explorer::list_dir,
             explorer::list_files,
+            explorer::search_files,
             explorer::create_file,
             explorer::create_dir,
             explorer::rename_path,

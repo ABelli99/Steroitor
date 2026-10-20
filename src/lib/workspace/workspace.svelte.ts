@@ -58,15 +58,21 @@ export class Workspace {
   #untitledCount = 0;
   #listeners = new Set<() => void>();
   #minimapExtension: Extension = [];
+  /** Ctrl+click nel testo: chi gestisce il "vai alla dichiarazione". */
+  ondefinition: ((state: EditorState, pos: number) => void) | null = null;
 
   mount(parent: HTMLElement) {
     this.#view = new EditorView({ parent });
     const active = this.activeId && this.#states.get(this.activeId);
     if (active) this.#view.setState(active);
     const autosave = () => this.#autosave(this.activeId);
+    const definitionClick = (event: MouseEvent) => this.#definitionClick(event);
     this.#view.contentDOM.addEventListener("blur", autosave);
+    // In cattura, prima che CodeMirror tratti il Ctrl+click come aggiunta di un cursore.
+    this.#view.dom.addEventListener("mousedown", definitionClick, true);
     return () => {
       this.#view?.contentDOM.removeEventListener("blur", autosave);
+      this.#view?.dom.removeEventListener("mousedown", definitionClick, true);
       this.#persistActiveState();
       this.#view?.destroy();
       this.#view = null;
@@ -172,6 +178,14 @@ export class Workspace {
     if (!view) return;
     const target = view.state.doc.line(Math.min(Math.max(line, 1), view.state.doc.lines));
     view.dispatch({ selection: { anchor: target.from }, effects: EditorView.scrollIntoView(target.from, { y: "center" }) });
+    view.focus();
+  }
+
+  goToPosition(pos: number) {
+    const view = this.#view;
+    if (!view) return;
+    const anchor = Math.min(pos, view.state.doc.length);
+    view.dispatch({ selection: { anchor }, effects: EditorView.scrollIntoView(anchor, { y: "center" }) });
     view.focus();
   }
 
@@ -395,6 +409,17 @@ export class Workspace {
       if (current?.language !== language) return;
       this.#dispatch(tab.id, { effects: languageSlot.reconfigure(extension) });
     });
+  }
+
+  #definitionClick(event: MouseEvent) {
+    const view = this.#view;
+    if (!view || !this.ondefinition || event.button !== 0 || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+    if (!(event.target as Element).closest(".cm-content")) return;
+    const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+    if (pos === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.ondefinition(view.state, pos);
   }
 
   #handleUpdate(id: string, update: ViewUpdate) {

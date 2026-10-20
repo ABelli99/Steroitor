@@ -3,6 +3,8 @@ use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 
 const MAX_INDEXED_FILES: usize = 100_000;
+const MAX_SEARCH_MATCHES: usize = 200;
+const MAX_SEARCHED_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const FORBIDDEN_NAME_CHARS: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
 
 #[derive(Serialize)]
@@ -59,16 +61,53 @@ pub async fn list_dir(path: String) -> Result<Vec<Entry>, String> {
 /// Tutti i file del progetto rispettando .gitignore, per Quick Open.
 #[tauri::command]
 pub async fn list_files(root: String) -> Vec<String> {
-    ignore::WalkBuilder::new(&root)
+    walk_files(&root).take(MAX_INDEXED_FILES).map(display).collect()
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct LineMatch {
+    path: String,
+    line: usize,
+    text: String,
+}
+
+fn walk_files(root: &str) -> impl Iterator<Item = PathBuf> {
+    ignore::WalkBuilder::new(root)
         .hidden(false)
         .require_git(false)
         .filter_entry(|entry| entry.file_name() != ".git")
         .build()
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()))
-        .take(MAX_INDEXED_FILES)
-        .map(|entry| display(entry.into_path()))
-        .collect()
+        .map(|entry| entry.into_path())
+}
+
+fn search_in(root: &str, needle: &str, extensions: &[String]) -> Vec<LineMatch> {
+    let wanted = |path: &Path| {
+        let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or_default();
+        extensions.iter().any(|wanted| wanted.eq_ignore_ascii_case(extension))
+    };
+    let mut matches = Vec::new();
+    for path in walk_files(root).take(MAX_INDEXED_FILES).filter(|path| wanted(path)) {
+        if fs::metadata(&path).map_or(true, |meta| meta.len() > MAX_SEARCHED_FILE_BYTES) {
+            continue;
+        }
+        let Ok(bytes) = fs::read(&path) else { continue };
+        let content = String::from_utf8_lossy(&bytes);
+        for (index, text) in content.lines().enumerate().filter(|(_, text)| text.contains(needle)) {
+            matches.push(LineMatch { path: display(path.clone()), line: index + 1, text: text.to_string() });
+            if matches.len() == MAX_SEARCH_MATCHES {
+                return matches;
+            }
+        }
+    }
+    matches
+}
+
+/// Righe che contengono `needle` nei file del progetto con le estensioni date (per il "vai alla dichiarazione").
+#[tauri::command]
+pub async fn search_files(root: String, needle: String, extensions: Vec<String>) -> Vec<LineMatch> {
+    search_in(&root, &needle, &extensions)
 }
 
 #[tauri::command]
@@ -181,5 +220,21 @@ mod tests {
             assert!(validate_name(name).is_err(), "{name:?} dovrebbe essere rifiutato");
         }
         assert_eq!(validate_name("  note.txt ").unwrap(), "note.txt");
+    }
+
+    #[test]
+    fn searches_only_the_requested_extensions() {
+        let base = std::env::temp_dir().join(format!("steroitor-search-{}", std::process::id()));
+        fs::create_dir_all(base.join("app")).unwrap();
+        fs::write(base.join("app").join("foo.component.ts"), "@Component({
+  selector: 'app-foo',
+})").unwrap();
+        fs::write(base.join("note.md"), "selector: 'app-foo'").unwrap();
+
+        let matches = search_in(base.to_str().unwrap(), "app-foo", &["ts".to_string()]);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].line, 2);
+        assert!(matches[0].path.ends_with("foo.component.ts"));
+        let _ = fs::remove_dir_all(base);
     }
 }

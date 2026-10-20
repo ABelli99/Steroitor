@@ -65,3 +65,12 @@ export const locateProject = (folder: string) => invoke<{ window: string; projec
 export const activateProject = (window: string, project: string) => invoke<void>("activate_project", { window, project });
 
 export const detachProject = (project: ProjectRef, x: number, y: number) => invoke<void>("detach_project", { project, x, y });
+
+export interface LineMatch {
+  path: string;
+  line: number;
+  text: string;
+}
+
+export const searchFiles = (root: string, needle: string, extensions: string[]) =>
+  invoke<LineMatch[]>("search_files", { root, needle, extensions });

@@ -32,6 +32,9 @@
   --hl-function: #00627a;
   --hl-type: #871094;
   --hl-property: #871094;
+  --hl-tag: #0033b3;
+  --hl-attribute: #174ad4;
+  --hl-event: #871094;
 
   --ui-font: "Segoe UI", system-ui, sans-serif;
   --mono: "Cascadia Mono", Consolas, "JetBrains Mono", monospace;
@@ -74,6 +77,9 @@
     --hl-function: #56a8f5;
     --hl-type: #c77dbb;
     --hl-property: #c77dbb;
+    --hl-tag: #d5b778;
+    --hl-attribute: #bababa;
+    --hl-event: #c77dbb;
   }
 }
 

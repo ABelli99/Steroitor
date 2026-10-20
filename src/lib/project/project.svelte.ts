@@ -12,6 +12,7 @@ import { Activity } from "../ui/activity.svelte";
 import { persistSession, readSession } from "../workspace/session";
 import { isInsideDir, samePath } from "../workspace/files";
 import { Workspace } from "../workspace/workspace.svelte";
+import { goToDefinition } from "../editor/goToDefinition";
 import { innermost } from "./routing";
 
 const newId = () => crypto.randomUUID().slice(0, 8);
@@ -49,6 +50,7 @@ export class Project {
     this.folder = folder;
     this.tree = new FileTree(id);
     this.actions = new ExplorerActions(this.tree, this.workspace);
+    this.workspace.ondefinition = (state, pos) => goToDefinition(this.workspace, this.tree, state, pos).catch(console.error);
     this.terminals = new Terminals(id);
   }
 
