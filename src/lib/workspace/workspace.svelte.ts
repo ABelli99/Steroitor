@@ -173,6 +173,43 @@ export class Workspace {
     return this.#view?.state.doc ?? (this.activeId ? (this.#states.get(this.activeId)?.doc ?? null) : null);
   }
 
+  /** Posizione nel documento sotto le coordinate del mouse, con lo stato corrente dell'editor. */
+  positionAt(x: number, y: number): { state: EditorState; pos: number } | null {
+    const pos = this.#view?.posAtCoords({ x, y });
+    return this.#view && pos != null ? { state: this.#view.state, pos } : null;
+  }
+
+  hasSelection() {
+    return this.#view?.state.selection.ranges.some((range) => !range.empty) ?? false;
+  }
+
+  /** Copia (o taglia) la selezione: per il menu contestuale, le scorciatoie restano quelle di CodeMirror. */
+  async copySelection(cut = false) {
+    const view = this.#view;
+    if (!view) return;
+    const { state } = view;
+    const text = state.selection.ranges.map((range) => state.sliceDoc(range.from, range.to)).join(state.lineBreak);
+    if (!text) return;
+    await navigator.clipboard.writeText(text);
+    if (cut) view.dispatch(state.replaceSelection(""), { userEvent: "delete.cut" });
+    view.focus();
+  }
+
+  async paste() {
+    const view = this.#view;
+    if (!view) return;
+    const text = await navigator.clipboard.readText();
+    view.dispatch(view.state.replaceSelection(text), { userEvent: "input.paste", scrollIntoView: true });
+    view.focus();
+  }
+
+  selectAll() {
+    const view = this.#view;
+    if (!view) return;
+    view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
+    view.focus();
+  }
+
   /** Righe (1-based) della selezione principale, o null se non c'è niente di selezionato. */
   selectedLines(): [number, number] | null {
     const state = this.#view?.state;

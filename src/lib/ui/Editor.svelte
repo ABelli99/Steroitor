@@ -2,15 +2,23 @@
   import { onMount } from "svelte";
   import type { Workspace } from "../workspace/workspace.svelte";
 
-  let { workspace, ongutterMenu }: { workspace: Workspace; ongutterMenu?: (event: MouseEvent) => void } = $props();
+  interface Props {
+    workspace: Workspace;
+    /** Click destro sul gutter o sul testo: il menu contestuale dell'editor sostituisce quello nativo. */
+    onmenu?: (event: MouseEvent, area: "gutter" | "text") => void;
+  }
+
+  let { workspace, onmenu }: Props = $props();
   let host: HTMLDivElement;
 
   onMount(() => workspace.mount(host));
 
   function onContextMenu(event: MouseEvent) {
-    if (!ongutterMenu || !(event.target as Element).closest(".cm-gutters")) return;
+    const target = event.target as Element;
+    const area = target.closest(".cm-gutters") ? "gutter" : target.closest(".cm-content, .cm-scroller") ? "text" : null;
+    if (!onmenu || !area) return;
     event.preventDefault();
-    ongutterMenu(event);
+    onmenu(event, area);
   }
 </script>
 

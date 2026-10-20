@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import type { Entry } from "../backend";
+  import { targetAt } from "../editor/definition";
   import { jumpToSource } from "../git/jumpToSource";
   import { gitShortcuts } from "../git/shortcuts";
   import { vcsMenuItems } from "../git/vcsMenu";
@@ -94,25 +95,44 @@
     open(vcsMenuItems(repo, { openCommit: () => showPanel("commit", "#commit-message"), open }));
   }
 
-  function blameItem(tabId: string, path: string): MenuItem[] {
+  function gitItems(tabId: string, path: string): MenuItem[] {
     const repo = project.repoFor(path);
     if (!repo) return [];
     const annotated = repo.annotated.has(tabId);
     const lines = workspace.selectedLines();
     const history = (selection: [number, number] | null) => () => (project.diff.request = { root: repo.root, kind: "history", path, lines: selection });
     return [
-      { label: annotated ? "Chiudi annotazioni" : "Annotate con Git Blame", run: () => repo.toggleBlame(tabId, path) },
-      { label: "Mostra history del file", run: history(null), separatorBefore: true },
+      { label: annotated ? "Chiudi annotazioni" : "Annotate con Git Blame", run: () => repo.toggleBlame(tabId, path), separatorBefore: true },
+      { label: "Mostra history del file", run: history(null) },
       lines
         ? { label: `Mostra history della selezione (righe ${lines[0]}–${lines[1]})`, run: history(lines) }
         : { label: "Mostra history della selezione", disabled: true, run: () => {} },
     ];
   }
 
-  function openGutterMenu(event: MouseEvent) {
+  function editItems(event: MouseEvent): MenuItem[] {
+    const at = workspace.positionAt(event.clientX, event.clientY);
+    const target = at && targetAt(at.state, at.pos);
+    const selection = workspace.hasSelection();
+    return [
+      {
+        label: target ? `Vai alla dichiarazione di ${target.name}` : "Vai alla dichiarazione",
+        hint: "Ctrl+click",
+        disabled: !target,
+        run: () => at && workspace.ondefinition?.(at.state, at.pos),
+      },
+      { label: "Taglia", hint: "Ctrl+X", disabled: !selection, separatorBefore: true, run: () => workspace.copySelection(true).catch(console.error) },
+      { label: "Copia", hint: "Ctrl+C", disabled: !selection, run: () => workspace.copySelection().catch(console.error) },
+      { label: "Incolla", hint: "Ctrl+V", run: () => workspace.paste().catch(console.error) },
+      { label: "Seleziona tutto", hint: "Ctrl+A", run: () => workspace.selectAll() },
+    ];
+  }
+
+  function openEditorMenu(event: MouseEvent, area: "gutter" | "text") {
     const tab = workspace.active;
-    const items = tab?.path ? blameItem(tab.id, tab.path) : [];
-    openMenu(event.clientX, event.clientY, items);
+    const git = tab?.path ? gitItems(tab.id, tab.path) : [];
+    const items = area === "text" ? [...editItems(event), ...git] : git.map((item, index) => (index === 0 ? { ...item, separatorBefore: false } : item));
+    if (items.length) openMenu(event.clientX, event.clientY, items);
   }
 
   function explorerGitItems(entry: Entry): MenuItem[] {
@@ -158,7 +178,7 @@
     {/if}
     <div class="center">
       <TabBar {workspace} />
-      <Editor {workspace} ongutterMenu={openGutterMenu} />
+      <Editor {workspace} onmenu={openEditorMenu} />
     </div>
   </div>
   <div class="panel-area" class:hidden={!layout.panelVisible}>
