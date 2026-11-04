@@ -92,7 +92,8 @@
     if (!repo) return;
     project.select(repo);
     const open = (items: MenuItem[]) => openMenu(x, y, items);
-    open(vcsMenuItems(repo, { openCommit: () => showPanel("commit", "#commit-message"), open }));
+    const fetchAll = project.repos.length > 1 ? () => void Promise.all(project.repos.map((candidate) => candidate.fetch())) : undefined;
+    open(vcsMenuItems(repo, { openCommit: () => showPanel("commit", "#commit-message"), fetchAll, open }));
   }
 
   function gitItems(tabId: string, path: string): MenuItem[] {

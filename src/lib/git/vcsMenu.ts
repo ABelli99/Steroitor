@@ -7,6 +7,8 @@ import type { GitRepo } from "./repo.svelte";
 
 interface VcsMenuActions {
   openCommit: () => void;
+  /** Presente solo quando il progetto contiene più repository. */
+  fetchAll?: () => void;
   /** Sostituisce il contenuto del popup (sottomenu). */
   open: (items: MenuItem[]) => void;
 }
@@ -76,6 +78,7 @@ export function vcsMenuItems(repo: GitRepo, actions: VcsMenuActions): MenuItem[]
     { label: "Commit…", hint: "Ctrl+K", run: actions.openCommit },
     { label: "Push…", hint: "Ctrl+Shift+K", run: () => repo.push() },
     { label: "Fetch", run: () => repo.fetch() },
+    ...(actions.fetchAll ? [{ label: "Fetch di tutti i repository", run: actions.fetchAll }] : []),
     ...historyItems(repo),
     { label: "Nuovo branch…", run: () => repo.newBranch(), separatorBefore: true },
     { label: "Stash modifiche…", run: () => repo.history.stash() },

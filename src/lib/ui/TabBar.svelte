@@ -8,13 +8,18 @@
     if (event.button === 1) workspace.close(id);
   }
 
+  function onWheel(event: WheelEvent) {
+    if (event.deltaX) return;
+    (event.currentTarget as HTMLElement).scrollLeft += event.deltaY;
+  }
+
   function onDrop(index: number) {
     if (draggedId) workspace.move(draggedId, index);
     draggedId = null;
   }
 </script>
 
-<div class="tabs" role="tablist" tabindex="-1" ondblclick={(e) => e.target === e.currentTarget && workspace.newUntitled()}>
+<div class="tabs" role="tablist" tabindex="-1" onwheel={onWheel} ondblclick={(e) => e.target === e.currentTarget && workspace.newUntitled()}>
   {#each workspace.tabs as tab, index (tab.id)}
     <div
       class="tab"
@@ -53,7 +58,11 @@
     overflow-x: auto;
     background: var(--panel-bg);
     border-bottom: 1px solid var(--border);
-    scrollbar-width: thin;
+    scrollbar-width: none;
+  }
+
+  .tabs::-webkit-scrollbar {
+    display: none;
   }
 
   .tab {
