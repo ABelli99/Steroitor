@@ -40,6 +40,7 @@
   --mono: "Cascadia Mono", Consolas, "JetBrains Mono", monospace;
   --ui-font-size: 13px;
   --editor-font-size: 14px;
+  --editor-line-height: 1.5;
 }
 
 @media (prefers-color-scheme: dark) {

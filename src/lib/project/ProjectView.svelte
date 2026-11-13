@@ -1,10 +1,11 @@
 <script lang="ts">
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import type { Entry } from "../backend";
-  import { targetAt } from "../editor/definition";
+  import { definitionProvider } from "../editor/definitionLink";
   import { jumpToSource } from "../git/jumpToSource";
   import { gitShortcuts } from "../git/shortcuts";
   import { vcsMenuItems } from "../git/vcsMenu";
+  import { settings } from "../settings.svelte";
   import { installShortcuts } from "../shortcuts";
   import { openTerminal } from "../terminal/openTerminal";
   import BottomPanel from "../ui/BottomPanel.svelte";
@@ -15,6 +16,7 @@
   import { openMenu } from "../ui/menu.svelte";
   import { showPanel } from "../ui/panels";
   import QuickOpen from "../ui/QuickOpen.svelte";
+  import { settingsView } from "../ui/settingsPage.svelte";
   import Splitter from "../ui/Splitter.svelte";
   import StatusBar from "../ui/StatusBar.svelte";
   import TabBar from "../ui/TabBar.svelte";
@@ -48,6 +50,12 @@
     getCurrentWebviewWindow().setTitle(title);
   });
 
+  $effect(() => workspace.applyStyle({ ...settings.editor }));
+
+  function openSettings() {
+    settingsView.open = true;
+  }
+
   $effect(() => {
     if (!active) {
       quickOpen = false;
@@ -63,6 +71,7 @@
       "Ctrl+Tab": { editor: () => workspace.cycle(1) },
       "Ctrl+Shift+Tab": { editor: () => workspace.cycle(-1) },
       "Alt+Z": { editor: () => workspace.toggleWrap() },
+      "Ctrl+Alt+S": { editor: openSettings, git: openSettings },
       "Alt+1": { editor: toggleExplorer, git: toggleExplorer, terminal: toggleExplorer },
       "Ctrl+P": { editor: () => (quickOpen = !quickOpen), git: () => (quickOpen = !quickOpen) },
       ...gitShortcuts({
@@ -113,7 +122,7 @@
 
   function editItems(event: MouseEvent): MenuItem[] {
     const at = workspace.positionAt(event.clientX, event.clientY);
-    const target = at && targetAt(at.state, at.pos);
+    const target = at && at.state.facet(definitionProvider)?.targetAt(at.state, at.pos);
     const selection = workspace.hasSelection();
     return [
       {

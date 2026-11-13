@@ -1,4 +1,5 @@
 import type { Extension } from "@codemirror/state";
+import { pluginExtensions, pluginLanguageFor, pluginLanguageName } from "../plugins/registry.svelte";
 import { fileName } from "../workspace/files";
 
 interface LanguageDef {
@@ -6,14 +7,7 @@ interface LanguageDef {
   load: () => Promise<Extension>;
 }
 
-const javascript = (options: { typescript?: boolean; jsx?: boolean } = {}) => () =>
-  import("./embedded").then((m) => m.scriptWithTemplates(options));
-
 const languages: Record<string, LanguageDef> = {
-  javascript: { name: "JavaScript", load: javascript() },
-  jsx: { name: "JavaScript JSX", load: javascript({ jsx: true }) },
-  typescript: { name: "TypeScript", load: javascript({ typescript: true }) },
-  tsx: { name: "TypeScript JSX", load: javascript({ typescript: true, jsx: true }) },
   python: { name: "Python", load: () => import("@codemirror/lang-python").then((m) => m.python()) },
   java: { name: "Java", load: () => import("@codemirror/lang-java").then((m) => m.java()) },
   markdown: { name: "Markdown", load: () => import("@codemirror/lang-markdown").then((m) => m.markdown()) },
@@ -24,10 +18,6 @@ const languages: Record<string, LanguageDef> = {
 };
 
 const byExtension: Record<string, string> = {
-  js: "javascript", mjs: "javascript", cjs: "javascript",
-  jsx: "jsx",
-  ts: "typescript", mts: "typescript", cts: "typescript",
-  tsx: "tsx",
   py: "python", pyw: "python",
   java: "java",
   md: "markdown", markdown: "markdown",
@@ -37,12 +27,17 @@ const byExtension: Record<string, string> = {
   css: "css",
 };
 
+/** I plugin attivi hanno la precedenza sui linguaggi integrati. */
 export function detectLanguage(path: string | null): string | null {
   const extension = fileName(path ?? "").split(".").pop()?.toLowerCase();
-  return extension ? (byExtension[extension] ?? null) : null;
+  if (!extension) return null;
+  return pluginLanguageFor(extension)?.id ?? byExtension[extension] ?? null;
 }
 
-export const languageName = (id: string | null) => (id ? languages[id]?.name : null) ?? "Testo semplice";
+export const languageName = (id: string | null) => (id ? (languages[id]?.name ?? pluginLanguageName(id)) : null) ?? "Testo semplice";
 
-export const loadLanguage = (id: string | null): Promise<Extension> =>
-  id && languages[id] ? languages[id].load() : Promise.resolve([]);
+export async function loadLanguage(id: string | null): Promise<Extension> {
+  if (!id) return [];
+  const [core, extra] = await Promise.all([languages[id]?.load() ?? [], pluginExtensions(id)]);
+  return [core, ...extra];
+}

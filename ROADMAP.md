@@ -172,6 +172,26 @@ In ordine di priorità:
 
 ---
 
+## F7 — Impostazioni e plugin di linguaggio — implementata, in verifica manuale
+
+L'app resta un notepad: i plugin servono a tenere fuori dal nucleo ciò che riguarda un linguaggio solo.
+
+- Pagina **Impostazioni** a tutta finestra (pulsante nella top bar, `Ctrl+Alt+S` come in IntelliJ, Esc per chiudere), con barra laterale:
+  - **Editor**: dimensione carattere, interlinea, larghezza tab, indentazione, tab o spazi. Valgono subito, per tutti i progetti della finestra
+  - **Plugin**: elenco dei moduli con linguaggi, versione, stato di caricamento e interruttore Attivo
+- Un plugin dichiara i linguaggi e le estensioni dei file che gestisce, e porta le estensioni CodeMirror (evidenziazione, completamento, errori, navigazione). Può anche arricchire un linguaggio integrato (es. `html`)
+- I plugin attivi si caricano **una volta** all'avvio, dopo che l'editor è usabile: non pesano sul tempo di avvio. Attivare o disattivare un plugin vale dal riavvio successivo
+- Primo plugin: **JavaScript / TypeScript** (`src/lib/plugins/javascript`), con dentro tutto ciò che prima stava nel nucleo: evidenziazione con i template inline Angular/Lit, Vai alla dichiarazione (anche dai tag dei componenti nei `.html`), più completamento (parole del file, keyword, snippet) ed errori di sintassi
+
+Note di implementazione:
+- Il nucleo non conosce più JS/TS: la navigazione passa da una facet CodeMirror (`definitionProvider`) che il plugin mette nelle sue estensioni.
+- Errori di sintassi solo per JavaScript: la grammatica Lezer di TypeScript non copre tutto (es. `(x): x is T =>`) e sui file del progetto dava falsi positivi.
+- Niente type-check: il compilatore TypeScript pesa diversi MB e sforerebbe i budget di installer e RAM.
+- Misura (build release, sessione isolata): installer 2,5 MB · RAM 72,8 MB · avvio 299 ms.
+- Plugin di terze parti (caricati da una cartella su disco): non ancora. Serve un'API che passi al plugin le istanze CodeMirror dell'app, un manifest e una CSP che permetta script locali.
+
+---
+
 ## Fuori scope (decisione esplicita)
 
 Presenti nel CLAUDE.md ma incompatibili con "notepad leggero":

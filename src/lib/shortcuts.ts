@@ -1,5 +1,5 @@
-/** "terminal": il focus è in una shell, che riceve i tasti tranne quelli registrati esplicitamente. */
-export type ShortcutContext = "editor" | "git" | "terminal";
+/** "terminal": il focus è in una shell, che riceve i tasti tranne quelli registrati esplicitamente. "settings": nessuna scorciatoia. */
+export type ShortcutContext = "editor" | "git" | "terminal" | "settings";
 
 export type Handlers = Partial<Record<ShortcutContext, () => void>>;
 

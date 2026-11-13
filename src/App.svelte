@@ -14,6 +14,10 @@
   import { closeMenu, menuState } from "./lib/ui/menu.svelte";
   import ProjectBar from "./lib/ui/ProjectBar.svelte";
   import PromptDialog from "./lib/ui/PromptDialog.svelte";
+  import { applyTextStyle } from "./lib/editor/style";
+  import { startPlugins } from "./lib/plugins/registry.svelte";
+  import { settings } from "./lib/settings.svelte";
+  import { settingsView } from "./lib/ui/settingsPage.svelte";
   import { checkForUpdateLater } from "./lib/ui/updates.svelte";
   import { readSession } from "./lib/workspace/session";
 
@@ -27,6 +31,13 @@
   let ready = $state(false);
 
   const byId = (id: string | null) => projects.find((project) => project.id === id);
+
+  $effect(() => applyTextStyle(settings.editor));
+
+  function closeSettings() {
+    settingsView.open = false;
+    byId(activeId)?.workspace.focusEditor();
+  }
 
   $effect(() => {
     if (!ready) return;
@@ -124,6 +135,7 @@
       if (appWindow.label === MAIN_WINDOW) for (const path of await startupFiles()) await project.workspace.openPath(path);
       project.workspace.focusEditor();
       appReady();
+      startPlugins();
       if (appWindow.label === MAIN_WINDOW) checkForUpdateLater();
     })();
 
@@ -153,6 +165,12 @@
     {/if}
   {/each}
 </div>
+
+{#if settingsView.open}
+  {#await import("./lib/ui/SettingsView.svelte") then { default: SettingsView }}
+    <SettingsView onclose={closeSettings} />
+  {/await}
+{/if}
 
 <PromptDialog />
 

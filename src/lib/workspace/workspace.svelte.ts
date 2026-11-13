@@ -3,7 +3,9 @@ import { EditorState, Text, Transaction, type Extension, type TransactionSpec } 
 import { message, open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "../backend";
 import { detectLanguage, loadLanguage } from "../editor/languages";
-import { blameSlot, createState, gitSlot, languageSlot, minimapSlot, wrapExtension, wrapSlot } from "../editor/setup";
+import { blameSlot, createState, gitSlot, indentSlot, languageSlot, minimapSlot, wrapExtension, wrapSlot } from "../editor/setup";
+import { indentExtension } from "../editor/style";
+import { settings, type EditorStyle } from "../settings.svelte";
 import { detectEol, fileName, isInsideDir, parentDir, samePath, type Eol } from "./files";
 import type { SessionData, SessionTab } from "./session";
 
@@ -58,6 +60,7 @@ export class Workspace {
   #untitledCount = 0;
   #listeners = new Set<() => void>();
   #minimapExtension: Extension = [];
+  #indentExtension: Extension = indentExtension(settings.editor);
   /** Ctrl+click nel testo: chi gestisce il "vai alla dichiarazione". */
   ondefinition: ((state: EditorState, pos: number) => void) | null = null;
 
@@ -285,6 +288,14 @@ export class Workspace {
     this.#dispatch(id, { effects: blameSlot.reconfigure(extension) });
   }
 
+  /** Nuove impostazioni dell'editor: indentazione nello stato, carattere e interlinea da rimisurare. */
+  applyStyle(style: EditorStyle) {
+    this.#indentExtension = indentExtension(style);
+    const effect = indentSlot.reconfigure(this.#indentExtension);
+    for (const tab of this.tabs) this.#dispatch(tab.id, { effects: effect });
+    this.#view?.requestMeasure();
+  }
+
   setEol(eol: Eol) {
     const tab = this.active;
     if (!tab || tab.eol === eol) return;
@@ -384,7 +395,7 @@ export class Workspace {
   #addTab(spec: NewTab): string {
     const id = `tab-${this.#nextId++}`;
     const language = detectLanguage(spec.path);
-    const state = createState(spec.content, this.wrap, this.#minimapExtension, (update) => this.#handleUpdate(id, update));
+    const state = createState(spec.content, this.wrap, this.#minimapExtension, this.#indentExtension, (update) => this.#handleUpdate(id, update));
     this.#states.set(id, state);
     this.#baselines.set(id, spec.baseline);
     this.tabs.push({

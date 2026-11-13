@@ -4,7 +4,7 @@ import { tags as t } from "@lezer/highlight";
 
 const chrome = EditorView.theme({
   "&": { height: "100%", color: "var(--fg)", backgroundColor: "var(--editor-bg)", fontSize: "var(--editor-font-size)" },
-  ".cm-scroller": { fontFamily: "var(--mono)", lineHeight: "1.5", overflowY: "scroll" },
+  ".cm-scroller": { fontFamily: "var(--mono)", lineHeight: "var(--editor-line-height)", overflowY: "scroll" },
   ".cm-scroller::-webkit-scrollbar": { width: "12px", height: "12px" },
   ".cm-scroller::-webkit-scrollbar-thumb": {
     backgroundColor: "var(--scrollbar-thumb)",

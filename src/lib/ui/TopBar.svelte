@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Workspace } from "../workspace/workspace.svelte";
   import { layout, saveLayout } from "./layout.svelte";
+  import { settingsView } from "./settingsPage.svelte";
 
   interface Props {
     workspace: Workspace;
@@ -24,6 +25,7 @@
   <button title="Clona un repository Git" onclick={onclone}>Clona</button>
   <button title="Apri una cartella in una nuova tab progetto" onclick={onnewproject}>Nuovo progetto</button>
   <span class="spacer"></span>
+  <button title="Impostazioni (Ctrl+Alt+S)" onclick={() => (settingsView.open = true)}>Impostazioni</button>
   <button title="Explorer (Alt+1)" class:on={layout.explorerVisible} onclick={() => toggle("explorerVisible")}>
     Explorer
   </button>

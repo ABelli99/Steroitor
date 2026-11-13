@@ -70,8 +70,9 @@ Per confronto, un editor Electron vuoto parte da circa 150 MB di RAM e 80 MB di 
   nell'installer.
 - **Svelte 5 e CodeMirror 6** invece di React e Monaco: niente runtime pesante, editor modulare.
 - **Tutto ciò che non serve all'avvio si carica dopo.** Il modulo Git si carica solo se la cartella è un
-  repository. I linguaggi si caricano al primo file di quel tipo; pannelli Git, merge tool, terminale e
-  minimap alla prima apertura.
+  repository. I plugin di linguaggio attivi (oggi JavaScript / TypeScript) si caricano una volta, subito
+  dopo che l'editor è pronto; gli altri linguaggi al primo file di quel tipo; pannelli Git, merge tool,
+  terminale, impostazioni e minimap alla prima apertura.
 - **WebView2 senza GPU** (`--disable-gpu`): risparmia circa 40 MB di processo GPU, in cambio di un
   rendering software.
 - **Log Git virtualizzato e paginato** a 200 commit: su un repository di 329 commit la RAM è scesa da

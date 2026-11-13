@@ -1,6 +1,11 @@
-import { StateEffect, StateField, type Extension } from "@codemirror/state";
+import { Facet, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet } from "@codemirror/view";
-import { targetAt } from "./definition";
+import type { DefinitionProvider } from "../plugins/types";
+
+/** Il plugin del linguaggio dice cosa è navigabile e dove porta: senza plugin, niente link. */
+export const definitionProvider = Facet.define<DefinitionProvider, DefinitionProvider | null>({
+  combine: (providers) => providers[0] ?? null,
+});
 
 const setLink = StateEffect.define<{ from: number; to: number } | null>();
 const linkMark = Decoration.mark({ class: "cm-definition-link" });
@@ -43,8 +48,10 @@ const hover = ViewPlugin.fromClass(
   {
     eventHandlers: {
       mousemove(event) {
-        const pos = event.ctrlKey || event.metaKey ? this.view.posAtCoords({ x: event.clientX, y: event.clientY }, false) : null;
-        const target = pos === null ? null : targetAt(this.view.state, pos);
+        const { state } = this.view;
+        const provider = event.ctrlKey || event.metaKey ? state.facet(definitionProvider) : null;
+        const pos = provider && this.view.posAtCoords({ x: event.clientX, y: event.clientY }, false);
+        const target = provider && pos !== null ? provider.targetAt(state, pos) : null;
         this.show(target && { from: target.from, to: target.to });
       },
       mouseleave() {
