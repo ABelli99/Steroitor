@@ -3,7 +3,7 @@ import { EditorState, Text, Transaction, type Extension, type TransactionSpec } 
 import { message, open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "../backend";
 import { detectLanguage, loadLanguage } from "../editor/languages";
-import { blameSlot, createState, gitSlot, indentSlot, languageSlot, minimapSlot, wrapExtension, wrapSlot } from "../editor/setup";
+import { blameSlot, createState, documentPath, gitSlot, indentSlot, languageSlot, minimapSlot, pathSlot, wrapExtension, wrapSlot } from "../editor/setup";
 import { indentExtension } from "../editor/style";
 import { settings, type EditorStyle } from "../settings.svelte";
 import { detectEol, fileName, isInsideDir, parentDir, samePath, type Eol } from "./files";
@@ -148,7 +148,7 @@ export class Workspace {
 
     tab.path = path;
     tab.name = fileName(path);
-    this.#applyLanguage(tab, detectLanguage(path));
+    this.#pathChanged(tab);
     this.#emitChange();
     return true;
   }
@@ -261,7 +261,7 @@ export class Workspace {
       if (!tab.path || !isInsideDir(tab.path, from)) continue;
       tab.path = to + tab.path.slice(from.length);
       tab.name = fileName(tab.path);
-      this.#applyLanguage(tab, detectLanguage(tab.path));
+      this.#pathChanged(tab);
     }
     this.#emitChange();
   }
@@ -395,7 +395,7 @@ export class Workspace {
   #addTab(spec: NewTab): string {
     const id = `tab-${this.#nextId++}`;
     const language = detectLanguage(spec.path);
-    const state = createState(spec.content, this.wrap, this.#minimapExtension, this.#indentExtension, (update) => this.#handleUpdate(id, update));
+    const state = createState(spec.content, spec.path, this.wrap, this.#minimapExtension, this.#indentExtension, (update) => this.#handleUpdate(id, update));
     this.#states.set(id, state);
     this.#baselines.set(id, spec.baseline);
     this.tabs.push({
@@ -459,6 +459,11 @@ export class Workspace {
     });
     if (answer === "Yes" || answer === "Salva") return this.save(tab.id);
     return answer === "No" || answer === "Non salvare";
+  }
+
+  #pathChanged(tab: Tab) {
+    this.#dispatch(tab.id, { effects: pathSlot.reconfigure(documentPath.of(tab.path)) });
+    this.#applyLanguage(tab, detectLanguage(tab.path));
   }
 
   #applyLanguage(tab: Tab, language: string | null) {

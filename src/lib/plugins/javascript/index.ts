@@ -13,5 +13,13 @@ export const javascriptPlugin: Plugin = {
     { id: "typescript", name: "TypeScript", fileExtensions: ["ts", "mts", "cts"] },
     { id: "tsx", name: "TypeScript JSX", fileExtensions: ["tsx"] },
   ],
-  load: () => import("./module"),
+  options: [
+    {
+      id: "typeCheck",
+      label: "Type-check con TypeScript",
+      description:
+        "Errori di tipo del file aperto, con il tsconfig del progetto e i tipi di node_modules. Gira in background: da ~50 MB a qualche centinaio di MB di RAM in più, secondo le dipendenze del progetto.",
+    },
+  ],
+  load: (options) => import("./module").then((module) => module.create(options)),
 };

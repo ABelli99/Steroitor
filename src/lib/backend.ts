@@ -11,6 +11,10 @@ export const readTextFile = (path: string) => invoke<TextFile>("read_text_file",
 export const writeTextFile = (path: string, content: string, encoding: string, bom: boolean) =>
   invoke<void>("write_text_file", { path, content, encoding, bom });
 
+export type Probe = { kind: "file"; content: string } | { kind: "dir"; dirs: string[] } | { kind: "missing" };
+
+export const probePaths = (paths: string[]) => invoke<Probe[]>("probe_paths", { paths });
+
 export const loadSession = (folder: string | null) => invoke<string | null>("load_session", { folder });
 
 export const saveSession = (folder: string | null, data: string) => invoke<void>("save_session", { folder, data });

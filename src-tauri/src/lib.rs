@@ -57,6 +57,7 @@ pub fn run() {
             explorer::path_state,
             files::read_text_file,
             files::write_text_file,
+            files::probe_paths,
             git::commands::git_version,
             git::commands::git_repo_root,
             git::discover::git_find_repos,

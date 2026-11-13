@@ -4,8 +4,11 @@ import { ensureSyntaxTree } from "@codemirror/language";
 import { linter, type Diagnostic } from "@codemirror/lint";
 import { IterMode } from "@lezer/common";
 import { definitionProvider } from "../../editor/definitionLink";
+import { documentPath } from "../../editor/setup";
+import type { PluginModule } from "../types";
 import { scriptWithTemplates } from "./embedded";
 import { navigation } from "./navigation";
+import type { TypeDiagnostic } from "./typecheck/checker";
 
 const PARSE_TIMEOUT_MS = 200;
 
@@ -26,19 +29,44 @@ export function syntaxErrors(state: EditorState): Diagnostic[] {
   return diagnostics;
 }
 
-// La grammatica Lezer di TypeScript non copre tutto (es. `(x): x is T =>`): sul TS gli errori sarebbero falsi positivi.
-const script = (options: { typescript?: boolean; jsx?: boolean }): Extension => [
-  scriptWithTemplates(options),
-  autocompletion(),
-  options.typescript ? [] : linter((view) => syntaxErrors(view.state)),
-  definitionProvider.of(navigation),
-];
+const syntaxLinter = linter((view) => syntaxErrors(view.state));
 
-export const extensions: Record<string, Extension> = {
-  javascript: script({}),
-  jsx: script({ jsx: true }),
-  typescript: script({ typescript: true }),
-  tsx: script({ typescript: true, jsx: true }),
-  // Ctrl+click sui tag dei componenti nei template Angular in file .html.
-  html: definitionProvider.of(navigation),
-};
+const typeLinter = (check: (path: string, content: string) => Promise<TypeDiagnostic[]>) =>
+  linter(async (view) => {
+    const { state } = view;
+    const path = state.facet(documentPath);
+    if (!path) return [];
+    const found = await check(path, state.doc.toString()).catch((error) => {
+      console.error("Type-check", error);
+      return [];
+    });
+    const length = state.doc.length;
+    return found.map((diagnostic) => ({ ...diagnostic, from: Math.min(diagnostic.from, length), to: Math.min(diagnostic.to, length) }));
+  });
+
+export async function create(options: Record<string, boolean>): Promise<PluginModule> {
+  const checker = options.typeCheck ? await import("./typecheck/client") : null;
+  // Il worker parte subito: il compilatore si carica mentre l'utente apre i file.
+  checker?.startTypeCheck();
+  const diagnostics = checker && typeLinter(checker.typeCheck);
+
+  // Senza type-check, errori di sintassi solo su JS: la grammatica Lezer di TypeScript non copre tutto (es. `(x): x is T =>`).
+  const script = (language: { typescript?: boolean; jsx?: boolean }): Extension => [
+    scriptWithTemplates(language),
+    autocompletion(),
+    diagnostics ?? (language.typescript ? [] : syntaxLinter),
+    definitionProvider.of(navigation),
+  ];
+
+  return {
+    extensions: {
+      javascript: script({}),
+      jsx: script({ jsx: true }),
+      typescript: script({ typescript: true }),
+      tsx: script({ typescript: true, jsx: true }),
+      // Ctrl+click sui tag dei componenti nei template Angular in file .html.
+      html: definitionProvider.of(navigation),
+    },
+    onFilesChanged: checker ? (dirs) => void checker.invalidateTypeCheck(dirs).catch(console.error) : undefined,
+  };
+}

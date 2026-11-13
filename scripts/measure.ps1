@@ -3,10 +3,11 @@
 #      powershell -File scripts/measure.ps1 -SkipBuild
 #      powershell -File scripts/measure.ps1 -SkipBuild -Repo C:\percorso\repo   (misura informativa con un repo aperto)
 #      powershell -File scripts/measure.ps1 -SkipBuild -Dir src-tauri\target\release\steroitor_v1.1.0   (misura una release)
+#      powershell -File scripts/measure.ps1 -SkipBuild -File src/lib/git/graph.ts -Settle 15   (apre quel file e aspetta 15 s prima di leggere la RAM)
 #
 # Sessioni, finestre e progetti dell'utente vengono messi da parte e ripristinati: la misura parte sempre dallo
 # stesso stato (un progetto, nessuna cartella, un solo file), altrimenti conterebbe le tab e i repo lasciati aperti.
-param([switch]$SkipBuild, [string]$Repo = "", [string]$Dir = "")
+param([switch]$SkipBuild, [string]$Repo = "", [string]$Dir = "", [string]$File = "", [int]$Settle = 3)
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
@@ -47,8 +48,12 @@ function Get-PrivateMemoryMB([int[]]$ids) {
     [math]::Round($bytes / 1MB, 1)
 }
 
-$sample = Join-Path $env:TEMP "steroitor-measure.txt"
-Set-Content $sample "riga di prova" -Encoding utf8
+if ($File) {
+    $sample = (Resolve-Path $File).Path
+} else {
+    $sample = Join-Path $env:TEMP "steroitor-measure.txt"
+    Set-Content $sample "riga di prova" -Encoding utf8
+}
 $marker = Join-Path $env:TEMP "steroitor-ready.txt"
 Remove-Item $marker -ErrorAction SilentlyContinue
 
@@ -73,7 +78,7 @@ try {
     if (-not (Test-Path $marker)) { throw "L'app non ha segnalato app_ready entro 15 s" }
     $startupMs = [int](Get-Content $marker)
 
-    Start-Sleep -Seconds 3
+    Start-Sleep -Seconds $Settle
     $ramMb = Get-PrivateMemoryMB (Get-ProcessTree $process.Id)
 }
 finally {

@@ -13,6 +13,7 @@ export default defineConfig({
     hmr: host ? { protocol: "ws", host, port: 1421 } : undefined,
     watch: { ignored: ["**/src-tauri/**"] },
   },
+  worker: { format: "es" },
   build: {
     target: "es2022",
     chunkSizeWarningLimit: 600,

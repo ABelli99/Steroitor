@@ -182,12 +182,14 @@ L'app resta un notepad: i plugin servono a tenere fuori dal nucleo ciò che rigu
 - Un plugin dichiara i linguaggi e le estensioni dei file che gestisce, e porta le estensioni CodeMirror (evidenziazione, completamento, errori, navigazione). Può anche arricchire un linguaggio integrato (es. `html`)
 - I plugin attivi si caricano **una volta** all'avvio, dopo che l'editor è usabile: non pesano sul tempo di avvio. Attivare o disattivare un plugin vale dal riavvio successivo
 - Primo plugin: **JavaScript / TypeScript** (`src/lib/plugins/javascript`), con dentro tutto ciò che prima stava nel nucleo: evidenziazione con i template inline Angular/Lit, Vai alla dichiarazione (anche dai tag dei componenti nei `.html`), più completamento (parole del file, keyword, snippet) ed errori di sintassi
+- Opzione del plugin **Type-check con TypeScript**, spenta di default: errori di tipo del file aperto, con il `tsconfig.json` più vicino e i tipi di `node_modules`. Fuori dal budget RAM: chi la attiva ne accetta il costo
 
 Note di implementazione:
 - Il nucleo non conosce più JS/TS: la navigazione passa da una facet CodeMirror (`definitionProvider`) che il plugin mette nelle sue estensioni.
-- Errori di sintassi solo per JavaScript: la grammatica Lezer di TypeScript non copre tutto (es. `(x): x is T =>`) e sui file del progetto dava falsi positivi.
-- Niente type-check: il compilatore TypeScript pesa diversi MB e sforerebbe i budget di installer e RAM.
-- Misura (build release, sessione isolata): installer 2,5 MB · RAM 72,8 MB · avvio 299 ms.
+- Senza type-check, errori di sintassi solo per JavaScript: la grammatica Lezer di TypeScript non copre tutto (es. `(x): x is T =>`) e sui file del progetto dava falsi positivi. Con il type-check, gli errori (sintassi e tipi) li dà TypeScript.
+- Type-check: language service di TypeScript in un web worker, avviato all'avvio solo se l'opzione è attiva. L'host di TypeScript è sincrono, quindi i file si leggono a giri: il worker annota quelli che mancano, `probe_paths` (Rust) li legge a lotti, si riprova. Su questo repo il primo controllo fa 14 giri e ~950 letture; i successivi 10–20 ms. Le lib di TypeScript sono chunk separati, caricati solo se il progetto le chiede. Il watcher invalida i file cambiati; `node_modules` è escluso dal watcher, quindi dopo un `npm install` serve un riavvio.
+- Il type-check guarda il file su disco per gli import: le modifiche non salvate di un'altra tab non si vedono (al cambio tab c'è comunque l'autosave).
+- Misura (build release, sessione isolata): installer 2,5 MB → 3,8 MB con il compilatore TypeScript (3,5 MB di worker + lib). RAM con type-check spento invariata (A/B con il commit precedente: 80–85 MB per entrambi, macchina più carica rispetto alla misura del 1.2.0). Type-check attivo: +~18 MB con un file `.txt` (solo motore caricato); con `workspace.svelte.ts` di questo repo ~290 MB a 15 s, ~200 MB a 40 s (il resto era garbage dei giri di caricamento).
 - Plugin di terze parti (caricati da una cartella su disco): non ancora. Serve un'API che passi al plugin le istanze CodeMirror dell'app, un manifest e una CSP che permetta script locali.
 
 ---

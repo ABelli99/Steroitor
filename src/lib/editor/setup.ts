@@ -1,4 +1,4 @@
-import { Compartment, EditorState, type Extension } from "@codemirror/state";
+import { Compartment, EditorState, Facet, type Extension } from "@codemirror/state";
 import {
   crosshairCursor, drawSelection, dropCursor, EditorView, highlightActiveLine, highlightActiveLineGutter,
   highlightSpecialChars, keymap, lineNumbers, rectangularSelection, type ViewUpdate,
@@ -19,10 +19,14 @@ export const gitSlot = new Compartment();
 export const blameSlot = new Compartment();
 export const minimapSlot = new Compartment();
 export const indentSlot = new Compartment();
+export const pathSlot = new Compartment();
+
+/** Percorso del file della tab, per i plugin che leggono il progetto (es. il type-check); null se senza titolo. */
+export const documentPath = Facet.define<string | null, string | null>({ combine: (paths) => paths[0] ?? null });
 
 export const wrapExtension = (enabled: boolean): Extension => (enabled ? EditorView.lineWrapping : []);
 
-export function createState(content: string, wrap: boolean, minimap: Extension, indent: Extension, onUpdate: (update: ViewUpdate) => void): EditorState {
+export function createState(content: string, path: string | null, wrap: boolean, minimap: Extension, indent: Extension, onUpdate: (update: ViewUpdate) => void): EditorState {
   return EditorState.create({
     doc: content,
     extensions: [
@@ -59,6 +63,7 @@ export function createState(content: string, wrap: boolean, minimap: Extension, 
       wrapSlot.of(wrapExtension(wrap)),
       minimapSlot.of(minimap),
       indentSlot.of(indent),
+      pathSlot.of(documentPath.of(path)),
       EditorView.updateListener.of(onUpdate),
     ],
   });

@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { needsRestart, pluginEnabled, plugins, pluginStatus, setPluginEnabled, type PluginStatus } from "../plugins/registry.svelte";
+  import {
+    needsRestart, pluginEnabled, pluginOption, plugins, pluginStatus, setPluginEnabled, setPluginOption, type PluginStatus,
+  } from "../plugins/registry.svelte";
   import { defaultEditorStyle, saveSettings, settings, type EditorStyle } from "../settings.svelte";
   import { settingsView, type SettingsSection } from "./settingsPage.svelte";
 
@@ -94,6 +96,18 @@
                 <span class="chip">{language.name} <span class="muted">.{language.fileExtensions.join(" .")}</span></span>
               {/each}
             </div>
+            {#each plugin.options ?? [] as option (option.id)}
+              <label class="check option">
+                <input
+                  type="checkbox"
+                  checked={pluginOption(plugin.id, option.id)}
+                  disabled={!pluginEnabled(plugin.id)}
+                  onchange={(event) => setPluginOption(plugin.id, option.id, event.currentTarget.checked)}
+                />
+                <span>{option.label}</span>
+              </label>
+              <p class="muted option-text">{option.description}</p>
+            {/each}
             <small class:error={pluginStatus[plugin.id] === "error"}>
               {statusLabel[pluginStatus[plugin.id]]}{needsRestart(plugin) ? " · riavvia per applicare" : ""}
             </small>
@@ -240,6 +254,10 @@
     flex-wrap: wrap;
     gap: 4px;
     margin-bottom: 6px;
+  }
+
+  .plugins p.option-text {
+    margin: 2px 0 8px 22px;
   }
 
   .chip {

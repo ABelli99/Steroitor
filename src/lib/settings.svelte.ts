@@ -21,6 +21,8 @@ interface Settings {
   skippedVersion: string;
   editor: EditorStyle;
   disabledPlugins: string[];
+  /** Opzioni dei plugin: id plugin → id opzione → attiva. */
+  pluginOptions: Record<string, Record<string, boolean>>;
 }
 
 export const defaultEditorStyle: EditorStyle = { fontSize: 14, lineHeight: 1.5, tabSize: 4, indentSize: 2, useTabs: false };
@@ -33,6 +35,7 @@ const defaults: Settings = {
   skippedVersion: "",
   editor: defaultEditorStyle,
   disabledPlugins: [],
+  pluginOptions: {},
 };
 
 function load(): Settings {

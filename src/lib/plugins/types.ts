@@ -26,12 +26,21 @@ export interface DefinitionProvider {
 export interface PluginModule {
   /** Estensioni CodeMirror per linguaggio: i propri e quelli che il plugin arricchisce (es. `html`). */
   extensions: Record<string, Extension>;
+  /** File cambiati su disco nelle cartelle indicate (watcher del progetto). */
+  onFilesChanged?(dirs: string[]): void;
 }
 
 export interface PluginLanguage {
   id: string;
   name: string;
   fileExtensions: string[];
+}
+
+/** Interruttore del plugin, mostrato nella pagina Plugin; vale dal prossimo avvio. */
+export interface PluginOption {
+  id: string;
+  label: string;
+  description: string;
 }
 
 export interface Plugin {
@@ -41,5 +50,6 @@ export interface Plugin {
   author: string;
   description: string;
   languages: PluginLanguage[];
-  load(): Promise<PluginModule>;
+  options?: PluginOption[];
+  load(options: Record<string, boolean>): Promise<PluginModule>;
 }
