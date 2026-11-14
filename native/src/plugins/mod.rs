@@ -42,9 +42,12 @@ pub struct Plugin {
     pub name: &'static str,
     /// Cosa serve per farlo funzionare, mostrato nella pagina impostazioni.
     pub requires: &'static str,
-    extensions: &'static [&'static str],
-    /// Id dell'opzione in `pluginOptions` ed etichetta, nell'ordine della pagina impostazioni.
-    pub options: &'static [(&'static str, &'static str)],
+    pub version: &'static str,
+    pub description: &'static str,
+    /// Nome del linguaggio ed estensioni dei suoi file.
+    pub languages: &'static [(&'static str, &'static [&'static str])],
+    /// Id dell'opzione in `pluginOptions`, etichetta e descrizione, nell'ordine della pagina impostazioni.
+    pub options: &'static [(&'static str, &'static str, &'static str)],
     protocol: Protocol,
     language_id: &'static str,
 }
@@ -54,7 +57,9 @@ pub static PLUGINS: [Plugin; 2] = [
         id: "javascript",
         name: "JavaScript / TypeScript",
         requires: "tsserver con Node.js, dal progetto, da npm globale o da VS Code",
-        extensions: &["js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx"],
+        version: "1.0.0",
+        description: "Completamento, errori di tipo, documentazione e Vai alla dichiarazione con tsserver; HTML inline di React e Angular colorato.",
+        languages: &[("JavaScript", &["js", "mjs", "cjs"]), ("JavaScript JSX", &["jsx"]), ("TypeScript", &["ts", "mts", "cts"]), ("TypeScript JSX", &["tsx"])],
         options: &SCRIPT_OPTIONS,
         protocol: Protocol::TsServer,
         language_id: "typescript",
@@ -63,7 +68,9 @@ pub static PLUGINS: [Plugin; 2] = [
         id: "java",
         name: "Java",
         requires: "jdtls dall'estensione Java di VS Code o da JDTLS_HOME; 0,3–1 GB di RAM",
-        extensions: &["java"],
+        version: "1.1.0",
+        description: "Completamento, errori, documentazione e Vai alla dichiarazione con jdtls. Disattivato, resta l'evidenziazione.",
+        languages: &[("Java", &["java"])],
         options: &SERVER_OPTIONS,
         protocol: Protocol::Lsp,
         language_id: "java",
@@ -71,9 +78,19 @@ pub static PLUGINS: [Plugin; 2] = [
 ];
 
 /// Le opzioni che usano il server del plugin. `typeCheck` è la stessa chiave della versione Tauri.
-const SERVER_OPTIONS: [(&str, &str); 3] = [("completion", "Completamento"), ("typeCheck", "Type-check"), ("docs", "Documentazione inline")];
+const SERVER_OPTIONS: [(&str, &str, &str); 3] = [
+    ("completion", "Completamento", "Suggerimenti del language server mentre scrivi; Ctrl+Spazio li chiede."),
+    ("typeCheck", "Type-check", "Errori e avvisi del language server sottolineati nel file aperto."),
+    ("docs", "Documentazione inline", "Firma e documentazione del simbolo sotto il mouse."),
+];
 /// JavaScript/TypeScript ha in più l'HTML inline, colorato senza server.
-const SCRIPT_OPTIONS: [(&str, &str); 5] = [SERVER_OPTIONS[0], SERVER_OPTIONS[1], SERVER_OPTIONS[2], (REACT, "HTML inline React (JSX)"), (ANGULAR, "HTML inline Angular (template)")];
+const SCRIPT_OPTIONS: [(&str, &str, &str); 5] = [
+    SERVER_OPTIONS[0],
+    SERVER_OPTIONS[1],
+    SERVER_OPTIONS[2],
+    (REACT, "HTML inline React (JSX)", "Colora i tag JSX nei file .jsx e .tsx; senza server."),
+    (ANGULAR, "HTML inline Angular (template)", "Colora l'HTML nei template inline dei componenti Angular; senza server."),
+];
 const COMPLETION: &str = SERVER_OPTIONS[0].0;
 const TYPE_CHECK: &str = SERVER_OPTIONS[1].0;
 const DOCS: &str = SERVER_OPTIONS[2].0;
@@ -93,12 +110,12 @@ const INDIC_TEXTFORE: isize = 17;
 
 fn plugin_for(path: &Path) -> Option<usize> {
     let extension = path.extension()?.to_string_lossy().to_lowercase();
-    PLUGINS.iter().position(|plugin| plugin.extensions.contains(&extension.as_str()))
+    PLUGINS.iter().position(|plugin| plugin.languages.iter().any(|(_, extensions)| extensions.contains(&extension.as_str())))
 }
 
 fn wants_server(settings: &Settings, plugin: usize) -> bool {
     let id = PLUGINS[plugin].id;
-    settings.plugin_enabled(id) && SERVER_OPTIONS.iter().any(|(option, _)| settings.plugin_option(id, option))
+    settings.plugin_enabled(id) && SERVER_OPTIONS.iter().any(|(option, _, _)| settings.plugin_option(id, option))
 }
 
 fn option(settings: &Settings, path: Option<&Path>, option: &str) -> Option<usize> {
