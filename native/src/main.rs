@@ -17,6 +17,7 @@ mod plugins;
 mod prompt;
 mod quick_open;
 mod sci;
+mod side_by_side;
 mod session;
 mod settings_page;
 mod terminal;

@@ -15,12 +15,13 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, SetFocus, VK_
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dialogs::{message_box, wide};
-use crate::diff::{align, changed_lines, parse_conflicts, resolve_all, Kind};
+use crate::diff::{changed_lines, parse_conflicts, resolve_all};
 use crate::git::{Event, Worker};
 use crate::lang;
 use crate::list::{decode_event, List, ListEvent, RowPaint, WM_LIST_EVENT, WM_LIST_PAINT};
 use crate::paint::{fill, frame, text, text_width};
 use crate::sci::*;
+use crate::side_by_side::{self, MARKERS, MARKER_CONFLICT};
 use crate::theme::Palette;
 
 const CLASS_NAME: &str = "SteroitorCompare";
@@ -30,17 +31,7 @@ const FILES_WIDTH: i32 = 280;
 const ROW_HEIGHT: i32 = 24;
 const SCI_SETREADONLY: u32 = 2171;
 const SCI_GETMODIFY: u32 = 2159;
-const SCI_GETXOFFSET: u32 = 2398;
-const SCI_SETXOFFSET: u32 = 2397;
-const SCI_MARGINSETTEXT: u32 = 2530;
-const SCI_MARGINSETSTYLE: u32 = 2532;
-const SCI_MARGINTEXTCLEARALL: u32 = 2536;
 const SCI_GOTOLINE: u32 = 2024;
-const SC_MARGIN_RTEXT: isize = 5;
-const SC_MARK_BACKGROUND: isize = 22;
-/// Marker di sfondo: un numero per tipo di riga (Same non ha marker).
-const MARKERS: [(Kind, usize); 4] = [(Kind::Added, 0), (Kind::Deleted, 1), (Kind::Modified, 2), (Kind::Filler, 3)];
-const MARKER_CONFLICT: usize = 4;
 
 /// Risultati dei caricamenti in background, che tornano dal worker come `Event::Compare`.
 pub enum Loaded {
@@ -108,11 +99,6 @@ fn compare() -> Option<&'static Compare> {
     COMPARE.with(|cell| cell.get().copied())
 }
 
-fn blend(color: u32, background: u32, amount: u32) -> u32 {
-    let channel = |shift: u32| (((color >> shift) & 0xFF) * amount + ((background >> shift) & 0xFF) * (100 - amount)) / 100;
-    channel(0) | (channel(8) << 8) | (channel(16) << 16)
-}
-
 fn contains(rect: &RECT, x: i32, y: i32) -> bool {
     x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
 }
@@ -175,40 +161,12 @@ impl Compare {
         }));
         compare.files.attach();
         for pane in &compare.panes {
-            compare.configure(pane);
+            side_by_side::configure(pane, palette);
         }
         COMPARE.with(|cell| {
             let _ = cell.set(compare);
         });
         compare
-    }
-
-    fn configure(&self, sci: &Sci) {
-        let palette = &self.palette;
-        let opaque = |color: u32| (color | 0xFF00_0000) as isize;
-        sci.call(SCI_SETCODEPAGE, SC_CP_UTF8, 0);
-        sci.call(SCI_SETSCROLLWIDTH, 1, 0);
-        sci.call(SCI_SETSCROLLWIDTHTRACKING, 1, 0);
-        sci.call(SCI_SETMARGINLEFT, 0, 4);
-        sci.call(SCI_SETMARGINWIDTHN, 1, 0);
-        sci.call(SCI_SETMARGINMASKN, 0, 0);
-        sci.call(SCI_SETMARGINMASKN, 1, 0);
-        sci.call(SCI_SETMARGINBACKN, 0, palette.editor as isize);
-        sci.call(SCI_SETMODEVENTMASK, (SC_MOD_INSERTTEXT | SC_MOD_DELETETEXT) as usize, 0);
-        sci.call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_CARET, opaque(palette.accent));
-        sci.call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_SELECTION_BACK, opaque(palette.selection));
-        sci.call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_SELECTION_INACTIVE_BACK, opaque(palette.selection));
-        let markers = [
-            (0, palette.git_added),
-            (1, palette.git_ignored),
-            (2, palette.git_modified),
-            (3, palette.border),
-            (MARKER_CONFLICT, palette.danger),
-        ];
-        for (marker, color) in markers {
-            sci.call(SCI_MARKERDEFINE, marker, SC_MARK_BACKGROUND);
-            sci.call(SCI_MARKERSETBACK, marker, blend(color, palette.editor, if marker == 3 { 40 } else { 22 }) as isize);
-        }
     }
 
     pub fn set_font_fraction(&self, font_fraction: isize) {
@@ -348,32 +306,13 @@ impl Compare {
     }
 
     fn set_text(&self, sci: &Sci, text: &str, language: &'static lang::Language) {
-        lang::set_lexer(sci, language);
-        lang::apply_styles(sci, language, &self.palette, self.font_fraction.get());
-        sci.call(SCI_SETREADONLY, 0, 0);
-        sci.call(SCI_MARGINTEXTCLEARALL, 0, 0);
-        sci.call(SCI_MARKERDELETEALL, usize::MAX, 0);
-        sci.set_text(text.as_bytes());
+        side_by_side::set_text(sci, text, language, &self.palette, self.font_fraction.get());
     }
 
     fn show_pair(&self, left: &str, right: &str) {
-        let language = lang::detect(&self.state.borrow().path);
-        let aligned = align(left, right);
-        for (sci, side) in self.panes.iter().zip([&aligned.left, &aligned.right]) {
-            self.set_text(sci, &side.text, language);
-            sci.call(SCI_SETMARGINTYPEN, 0, SC_MARGIN_RTEXT);
-            for (line, (number, kind)) in side.numbers.iter().zip(&side.kinds).enumerate() {
-                if let Some(number) = number {
-                    sci.call_str(SCI_MARGINSETTEXT, line, &number.to_string());
-                    sci.call(SCI_MARGINSETSTYLE, line, STYLE_LINENUMBER as isize);
-                }
-                if let Some(&(_, marker)) = MARKERS.iter().find(|(marker_kind, _)| marker_kind == kind) {
-                    sci.call(SCI_MARKERADD, line, marker as isize);
-                }
-            }
-            sci.call(SCI_SETREADONLY, 1, 0);
-        }
-        self.state.borrow_mut().stops = aligned.changes;
+        let path = self.state.borrow().path.clone();
+        let stops = side_by_side::show([&self.panes[0], &self.panes[1]], left, right, &path, &self.palette, self.font_fraction.get());
+        self.state.borrow_mut().stops = stops;
         self.jump(1);
     }
 
@@ -666,16 +605,7 @@ impl Compare {
         if self.state.borrow().mode == Mode::Merge {
             return;
         }
-        let Some(from) = self.panes[..2].iter().find(|pane| pane.hwnd == source) else { return };
-        let (line, x) = (from.call(SCI_GETFIRSTVISIBLELINE, 0, 0), from.call(SCI_GETXOFFSET, 0, 0));
-        for other in self.panes[..2].iter().filter(|pane| pane.hwnd != source) {
-            if other.call(SCI_GETFIRSTVISIBLELINE, 0, 0) != line {
-                other.call(SCI_SETFIRSTVISIBLELINE, line as usize, 0);
-            }
-            if other.call(SCI_GETXOFFSET, 0, 0) != x {
-                other.call(SCI_SETXOFFSET, x as usize, 0);
-            }
-        }
+        side_by_side::sync_scroll([&self.panes[0], &self.panes[1]], source);
     }
 }
 
@@ -724,13 +654,3 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn blends_two_colors() {
-        assert_eq!(blend(0x0000FF, 0x000000, 50), 0x00007F);
-        assert_eq!(blend(0xFFFFFF, 0x000000, 100), 0xFFFFFF);
-    }
-}

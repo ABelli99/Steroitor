@@ -50,6 +50,7 @@ pub enum Button {
     CommitAndPush,
     Amend,
     StageAll,
+    OpenInEditor,
     Continue,
     Abort,
     Init,
@@ -148,8 +149,8 @@ pub struct Panel {
     pub filter_text: HWND,
     pub filter_author: HWND,
     pub filter_path: HWND,
-    /// Anteprima delle modifiche del file selezionato nella tab Commit.
-    pub preview: Sci,
+    /// Anteprima affiancata del file selezionato nella tab Commit: HEAD a sinistra, copia di lavoro a destra.
+    pub preview: [Sci; 2],
     pub preview_path: RefCell<Option<String>>,
     /// Branch del log; None = tutti.
     pub reference: RefCell<Option<String>>,
@@ -330,7 +331,7 @@ impl Panel {
             unsafe { CreateWindowExW(0, class.as_ptr(), std::ptr::null(), style, 0, 0, 0, 0, parent, std::ptr::null_mut(), instance, std::ptr::null()) }
         };
         let console = child(&scintilla, WS_CHILD);
-        let preview = child(&scintilla, WS_CHILD);
+        let preview = [child(&scintilla, WS_CHILD), child(&scintilla, WS_CHILD)];
         let message = child(&edit, WS_CHILD | WS_VSCROLL | WS_TABSTOP | (ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL) as u32);
         let filters = ["Testo nel messaggio", "Autore", "Path (es. src/)"].map(|cue| {
             let field = child(&edit, WS_CHILD | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32);
@@ -345,14 +346,17 @@ impl Panel {
             SendMessageW(message, 0x1501, 1, cue.as_ptr() as isize);
             if palette.dark {
                 let theme = wide("DarkMode_Explorer");
-                for control in [console, preview, message] {
+                for control in [console, preview[0], preview[1], message] {
                     SetWindowTheme(control, theme.as_ptr(), std::ptr::null());
                 }
             }
         }
         let console = Sci::new(console);
-        let preview = Sci::new(preview);
-        for sci in [&console, &preview] {
+        let preview = preview.map(Sci::new);
+        for pane in &preview {
+            crate::side_by_side::configure(pane, palette);
+        }
+        for sci in [&console] {
             sci.call_str(SCI_STYLESETFONT, STYLE_DEFAULT, "Cascadia Mono");
             sci.call(SCI_STYLESETSIZEFRACTIONAL, STYLE_DEFAULT, 975);
             sci.call(SCI_STYLESETFORE, STYLE_DEFAULT, palette.fg as isize);
@@ -442,7 +446,11 @@ impl Panel {
         self.branch_rows.borrow_mut().clear();
         self.branches.set_rows(0);
         self.clear_details();
-        self.set_preview(None, "");
+        *self.preview_path.borrow_mut() = None;
+        for pane in &self.preview {
+            pane.call(SCI_SETREADONLY, 0, 0);
+            pane.set_text(b"");
+        }
     }
 
     /// Progetto chiuso: terminali e documento della Console.
@@ -460,7 +468,7 @@ impl Panel {
     }
 
     pub fn owns(&self, hwnd: HWND) -> bool {
-        [self.console.hwnd, self.branches.hwnd, self.log.hwnd, self.details.hwnd, self.files.hwnd, self.message, self.filter_text, self.filter_author, self.filter_path, self.preview.hwnd].contains(&hwnd)
+        [self.console.hwnd, self.branches.hwnd, self.log.hwnd, self.details.hwnd, self.files.hwnd, self.message, self.filter_text, self.filter_author, self.filter_path, self.preview[0].hwnd, self.preview[1].hwnd].contains(&hwnd)
     }
 
     pub fn is_filter(&self, hwnd: HWND) -> bool {
@@ -522,7 +530,10 @@ impl Panel {
         let message_top = if operation { actions_top - scale(28) } else { actions_top - scale(MESSAGE_HEIGHT) };
         place(self.files.hwnd, commit, RECT { top: left.top + scale(LIST_HEADER), bottom: message_top - scale(4), ..left });
         place(self.message, commit && !operation, RECT { left: left.left + scale(8), top: message_top, right: left.right - scale(8), bottom: actions_top });
-        place(self.preview.hwnd, commit, RECT { left: split + 1, top: body.top + scale(LIST_HEADER), ..body });
+        let pane_top = body.top + scale(LIST_HEADER);
+        let middle = (split + 1 + body.right) / 2;
+        place(self.preview[0].hwnd, commit, RECT { left: split + 1, top: pane_top, right: middle - 1, ..body });
+        place(self.preview[1].hwnd, commit, RECT { left: middle, top: pane_top, ..body });
     }
 
     unsafe fn button(dc: HDC, palette: &Palette, area: RECT, label: &str, primary: bool, enabled: bool) {
@@ -719,9 +730,15 @@ impl Panel {
                 buttons.push((RECT { left: check.left, right: label_area.right, ..row }, Button::Amend));
             }
 
-            let preview_header = RECT { left: split + scale(8), bottom: body.top + scale(LIST_HEADER), ..body };
+            let preview_header = RECT { left: split + scale(8), bottom: body.top + scale(LIST_HEADER), right: body.right - scale(8), ..body };
             match self.preview_path.borrow().as_deref() {
-                Some(path) => text(dc, path, &preview_header, palette.fg, DT_LEFT | DT_PATH_ELLIPSIS),
+                Some(path) => {
+                    let label = "Apri nell'editor";
+                    let area = RECT { left: preview_header.right - text_width(dc, label) - scale(20), top: preview_header.top + scale(3), bottom: preview_header.bottom - scale(3), ..preview_header };
+                    Self::button(dc, palette, area, label, false, true);
+                    buttons.push((area, Button::OpenInEditor));
+                    text(dc, path, &RECT { right: area.left - scale(8), ..preview_header }, palette.fg, DT_LEFT | DT_PATH_ELLIPSIS);
+                }
                 None => text(dc, "Seleziona un file per vedere le modifiche.", &preview_header, palette.muted, DT_LEFT),
             }
         }
@@ -867,12 +884,15 @@ impl Panel {
         self.details.set_rows(count);
     }
 
-    /// Anteprima delle modifiche del file selezionato (diff unificato), o nulla.
-    pub fn set_preview(&self, path: Option<String>, diff: &str) {
+    /// Anteprima affiancata del file selezionato (prima e dopo), o nulla con `path` None.
+    pub fn set_preview(&self, path: Option<String>, before: &str, after: &str, palette: &Palette, font_fraction: isize) {
+        let file = PathBuf::from(path.clone().unwrap_or_default());
         *self.preview_path.borrow_mut() = path;
-        self.preview.call(SCI_SETREADONLY, 0, 0);
-        self.preview.set_text(diff.as_bytes());
-        self.preview.call(SCI_SETREADONLY, 1, 0);
+        crate::side_by_side::show([&self.preview[0], &self.preview[1]], before, after, &file, palette, font_fraction);
+    }
+
+    pub fn preview_pane(&self, hwnd: HWND) -> bool {
+        self.preview.iter().any(|pane| pane.hwnd == hwnd)
     }
 
     /// true se il punto (coordinate schermo) cade sulla casella di spunta della lista dei file.

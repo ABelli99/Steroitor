@@ -2094,7 +2094,7 @@ impl App {
         *self.panel.root.borrow_mut() = Some(root);
         *self.panel.reference.borrow_mut() = None;
         self.panel.clear_details();
-        self.panel.set_preview(None, "");
+        self.panel.set_preview(None, "", "", &self.palette, self.settings.borrow().editor.font_size_fraction());
         self.sync_panel();
         self.layout();
     }
@@ -2367,17 +2367,14 @@ impl App {
         }
     }
 
-    /// Anteprima nella tab Commit: diff unificato del file rispetto a HEAD.
+    /// Anteprima nella tab Commit: il file in HEAD e la copia di lavoro, affiancati.
     fn preview_file(&self, index: usize) {
         let Some(root) = self.panel.root.borrow().clone() else { return };
         let Some((path, relative)) = self.panel.changes.borrow().get(index).map(|file| (file.path.clone(), file.relative.replace('\\', "/"))) else { return };
         let root_text = root.to_string_lossy().into_owned();
         let head = self.worker.now(|git| git.head_content(&root_text, &path)).ok().flatten().map(|file| file.content).unwrap_or_default();
         let current = std::fs::read(&path).map(|bytes| decode(&bytes).content).unwrap_or_default();
-        let (head, current) = (head.replace("\r\n", "\n"), current.replace("\r\n", "\n"));
-        let diff = similar::TextDiff::from_lines(&head, &current).unified_diff().context_radius(3).header(&format!("a/{relative}"), &format!("b/{relative}")).to_string();
-        let shown = if diff.is_empty() { "Nessuna differenza nel contenuto rispetto a HEAD.".to_string() } else { diff };
-        self.panel.set_preview(Some(relative), &shown);
+        self.panel.set_preview(Some(relative), &head, &current, &self.palette, self.settings.borrow().editor.font_size_fraction());
         self.invalidate();
     }
 
@@ -2575,6 +2572,12 @@ impl App {
                     self.invalidate();
                 }
                 Some(panel::Button::StageAll) => self.toggle_stage_all(),
+                Some(panel::Button::OpenInEditor) => {
+                    let path = self.panel.changes.borrow().iter().find(|file| Some(file.relative.replace('\\', "/")) == *self.panel.preview_path.borrow()).map(|file| PathBuf::from(&file.path));
+                    if let Some(path) = path.filter(|path| path.is_file()) {
+                        self.open(&path);
+                    }
+                }
                 Some(panel::Button::Continue) => {
                     if let Some(root) = self.panel.root.borrow().clone() {
                         self.worker.run(&root, |git, root| git.continue_operation(root));
@@ -2918,6 +2921,12 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             let header = &*(lparam as *const NMHDR);
             if header.hwndFrom == app.sci.hwnd {
                 app.on_notify(&*(lparam as *const Notification));
+                return 0;
+            }
+            if app.panel.preview_pane(header.hwndFrom) {
+                if header.code == SCN_UPDATEUI {
+                    crate::side_by_side::sync_scroll([&app.panel.preview[0], &app.panel.preview[1]], header.hwndFrom);
+                }
                 return 0;
             }
             if header.hwndFrom == app.explorer.hwnd() && header.code == NM_CUSTOMDRAW {
