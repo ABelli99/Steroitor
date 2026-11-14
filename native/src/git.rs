@@ -26,6 +26,8 @@ pub enum Event {
     Crlf(PathBuf, Vec<String>, CommitRequest),
     Cloned(PathBuf, Result<(), String>),
     Blame(PathBuf, Result<Vec<BlameLine>, String>),
+    /// File cambiati da un commit, per i dettagli nella tab Git: repository, hash, file.
+    CommitFiles(PathBuf, String, Result<Vec<steroitor_core::git::changes::ChangedFile>, String>),
     Compare(crate::compare::Loaded),
 }
 
@@ -102,6 +104,14 @@ impl Worker {
         self.spawn(move |git| Event::Log(root.clone(), git.log_filtered(&root.to_string_lossy(), &filter, 0, LOG_COMMITS)));
     }
 
+    pub fn commit_files(&self, root: &Path, hash: String) {
+        let root = root.to_path_buf();
+        self.spawn(move |git| {
+            let files = git.commit_changes(&root.to_string_lossy(), &hash);
+            Event::CommitFiles(root, hash, files)
+        });
+    }
+
     pub fn blame(&self, root: &Path, file: &Path) {
         let (root, file) = (root.to_path_buf(), file.to_path_buf());
         self.spawn(move |git| {
@@ -120,7 +130,9 @@ impl Worker {
                 if !request.unstage.is_empty() {
                     git.unstage(&path, &request.unstage)?;
                 }
-                git.stage(&path, &request.files)?;
+                if !request.files.is_empty() {
+                    git.stage(&path, &request.files)?;
+                }
                 if check_crlf {
                     return git.staged_crlf_files(&path);
                 }

@@ -33,7 +33,7 @@ use crate::lang::{self, Language};
 use crate::minimap::{self, Minimap, WM_MINIMAP_LINE};
 use crate::list::{decode_event, ListEvent, RowPaint, WM_LIST_EVENT, WM_LIST_PAINT};
 use crate::paint::{fill, frame, text, text_width};
-use crate::panel::{self, ConsoleTarget, Panel, Tab};
+use crate::panel::{self, BranchEntry, BranchRow, ConsoleTarget, DetailRow, Panel, RepoTab, Tab};
 use crate::plugins::{self, Host};
 use crate::prompt::{prompt, prompt_text};
 use crate::quick_open;
@@ -83,10 +83,11 @@ const GUTTER_ROLLBACK: usize = 1;
 const GUTTER_STAGE: usize = 2;
 const GUTTER_DIFF: usize = 3;
 const GUTTER_BLAME: usize = 4;
-const CHIP_ALL: usize = 1;
-const CHIP_ASK: usize = 2;
-const CHIP_ACTIVE_FILE: usize = 3;
-const CHIP_BRANCH: usize = 10;
+const BRANCH_LOG: usize = 1;
+const BRANCH_CHECKOUT: usize = 2;
+const BRANCH_MERGE: usize = 3;
+const BRANCH_REBASE: usize = 4;
+const BRANCH_NEW: usize = 5;
 const MARKER_ADDED: usize = 0;
 const MARKER_MODIFIED: usize = 1;
 const MARKER_DELETED: usize = 2;
@@ -514,9 +515,12 @@ impl App {
                 parked.explorer.set_font(font, self.scale(TREE_ITEM_HEIGHT));
             }
             self.plugins.set_font(font);
-            SendMessageW(self.panel.message, WM_SETFONT, font as usize, 1);
-            self.panel.log.set_row_height(self.scale(LIST_ROW_HEIGHT));
-            self.panel.files.set_row_height(self.scale(LIST_ROW_HEIGHT));
+            for control in [self.panel.message, self.panel.filter_text, self.panel.filter_author, self.panel.filter_path] {
+                SendMessageW(control, WM_SETFONT, font as usize, 1);
+            }
+            for list in [&self.panel.branches, &self.panel.log, &self.panel.details, &self.panel.files] {
+                list.set_row_height(self.scale(LIST_ROW_HEIGHT));
+            }
             let old = self.font.replace(font);
             if !old.is_null() {
                 DeleteObject(old);
@@ -850,7 +854,8 @@ impl App {
         self.explorer.set_root(folder.as_deref());
         let roots = folder.as_deref().map(steroitor_core::repos::find_repos).unwrap_or_default();
         *self.repos.borrow_mut() = roots.iter().map(|root| Repo { root: root.clone(), status: None, branches: Vec::new() }).collect();
-        self.panel.repo_count.set(roots.len());
+        *self.panel.repos.borrow_mut() = roots.iter().map(|root| RepoTab { root: root.clone(), name: folder_name(Some(root)), changes: 0 }).collect();
+        self.panel.has_folder.set(folder.is_some());
         *self.panel.root.borrow_mut() = None;
         *self.colors.borrow_mut() = FileColors::default();
         self.heads.borrow_mut().clear();
@@ -1742,6 +1747,10 @@ impl App {
         for event in self.worker.take() {
             match event {
                 Event::Status(root, Ok(status)) => {
+                    let changes = status.files.iter().filter(|file| file.status != FileStatus::Ignored).count();
+                    if let Some(tab) = self.panel.repos.borrow_mut().iter_mut().find(|tab| tab.root == root) {
+                        tab.changes = changes;
+                    }
                     let head_moved = {
                         let mut repos = self.repos.borrow_mut();
                         let Some(repo) = repos.iter_mut().find(|repo| repo.root == root) else { continue };
@@ -1818,7 +1827,12 @@ impl App {
                     if let Some(repo) = self.repos.borrow_mut().iter_mut().find(|repo| repo.root == root) {
                         repo.branches = branches;
                     }
+                    if self.panel.root.borrow().as_deref() == Some(root.as_path()) {
+                        self.panel.set_branches(&root, self.branch_entries(&root));
+                    }
                 }
+                Event::CommitFiles(root, hash, Ok(files)) => self.panel.set_commit_files(&root, &hash, files),
+                Event::CommitFiles(_, _, Err(_)) => {}
                 Event::Head(file, content) => {
                     let key = crate::git::key(&file);
                     self.head_requests.borrow_mut().remove(&key);
@@ -2055,21 +2069,6 @@ impl App {
         }
     }
 
-    /// Repository di log e commit, scelto dall'intestazione del pannello quando la cartella ne ha più d'uno.
-    fn choose_repo(&self) {
-        let folder = self.explorer.root();
-        let roots: Vec<PathBuf> = self.repos.borrow().iter().map(|repo| repo.root.clone()).collect();
-        let labels: Vec<String> = roots
-            .iter()
-            .map(|root| folder.as_deref().and_then(|folder| root.strip_prefix(folder).ok()).filter(|rest| !rest.as_os_str().is_empty()).map_or_else(|| root.file_name().map_or_else(|| root.display().to_string(), |name| name.to_string_lossy().into_owned()), |rest| rest.display().to_string()))
-            .collect();
-        let entries: Vec<(usize, &str)> = labels.iter().enumerate().map(|(index, label)| (index + 1, label.as_str())).collect();
-        let Some(root) = popup_menu(self.hwnd, &entries).checked_sub(1).and_then(|index| roots.get(index).cloned()) else { return };
-        *self.panel.root.borrow_mut() = Some(root);
-        self.sync_panel();
-        self.invalidate();
-    }
-
     /// Alt+9 e simili: apre la tab, o chiude il pannello se è già quella mostrata.
     fn toggle_panel(&self, tab: Tab) {
         if self.panel.visible.get() && self.panel.tab.get() == tab {
@@ -2081,11 +2080,31 @@ impl App {
         }
     }
 
+    fn branch_entries(&self, root: &Path) -> Vec<BranchEntry> {
+        let repos = self.repos.borrow();
+        let branches = repos.iter().find(|repo| repo.root == root).map(|repo| repo.branches.as_slice()).unwrap_or_default();
+        branches.iter().map(|branch| BranchEntry { name: branch.name.clone(), remote: branch.remote, current: branch.current }).collect()
+    }
+
+    /// Tab di un repository nel pannello: Git e Commit mostrano quello.
+    fn select_repo(&self, root: PathBuf) {
+        if self.panel.root.borrow().as_deref() == Some(root.as_path()) {
+            return;
+        }
+        *self.panel.root.borrow_mut() = Some(root);
+        *self.panel.reference.borrow_mut() = None;
+        self.panel.clear_details();
+        self.panel.set_preview(None, "");
+        self.sync_panel();
+        self.layout();
+    }
+
     fn sync_panel(&self) {
         let Some(root) = self.panel.root.borrow().clone() else { return };
         if let Some(status) = self.repos.borrow().iter().find(|repo| repo.root == root).and_then(|repo| repo.status.as_ref()) {
             self.panel.set_changes(&root, status);
         }
+        self.panel.set_branches(&root, self.branch_entries(&root));
         if self.panel.tab.get() == Tab::Git {
             self.load_log(&root);
         }
@@ -2100,15 +2119,9 @@ impl App {
             return;
         }
         let amend = self.panel.amend.get();
-        let (files, unstage): (Vec<String>, Vec<String>) = {
-            let changes = self.panel.changes.borrow();
-            (
-                changes.iter().filter(|file| file.checked).map(|file| file.path.clone()).collect(),
-                changes.iter().filter(|file| !file.checked && file.staged).map(|file| file.path.clone()).collect(),
-            )
-        };
-        if files.is_empty() && !amend {
-            message_box(self.hwnd, "Nessun file selezionato per il commit.", MB_ICONINFORMATION);
+        let staged = self.panel.changes.borrow().iter().filter(|file| file.staged).count();
+        if staged == 0 && !amend {
+            message_box(self.hwnd, "Nessun file in stage: spunta i file da committare.", MB_ICONINFORMATION);
             return;
         }
         let detached = self.repos.borrow().iter().find(|repo| repo.root == root).and_then(|repo| repo.status.as_ref()).is_some_and(|status| status.branch.head.is_none());
@@ -2120,7 +2133,7 @@ impl App {
             return;
         }
         let warn_crlf = self.settings.borrow().warn_crlf.unwrap_or(true);
-        self.worker.commit(&root, CommitRequest { files, unstage, message, push, amend }, warn_crlf);
+        self.worker.commit(&root, CommitRequest { files: Vec::new(), unstage: Vec::new(), message, push, amend }, warn_crlf);
     }
 
     /// Casella "Modifica l'ultimo commit": accesa con il messaggio vuoto, propone quello dell'ultimo commit.
@@ -2149,22 +2162,24 @@ impl App {
     fn log_menu(&self, index: usize) {
         let Some(root) = self.panel.root.borrow().clone() else { return };
         let Some(hash) = self.panel.commits.borrow().get(index).map(|commit| commit.hash.clone()) else { return };
+        let head = self.repos.borrow().iter().find(|repo| repo.root == root).and_then(|repo| repo.status.as_ref()).and_then(|status| status.branch.head.clone());
+        let reset = format!("Reset {} qui", head.map_or_else(|| "HEAD".to_string(), |head| format!("\"{head}\"")));
         let entries = [
-            (LOG_SHOW_CHANGES, "Mostra modifiche	Ctrl+D"),
+            (LOG_COPY_HASH, "Copia commit ID"),
+            (LOG_SHOW_CHANGES, "Mostra modifiche\tCtrl+D"),
             (0, ""),
-            (LOG_CHECKOUT, "Checkout"),
+            (LOG_CHECKOUT, "Checkout (detached)"),
             (LOG_BRANCH, "Nuovo branch da qui…"),
             (LOG_TAG, "Crea tag…"),
+            (LOG_REWORD, "Modifica messaggio…"),
             (0, ""),
             (LOG_CHERRY_PICK, "Cherry-pick"),
             (LOG_REVERT, "Revert"),
             (0, ""),
-            (LOG_RESET_SOFT, "Reset soft"),
-            (LOG_RESET_MIXED, "Reset mixed"),
-            (LOG_RESET_HARD, "Reset hard"),
-            (0, ""),
-            (LOG_REWORD, "Modifica messaggio…"),
-            (LOG_COPY_HASH, "Copia hash"),
+            (usize::MAX, reset.as_str()),
+            (LOG_RESET_SOFT, "Soft (tiene le modifiche in stage)"),
+            (LOG_RESET_MIXED, "Mixed (tiene le modifiche, fuori stage)"),
+            (LOG_RESET_HARD, "Hard (scarta tutto)…"),
         ];
         let short = hash.get(..7).unwrap_or(&hash).to_string();
         match popup_menu(self.hwnd, &entries) {
@@ -2210,9 +2225,24 @@ impl App {
     }
 
     fn on_list_event(&self, list: HWND, event: ListEvent, index: usize) {
+        if list == self.panel.branches.hwnd {
+            return self.on_branch_event(event, index);
+        }
         if list == self.panel.log.hwnd {
-            if event == ListEvent::Menu {
-                self.log_menu(index);
+            match event {
+                ListEvent::Select => self.select_commit(index),
+                ListEvent::Activate => self.show_commit_changes(index),
+                ListEvent::Menu => self.log_menu(index),
+                ListEvent::Toggle => {}
+            }
+            return;
+        }
+        if list == self.panel.details.hwnd {
+            let file = matches!(self.panel.detail_rows.borrow().get(index), Some(DetailRow::File(_)));
+            if file && event == ListEvent::Activate {
+                if let Some(commit) = self.panel.log.selected() {
+                    self.show_commit_changes(commit);
+                }
             }
             return;
         }
@@ -2220,67 +2250,134 @@ impl App {
             return;
         }
         match event {
-            ListEvent::Toggle => self.panel.toggle(index),
-            ListEvent::Select if self.panel.on_checkbox(|value| self.scale(value)) => self.panel.toggle(index),
-            ListEvent::Activate if self.conflicted(index) => self.show_file_diff(index),
-            ListEvent::Activate => self.open_change(index),
+            ListEvent::Toggle => self.toggle_stage(index),
+            ListEvent::Select if self.panel.on_checkbox(|value| self.scale(value)) => {
+                self.toggle_stage(index);
+                self.preview_file(index);
+            }
+            ListEvent::Select => self.preview_file(index),
+            ListEvent::Activate => self.show_file_diff(index),
             ListEvent::Menu => self.file_menu(index),
-            _ => {}
         }
         // SAFETY: area del pannello nella finestra principale (contatore dei file selezionati).
         unsafe { InvalidateRect(self.hwnd, &self.panel_rect(), 0) };
     }
 
-    /// Log del repository con i filtri della riga sopra il log.
+    /// Log del repository con il branch scelto e i filtri sopra il log.
     fn load_log(&self, root: &Path) {
-        let filters = self.panel.filters.borrow().clone();
-        let text = Some(window_text(self.panel.search).trim().to_string()).filter(|text| !text.is_empty());
-        self.panel.graph_hidden.set(filters.author.is_some() || filters.path.is_some() || text.is_some());
-        self.worker.log(root, LogFilter { reference: filters.branch, author: filters.author, text, path: filters.path });
+        let field = |hwnd: HWND| Some(window_text(hwnd).trim().to_string()).filter(|text| !text.is_empty());
+        let (text, author, path) = (field(self.panel.filter_text), field(self.panel.filter_author), field(self.panel.filter_path));
+        self.panel.graph_hidden.set(text.is_some() || author.is_some() || path.is_some());
+        let reference = self.panel.reference.borrow().clone();
+        self.worker.log(root, LogFilter { reference, author, text, path });
     }
 
-    fn choose_filter(&self, chip: panel::Chip) {
+    /// Clic su una riga dei branch: tutti, un branch (filtra il log) o una cartella (si apre o si chiude).
+    fn on_branch_event(&self, event: ListEvent, index: usize) {
+        let Some(row) = self.panel.branch_rows.borrow().get(index).cloned() else { return };
         let Some(root) = self.panel.root.borrow().clone() else { return };
-        let current = self.panel.filters.borrow().clone();
-        match chip {
-            panel::Chip::Branch => {
-                let branches: Vec<String> = self.repos.borrow().iter().find(|repo| repo.root == root).map(|repo| repo.branches.iter().map(|branch| branch.name.clone()).collect()).unwrap_or_default();
-                let mut entries = vec![(CHIP_ALL, "Tutti i branch"), (0, "")];
-                entries.extend(branches.iter().enumerate().map(|(index, name)| (CHIP_BRANCH + index, name.as_str())));
-                let choice = popup_menu(self.hwnd, &entries);
-                match choice {
-                    CHIP_ALL => self.panel.filters.borrow_mut().branch = None,
-                    id if id >= CHIP_BRANCH => self.panel.filters.borrow_mut().branch = branches.get(id - CHIP_BRANCH).cloned(),
-                    _ => return,
+        let branch = |index: usize| self.panel.branch_list.borrow().get(index).map(|branch| (branch.name.clone(), branch.remote, branch.current));
+        match (event, row) {
+            (ListEvent::Select, BranchRow::All) => {
+                *self.panel.reference.borrow_mut() = None;
+                self.load_log(&root);
+            }
+            (ListEvent::Select, BranchRow::Branch { index, .. }) => {
+                *self.panel.reference.borrow_mut() = branch(index).map(|(name, _, _)| name);
+                self.load_log(&root);
+            }
+            (ListEvent::Select | ListEvent::Activate, BranchRow::Folder { key, .. }) => self.panel.toggle_folder(&key),
+            (ListEvent::Menu, BranchRow::Branch { index, .. }) => {
+                if let Some(branch) = branch(index) {
+                    self.branch_menu(&root, branch);
                 }
             }
-            panel::Chip::Author => match popup_menu(self.hwnd, &[(CHIP_ALL, "Tutti gli autori"), (CHIP_ASK, "Filtra per autore…")]) {
-                CHIP_ALL => self.panel.filters.borrow_mut().author = None,
-                CHIP_ASK => {
-                    let Some(author) = prompt(self.hwnd, &self.palette, self.font.get(), "Autore", "Nome o email (anche in parte):", current.author.as_deref().unwrap_or("")) else { return };
-                    self.panel.filters.borrow_mut().author = Some(author);
-                }
-                _ => return,
-            },
-            panel::Chip::Path => {
-                let active = self.active_path().filter(|path| path.starts_with(&root));
-                let mut entries = vec![(CHIP_ALL, "Tutti i percorsi"), (CHIP_ASK, "Filtra per percorso…")];
-                if active.is_some() {
-                    entries.push((CHIP_ACTIVE_FILE, "File attivo"));
-                }
-                match popup_menu(self.hwnd, &entries) {
-                    CHIP_ALL => self.panel.filters.borrow_mut().path = None,
-                    CHIP_ACTIVE_FILE => self.panel.filters.borrow_mut().path = active.map(|path| path.to_string_lossy().into_owned()),
-                    CHIP_ASK => {
-                        let label = "Cartella o file, relativo al repository o assoluto:";
-                        let Some(path) = prompt(self.hwnd, &self.palette, self.font.get(), "Percorso", label, current.path.as_deref().unwrap_or("")) else { return };
-                        self.panel.filters.borrow_mut().path = Some(path);
-                    }
-                    _ => return,
-                }
-            }
+            _ => {}
         }
-        self.load_log(&root);
+        self.panel.branches.redraw();
+    }
+
+    /// Menu di un branch, come nella versione Tauri.
+    fn branch_menu(&self, root: &Path, (name, remote, current): (String, bool, bool)) {
+        let head = self.repos.borrow().iter().find(|repo| repo.root == root).and_then(|repo| repo.status.as_ref()).and_then(|status| status.branch.head.clone()).unwrap_or_else(|| "HEAD".into());
+        let (merge, rebase) = (format!("Merge in {head}"), format!("Rebase {head} su {name}"));
+        let mut entries = vec![(BRANCH_LOG, "Mostra log")];
+        if !current {
+            entries.extend([(0, ""), (BRANCH_CHECKOUT, "Checkout"), (BRANCH_MERGE, merge.as_str()), (BRANCH_REBASE, rebase.as_str())]);
+        }
+        entries.extend([(0, ""), (BRANCH_NEW, "Nuovo branch da qui…")]);
+        match popup_menu(self.hwnd, &entries) {
+            BRANCH_LOG => {
+                *self.panel.reference.borrow_mut() = Some(name);
+                self.load_log(root);
+            }
+            BRANCH_CHECKOUT => self.worker.run(root, move |git, root| git.switch(root, &name, remote)),
+            BRANCH_MERGE => self.worker.run(root, move |git, root| git.merge(root, &name)),
+            BRANCH_REBASE => self.worker.run(root, move |git, root| git.rebase(root, &name)),
+            BRANCH_NEW => {
+                if let Some(branch) = prompt(self.hwnd, &self.palette, self.font.get(), "Nuovo branch", &format!("Nome del branch che parte da {name}:"), "") {
+                    self.worker.run(root, move |git, root| git.create_branch(root, &branch, true, Some(&name)));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Commit selezionato nel log: i suoi dettagli a destra, con i file cambiati.
+    fn select_commit(&self, index: usize) {
+        let Some(root) = self.panel.root.borrow().clone() else { return };
+        let had_details = self.panel.selected_commit.borrow().is_some();
+        let hash = {
+            let commits = self.panel.commits.borrow();
+            let Some(commit) = commits.get(index) else { return };
+            self.panel.show_details(commit);
+            commit.hash.clone()
+        };
+        self.worker.commit_files(&root, hash);
+        if !had_details {
+            self.layout();
+        }
+    }
+
+    /// Casella di un file: lo mette in stage, o lo toglie se è tutto in stage.
+    fn toggle_stage(&self, index: usize) {
+        let Some(root) = self.panel.root.borrow().clone() else { return };
+        let Some((path, unstage)) = self.panel.changes.borrow().get(index).map(|file| (file.path.clone(), file.staged && !file.unstaged)) else { return };
+        if unstage {
+            self.worker.run(&root, move |git, root| git.unstage(root, &[path]));
+        } else {
+            self.worker.run(&root, move |git, root| git.stage(root, &[path]));
+        }
+    }
+
+    /// Casella in testa alla lista: tutto in stage, o tutto fuori se lo era già.
+    fn toggle_stage_all(&self) {
+        let Some(root) = self.panel.root.borrow().clone() else { return };
+        let (paths, unstage): (Vec<String>, bool) = {
+            let changes = self.panel.changes.borrow();
+            (changes.iter().map(|file| file.path.clone()).collect(), !changes.is_empty() && changes.iter().all(|file| file.staged && !file.unstaged))
+        };
+        if paths.is_empty() {
+            return;
+        }
+        if unstage {
+            self.worker.run(&root, move |git, root| git.unstage(root, &paths));
+        } else {
+            self.worker.run(&root, move |git, root| git.stage(root, &paths));
+        }
+    }
+
+    /// Anteprima nella tab Commit: diff unificato del file rispetto a HEAD.
+    fn preview_file(&self, index: usize) {
+        let Some(root) = self.panel.root.borrow().clone() else { return };
+        let Some((path, relative)) = self.panel.changes.borrow().get(index).map(|file| (file.path.clone(), file.relative.replace('\\', "/"))) else { return };
+        let root_text = root.to_string_lossy().into_owned();
+        let head = self.worker.now(|git| git.head_content(&root_text, &path)).ok().flatten().map(|file| file.content).unwrap_or_default();
+        let current = std::fs::read(&path).map(|bytes| decode(&bytes).content).unwrap_or_default();
+        let (head, current) = (head.replace("\r\n", "\n"), current.replace("\r\n", "\n"));
+        let diff = similar::TextDiff::from_lines(&head, &current).unified_diff().context_radius(3).header(&format!("a/{relative}"), &format!("b/{relative}")).to_string();
+        let shown = if diff.is_empty() { "Nessuna differenza nel contenuto rispetto a HEAD.".to_string() } else { diff };
+        self.panel.set_preview(Some(relative), &shown);
         self.invalidate();
     }
 
@@ -2464,11 +2561,8 @@ impl App {
             if let Some(tab) = self.panel.tab_at(x, y) {
                 return self.toggle_panel(tab);
             }
-            if self.panel.on_repo(x, y) {
-                return self.choose_repo();
-            }
-            if let Some(chip) = self.panel.chip_at(x, y) {
-                return self.choose_filter(chip);
+            if let Some(root) = self.panel.repo_at(x, y) {
+                return self.select_repo(root);
             }
             if let Some(target) = self.panel.console_target_at(x, y) {
                 return self.on_console_target(target);
@@ -2480,6 +2574,20 @@ impl App {
                     self.toggle_amend();
                     self.invalidate();
                 }
+                Some(panel::Button::StageAll) => self.toggle_stage_all(),
+                Some(panel::Button::Continue) => {
+                    if let Some(root) = self.panel.root.borrow().clone() {
+                        self.worker.run(&root, |git, root| git.continue_operation(root));
+                    }
+                }
+                Some(panel::Button::Abort) => {
+                    let root = self.panel.root.borrow().clone();
+                    if let Some(root) = root.filter(|_| message_box(self.hwnd, "Annullare l'operazione in corso? Si torna allo stato di prima.", MB_YESNO | MB_ICONWARNING) == IDYES) {
+                        self.worker.run(&root, |git, root| git.abort_operation(root));
+                    }
+                }
+                Some(panel::Button::Init) => self.init_repository(),
+                Some(panel::Button::Clone) => self.clone_repository(),
                 None => {}
             }
             return;
@@ -2836,8 +2944,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
         }
         WM_COMMAND => {
             let notification = ((wparam >> 16) & 0xFFFF) as u32;
-            if lparam as HWND == app.panel.search && notification == EN_CHANGE {
+            if app.panel.is_filter(lparam as HWND) && notification == EN_CHANGE {
                 SetTimer(hwnd, LOG_FILTER_TIMER, LOG_FILTER_DELAY_MS, None);
+            }
+            if lparam as HWND == app.panel.message && notification == EN_CHANGE {
+                InvalidateRect(hwnd, &app.panel_rect(), 0);
             }
             if lparam as HWND == app.find.find && notification == EN_CHANGE {
                 app.find.search(&app.sci, true, true);
@@ -2874,10 +2985,15 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
         }
         WM_LIST_PAINT => {
             let row = &*(lparam as *const RowPaint);
+            let (palette, font, scale) = (&app.palette, app.font.get(), |value| app.scale(value));
             if row.list == app.panel.log.hwnd {
-                app.panel.paint_log_row(row, &app.palette, app.font.get(), |value| app.scale(value));
+                app.panel.paint_log_row(row, palette, font, scale);
+            } else if row.list == app.panel.branches.hwnd {
+                app.panel.paint_branch_row(row, palette, font, scale);
+            } else if row.list == app.panel.details.hwnd {
+                app.panel.paint_detail_row(row, palette, font, scale);
             } else {
-                app.panel.paint_file_row(row, &app.palette, app.font.get(), |value| app.scale(value));
+                app.panel.paint_file_row(row, palette, font, scale);
             }
             0
         }

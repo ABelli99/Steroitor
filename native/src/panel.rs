@@ -1,5 +1,8 @@
-//! Pannello inferiore a tab: Console (comandi git eseguiti), Git (log con grafo), Commit (file da committare e messaggio).
+//! Pannello inferiore a tab, come nella versione Tauri: Console (comandi git e terminali), Git (branch, filtri, log
+//! con grafo, dettagli del commit), Commit (file con lo stage vero, messaggio, anteprima delle modifiche).
+//! Con più repository nella cartella, Git e Commit hanno sopra una tab per repository.
 use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use steroitor_core::git::graph::{layout_graph, GraphRow, Half};
@@ -19,10 +22,13 @@ use crate::terminal::Terminal;
 use crate::theme::Palette;
 
 pub const HEADER: i32 = 28;
+const REPO_ROW: i32 = 30;
 const FILTER_ROW: i32 = 32;
-const SEARCH_WIDTH: i32 = 240;
+const BRANCHES_WIDTH: i32 = 180;
+const DETAILS_WIDTH: i32 = 320;
 const MESSAGE_HEIGHT: i32 = 90;
 const BUTTON_ROW: i32 = 40;
+const LIST_HEADER: i32 = 28;
 const LANE: i32 = 14;
 const CHECKBOX: i32 = 14;
 const SCI_SETREADONLY: u32 = 2171;
@@ -43,21 +49,11 @@ pub enum Button {
     Commit,
     CommitAndPush,
     Amend,
-}
-
-/// Filtri del log cliccabili nella riga sopra il log; il testo si cerca nel campo accanto.
-#[derive(Clone, Copy, PartialEq)]
-pub enum Chip {
-    Branch,
-    Author,
-    Path,
-}
-
-#[derive(Default, Clone)]
-pub struct LogFilters {
-    pub branch: Option<String>,
-    pub author: Option<String>,
-    pub path: Option<String>,
+    StageAll,
+    Continue,
+    Abort,
+    Init,
+    Clone,
 }
 
 /// Sotto-tab della Console: il log dei comandi git, un terminale (o la sua ×), il pulsante per aprirne uno.
@@ -73,15 +69,61 @@ pub struct ChangedFile {
     pub path: String,
     pub relative: String,
     pub status: FileStatus,
+    /// Modifiche nell'index e nel working tree: le due insieme fanno la casella a metà.
     pub staged: bool,
-    pub checked: bool,
+    pub unstaged: bool,
+}
+
+pub struct BranchEntry {
+    pub name: String,
+    pub remote: bool,
+    pub current: bool,
+}
+
+/// Riga della lista dei branch: "Tutti i branch", un titolo, una cartella (nome con `/`) o un branch.
+#[derive(Clone, PartialEq, Debug)]
+pub enum BranchRow {
+    All,
+    Header(&'static str),
+    Folder { key: String, name: String, depth: usize },
+    Branch { index: usize, name: String, depth: usize },
+}
+
+/// Riga dei dettagli del commit selezionato.
+#[derive(Clone)]
+pub enum DetailRow {
+    Subject(String),
+    Body(String),
+    Field(&'static str, String),
+    Files(String),
+    File(usize),
+}
+
+pub struct CommitFile {
+    pub status: String,
+    pub relative: String,
+}
+
+/// Tab di un repository della cartella: radice, nome, numero di file cambiati.
+#[derive(Clone)]
+pub struct RepoTab {
+    pub root: PathBuf,
+    pub name: String,
+    pub changes: usize,
+}
+
+/// Operazione lasciata a metà da un conflitto, per il banner del Commit: nome e file ancora in conflitto.
+#[derive(Clone, PartialEq)]
+pub struct PendingOperation {
+    pub name: &'static str,
+    pub conflicts: usize,
 }
 
 /// Ciò che il pannello mostra per un progetto: si scambia con quello del pannello quando cambia il progetto attivo.
 #[derive(Default)]
 pub struct ProjectState {
     root: Option<PathBuf>,
-    repo_count: usize,
+    repos: Vec<RepoTab>,
     commits: Vec<Commit>,
     graph: Vec<GraphRow>,
     changes: Vec<ChangedFile>,
@@ -97,31 +139,49 @@ pub struct Panel {
     /// Altezza in pixel a 96 DPI.
     pub height: Cell<i32>,
     pub console: Sci,
+    pub branches: List,
     pub log: List,
+    pub details: List,
     pub files: List,
     pub message: HWND,
-    /// Ricerca nel messaggio dei commit, nella riga dei filtri del log.
-    pub search: HWND,
-    pub filters: RefCell<LogFilters>,
+    /// Filtri del log: testo nel messaggio, autore, path.
+    pub filter_text: HWND,
+    pub filter_author: HWND,
+    pub filter_path: HWND,
+    /// Anteprima delle modifiche del file selezionato nella tab Commit.
+    pub preview: Sci,
+    pub preview_path: RefCell<Option<String>>,
+    /// Branch del log; None = tutti.
+    pub reference: RefCell<Option<String>>,
     /// Con filtri su autore, percorso o testo i parent non sono contigui: il grafo non ha senso e si nasconde.
     pub graph_hidden: Cell<bool>,
-    chips: RefCell<Vec<(RECT, Chip)>>,
     /// Il prossimo commit modifica l'ultimo (amend).
     pub amend: Cell<bool>,
+    pub operation: RefCell<Option<PendingOperation>>,
     pub commits: RefCell<Vec<Commit>>,
     graph: RefCell<Vec<GraphRow>>,
+    graph_width: Cell<usize>,
     pub changes: RefCell<Vec<ChangedFile>>,
-    /// Repository mostrato da log e commit.
+    pub branch_list: RefCell<Vec<BranchEntry>>,
+    pub branch_rows: RefCell<Vec<BranchRow>>,
+    collapsed: RefCell<HashSet<String>>,
+    collapsed_root: RefCell<Option<PathBuf>>,
+    pub detail_rows: RefCell<Vec<DetailRow>>,
+    pub commit_files: RefCell<Vec<CommitFile>>,
+    /// Commit di cui si mostrano i dettagli.
+    pub selected_commit: RefCell<Option<String>>,
+    /// Repository mostrato da Git e Commit.
     pub root: RefCell<Option<PathBuf>>,
-    /// Repository della cartella: con più di uno il nome nell'intestazione apre la scelta.
-    pub repo_count: Cell<usize>,
-    repo_rect: Cell<RECT>,
+    pub repos: RefCell<Vec<RepoTab>>,
+    /// La cartella aperta (None se non ce n'è), per il messaggio della tab Git vuota.
+    pub has_folder: Cell<bool>,
     pub terminals: RefCell<Vec<Terminal>>,
     /// Terminale mostrato nella Console; None è il log dei comandi git.
     pub view: Cell<Option<u32>>,
     pub next_terminal: Cell<u32>,
     tabs: RefCell<Vec<(RECT, Tab)>>,
     console_tabs: RefCell<Vec<(RECT, ConsoleTarget)>>,
+    repo_tabs: RefCell<Vec<(RECT, PathBuf)>>,
     buttons: RefCell<Vec<(RECT, Button)>>,
 }
 
@@ -143,61 +203,208 @@ pub fn local_time(timestamp: i64) -> String {
     }
 }
 
+fn now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs() as i64)
+}
+
+/// Tempo trascorso in italiano, come `Intl.RelativeTimeFormat("it", { numeric: "auto" })` della versione Tauri.
+pub fn relative_time(timestamp: i64, now: i64) -> String {
+    const UNITS: [(i64, &str, &str, &str); 6] = [
+        (31_536_000, "anno", "anni", "l'anno scorso"),
+        (2_592_000, "mese", "mesi", "il mese scorso"),
+        (604_800, "settimana", "settimane", "la settimana scorsa"),
+        (86_400, "giorno", "giorni", "ieri"),
+        (3_600, "ora", "ore", ""),
+        (60, "minuto", "minuti", ""),
+    ];
+    let elapsed = now - timestamp;
+    for (seconds, one, many, last) in UNITS {
+        if elapsed.abs() < seconds {
+            continue;
+        }
+        let count = (elapsed as f64 / seconds as f64).round() as i64;
+        if count < 0 {
+            let count = -count;
+            return format!("tra {count} {}", if count == 1 { one } else { many });
+        }
+        return match count {
+            1 if !last.is_empty() => last.to_string(),
+            2 if seconds == 86_400 => "l'altro ieri".to_string(),
+            1 => format!("1 {one} fa"),
+            _ => format!("{count} {many} fa"),
+        };
+    }
+    "adesso".to_string()
+}
+
+/// Etichetta e tipo di un ref del log: `HEAD -> main` diventa `main`, i tag perdono `tag: `.
+fn ref_label(reference: &str) -> (&str, RefKind) {
+    if let Some(name) = reference.strip_prefix("HEAD -> ") {
+        return (name, RefKind::Head);
+    }
+    if let Some(name) = reference.strip_prefix("tag: ") {
+        return (name, RefKind::Tag);
+    }
+    (reference, if reference == "HEAD" { RefKind::Head } else { RefKind::Branch })
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum RefKind {
+    Head,
+    Tag,
+    Branch,
+}
+
+#[derive(Default)]
+struct Node {
+    folders: BTreeMap<String, Node>,
+    leaves: Vec<(String, usize)>,
+}
+
+fn branch_tree(entries: &[(usize, &str)]) -> Node {
+    let mut root = Node::default();
+    for &(index, name) in entries {
+        let mut parts: Vec<&str> = name.split('/').collect();
+        let leaf = parts.pop().unwrap_or(name);
+        let mut node = &mut root;
+        for part in parts {
+            node = node.folders.entry(part.to_string()).or_default();
+        }
+        node.leaves.push((leaf.to_string(), index));
+    }
+    root
+}
+
+fn flatten(node: &Node, key: &str, depth: usize, collapsed: &HashSet<String>, rows: &mut Vec<BranchRow>) {
+    for (name, child) in &node.folders {
+        let child_key = format!("{key}/{name}");
+        rows.push(BranchRow::Folder { key: child_key.clone(), name: name.clone(), depth });
+        if !collapsed.contains(&child_key) {
+            flatten(child, &child_key, depth + 1, collapsed, rows);
+        }
+    }
+    let mut leaves = node.leaves.clone();
+    leaves.sort_by_key(|(name, _)| name.to_lowercase());
+    rows.extend(leaves.into_iter().map(|(name, index)| BranchRow::Branch { index, name, depth }));
+}
+
+/// Righe della lista dei branch: tutti, poi locali e remoti ad albero sui `/` del nome.
+pub fn branch_rows(branches: &[BranchEntry], collapsed: &HashSet<String>) -> Vec<BranchRow> {
+    let mut rows = vec![BranchRow::All];
+    for (remote, title, key) in [(false, "Locali", "local"), (true, "Remoti", "remote")] {
+        let entries: Vec<(usize, &str)> = branches.iter().enumerate().filter(|(_, branch)| branch.remote == remote).map(|(index, branch)| (index, branch.name.as_str())).collect();
+        if entries.is_empty() {
+            continue;
+        }
+        rows.push(BranchRow::Header(title));
+        flatten(&branch_tree(&entries), key, 0, collapsed, &mut rows);
+    }
+    rows
+}
+
+/// Cartelle da chiudere all'inizio: tutte tranne quelle sul percorso del branch corrente.
+pub fn folders_to_collapse(branches: &[BranchEntry]) -> HashSet<String> {
+    let mut folders = HashSet::new();
+    let mut open = HashSet::new();
+    for branch in branches {
+        let key = if branch.remote { "remote" } else { "local" };
+        let parts: Vec<&str> = branch.name.split('/').collect();
+        let mut path = key.to_string();
+        for part in &parts[..parts.len().saturating_sub(1)] {
+            path = format!("{path}/{part}");
+            if branch.current {
+                open.insert(path.clone());
+            }
+            folders.insert(path.clone());
+        }
+    }
+    folders.difference(&open).cloned().collect()
+}
+
 impl Panel {
     pub fn create(parent: HWND, instance: HINSTANCE, palette: &Palette) -> Panel {
         let scintilla = wide("Scintilla");
         let edit = wide("EDIT");
-        // SAFETY: controlli figli della finestra principale.
-        let (console, message, search) = unsafe {
-            let console = CreateWindowExW(0, scintilla.as_ptr(), std::ptr::null(), WS_CHILD, 0, 0, 0, 0, parent, std::ptr::null_mut(), instance, std::ptr::null());
-            let style = WS_CHILD | WS_VSCROLL | WS_TABSTOP | (ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL) as u32;
-            let message = CreateWindowExW(0, edit.as_ptr(), std::ptr::null(), style, 0, 0, 0, 0, parent, std::ptr::null_mut(), instance, std::ptr::null());
-            let search = CreateWindowExW(0, edit.as_ptr(), std::ptr::null(), WS_CHILD | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32, 0, 0, 0, 0, parent, std::ptr::null_mut(), instance, std::ptr::null());
-            let cue = wide("Cerca nei messaggi");
-            SendMessageW(search, 0x1501, 1, cue.as_ptr() as isize);
+        let child = |class: &[u16], style: u32| {
+            // SAFETY: controllo figlio della finestra principale.
+            unsafe { CreateWindowExW(0, class.as_ptr(), std::ptr::null(), style, 0, 0, 0, 0, parent, std::ptr::null_mut(), instance, std::ptr::null()) }
+        };
+        let console = child(&scintilla, WS_CHILD);
+        let preview = child(&scintilla, WS_CHILD);
+        let message = child(&edit, WS_CHILD | WS_VSCROLL | WS_TABSTOP | (ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL) as u32);
+        let filters = ["Testo nel messaggio", "Autore", "Path (es. src/)"].map(|cue| {
+            let field = child(&edit, WS_CHILD | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32);
+            let cue = wide(cue);
+            // SAFETY: campo appena creato; il testo vive per la chiamata.
+            unsafe { SendMessageW(field, 0x1501, 1, cue.as_ptr() as isize) };
+            field
+        });
+        let cue = wide("Messaggio di commit (Ctrl+Invio per committare)");
+        // SAFETY: controlli appena creati; i testi vivono per le chiamate.
+        unsafe {
+            SendMessageW(message, 0x1501, 1, cue.as_ptr() as isize);
             if palette.dark {
                 let theme = wide("DarkMode_Explorer");
-                SetWindowTheme(console, theme.as_ptr(), std::ptr::null());
-                SetWindowTheme(message, theme.as_ptr(), std::ptr::null());
+                for control in [console, preview, message] {
+                    SetWindowTheme(control, theme.as_ptr(), std::ptr::null());
+                }
             }
-            (console, message, search)
-        };
+        }
         let console = Sci::new(console);
-        console.call_str(SCI_STYLESETFONT, STYLE_DEFAULT, "Cascadia Mono");
-        console.call(SCI_STYLESETSIZEFRACTIONAL, STYLE_DEFAULT, 975);
-        console.call(SCI_STYLESETFORE, STYLE_DEFAULT, palette.fg as isize);
-        console.call(SCI_STYLESETBACK, STYLE_DEFAULT, palette.editor as isize);
-        console.call(SCI_STYLECLEARALL, 0, 0);
-        console.call(SCI_SETMARGINWIDTHN, 0, 0);
-        console.call(SCI_SETMARGINWIDTHN, 1, 0);
-        console.call(SCI_SETCODEPAGE, SC_CP_UTF8, 0);
-        console.call(SCI_SETUNDOCOLLECTION, 0, 0);
-        console.call(SCI_SETREADONLY, 1, 0);
-        console.call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_SELECTION_BACK, (palette.selection | 0xFF00_0000) as isize);
+        let preview = Sci::new(preview);
+        for sci in [&console, &preview] {
+            sci.call_str(SCI_STYLESETFONT, STYLE_DEFAULT, "Cascadia Mono");
+            sci.call(SCI_STYLESETSIZEFRACTIONAL, STYLE_DEFAULT, 975);
+            sci.call(SCI_STYLESETFORE, STYLE_DEFAULT, palette.fg as isize);
+            sci.call(SCI_STYLESETBACK, STYLE_DEFAULT, palette.editor as isize);
+            sci.call(SCI_STYLECLEARALL, 0, 0);
+            sci.call(SCI_SETMARGINWIDTHN, 0, 0);
+            sci.call(SCI_SETMARGINWIDTHN, 1, 0);
+            sci.call(SCI_SETCODEPAGE, SC_CP_UTF8, 0);
+            sci.call(SCI_SETUNDOCOLLECTION, 0, 0);
+            sci.call(SCI_SETREADONLY, 1, 0);
+            sci.call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_SELECTION_BACK, (palette.selection | 0xFF00_0000) as isize);
+        }
+        let list = || List::create(parent, instance, palette.editor, palette.dark);
         Panel {
             visible: Cell::new(false),
             tab: Cell::new(Tab::Git),
             height: Cell::new(260),
             console,
-            log: List::create(parent, instance, palette.editor, palette.dark),
-            files: List::create(parent, instance, palette.editor, palette.dark),
+            branches: list(),
+            log: list(),
+            details: list(),
+            files: list(),
             message,
-            search,
-            filters: RefCell::default(),
+            filter_text: filters[0],
+            filter_author: filters[1],
+            filter_path: filters[2],
+            preview,
+            preview_path: RefCell::new(None),
+            reference: RefCell::new(None),
             graph_hidden: Cell::new(false),
-            chips: RefCell::new(Vec::new()),
             amend: Cell::new(false),
+            operation: RefCell::new(None),
             commits: RefCell::new(Vec::new()),
             graph: RefCell::new(Vec::new()),
+            graph_width: Cell::new(1),
             changes: RefCell::new(Vec::new()),
+            branch_list: RefCell::new(Vec::new()),
+            branch_rows: RefCell::new(Vec::new()),
+            collapsed: RefCell::default(),
+            collapsed_root: RefCell::new(None),
+            detail_rows: RefCell::new(Vec::new()),
+            commit_files: RefCell::new(Vec::new()),
+            selected_commit: RefCell::new(None),
             root: RefCell::new(None),
-            repo_count: Cell::new(0),
-            repo_rect: Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }),
+            repos: RefCell::new(Vec::new()),
+            has_folder: Cell::new(false),
             terminals: RefCell::new(Vec::new()),
             view: Cell::new(None),
             next_terminal: Cell::new(1),
             tabs: RefCell::new(Vec::new()),
             console_tabs: RefCell::new(Vec::new()),
+            repo_tabs: RefCell::new(Vec::new()),
             buttons: RefCell::new(Vec::new()),
         }
     }
@@ -213,7 +420,7 @@ impl Panel {
             unsafe { ShowWindow(terminal.sci.hwnd, SW_HIDE) };
         }
         std::mem::swap(&mut *self.root.borrow_mut(), &mut state.root);
-        state.repo_count = self.repo_count.replace(state.repo_count);
+        std::mem::swap(&mut *self.repos.borrow_mut(), &mut state.repos);
         std::mem::swap(&mut *self.commits.borrow_mut(), &mut state.commits);
         std::mem::swap(&mut *self.graph.borrow_mut(), &mut state.graph);
         std::mem::swap(&mut *self.changes.borrow_mut(), &mut state.changes);
@@ -228,8 +435,14 @@ impl Panel {
         self.console.call(SCI_SETCODEPAGE, SC_CP_UTF8, 0);
         self.console.call(SCI_SETUNDOCOLLECTION, 0, 0);
         self.console.call(SCI_SETREADONLY, 1, 0);
+        self.graph_width.set(self.graph.borrow().iter().map(|row| row.width).max().unwrap_or(1).max(1));
         self.log.set_rows(self.commits.borrow().len());
         self.files.set_rows(self.changes.borrow().len());
+        self.branch_list.borrow_mut().clear();
+        self.branch_rows.borrow_mut().clear();
+        self.branches.set_rows(0);
+        self.clear_details();
+        self.set_preview(None, "");
     }
 
     /// Progetto chiuso: terminali e documento della Console.
@@ -241,19 +454,34 @@ impl Panel {
     }
 
     pub fn attach(&'static self) {
-        self.log.attach();
-        self.files.attach();
+        for list in [&self.branches, &self.log, &self.details, &self.files] {
+            list.attach();
+        }
     }
 
     pub fn owns(&self, hwnd: HWND) -> bool {
-        [self.console.hwnd, self.log.hwnd, self.files.hwnd, self.message, self.search].contains(&hwnd)
+        [self.console.hwnd, self.branches.hwnd, self.log.hwnd, self.details.hwnd, self.files.hwnd, self.message, self.filter_text, self.filter_author, self.filter_path, self.preview.hwnd].contains(&hwnd)
+    }
+
+    pub fn is_filter(&self, hwnd: HWND) -> bool {
+        [self.filter_text, self.filter_author, self.filter_path].contains(&hwnd)
+    }
+
+    /// Corpo del pannello sotto l'intestazione e, con più repository, sotto le loro tab.
+    fn body(&self, rect: RECT, scale: &impl Fn(i32) -> i32) -> RECT {
+        let repos = self.tab.get() != Tab::Console && self.repos.borrow().len() > 1;
+        RECT { top: rect.top + scale(HEADER) + if repos { scale(REPO_ROW) } else { 0 }, ..rect }
+    }
+
+    fn commit_split(body: &RECT) -> i32 {
+        body.left + ((body.right - body.left) * 45 / 100).max(320).min(body.right - body.left)
     }
 
     /// Posiziona i controlli della tab attiva in `rect` (pixel reali, intestazione compresa) e nasconde gli altri.
     pub fn layout(&self, rect: RECT, scale: impl Fn(i32) -> i32) {
         let visible = self.visible.get();
         let tab = self.tab.get();
-        let body = RECT { top: rect.top + scale(HEADER), ..rect };
+        let body = self.body(rect, &scale);
         let place = |hwnd: HWND, shown: bool, area: RECT| {
             // SAFETY: controlli figli validi.
             unsafe {
@@ -264,22 +492,57 @@ impl Panel {
             }
         };
         let console = visible && tab == Tab::Console;
-        place(self.console.hwnd, console && self.view.get().is_none(), body);
+        let body_console = RECT { top: rect.top + scale(HEADER), ..rect };
+        place(self.console.hwnd, console && self.view.get().is_none(), body_console);
         for terminal in self.terminals.borrow().iter() {
             let shown = console && self.view.get() == Some(terminal.id);
-            place(terminal.sci.hwnd, shown, body);
+            place(terminal.sci.hwnd, shown, body_console);
             if shown {
                 terminal.fit();
             }
         }
-        let git = visible && tab == Tab::Git;
-        let filter_row = RECT { bottom: body.top + scale(FILTER_ROW), ..body };
-        place(self.search, git, RECT { left: (filter_row.right - scale(SEARCH_WIDTH + 8)).max(filter_row.left), top: filter_row.top + scale(4), right: filter_row.right - scale(8), bottom: filter_row.bottom - scale(4) });
-        place(self.log.hwnd, git, RECT { top: filter_row.bottom, ..body });
-        let commit = visible && tab == Tab::Commit;
-        let message_top = body.bottom - scale(BUTTON_ROW) - scale(MESSAGE_HEIGHT);
-        place(self.files.hwnd, commit, RECT { bottom: message_top - scale(4), ..body });
-        place(self.message, commit, RECT { left: body.left + scale(8), top: message_top, right: body.right - scale(8), bottom: body.bottom - scale(BUTTON_ROW) });
+        let repo = self.root.borrow().is_some();
+        let git = visible && tab == Tab::Git && repo;
+        let details = git && self.selected_commit.borrow().is_some();
+        let center = RECT { left: body.left + scale(BRANCHES_WIDTH), right: if details { body.right - scale(DETAILS_WIDTH) } else { body.right }, ..body };
+        place(self.branches.hwnd, git, RECT { right: center.left - 1, ..body });
+        place(self.details.hwnd, details, RECT { left: center.right + 1, ..body });
+        let field = (center.right - center.left - scale(16)) / 3 - scale(6);
+        for (index, edit) in [self.filter_text, self.filter_author, self.filter_path].into_iter().enumerate() {
+            let left = center.left + scale(8) + index as i32 * (field.min(scale(220)) + scale(6));
+            place(edit, git, RECT { left, top: center.top + scale(4), right: left + field.min(scale(220)), bottom: center.top + scale(FILTER_ROW) - scale(4) });
+        }
+        place(self.log.hwnd, git, RECT { top: center.top + scale(FILTER_ROW), ..center });
+
+        let commit = visible && tab == Tab::Commit && repo;
+        let split = Self::commit_split(&body);
+        let left = RECT { right: split - 1, ..body };
+        let operation = self.operation.borrow().is_some();
+        let actions_top = left.bottom - scale(BUTTON_ROW);
+        let message_top = if operation { actions_top - scale(28) } else { actions_top - scale(MESSAGE_HEIGHT) };
+        place(self.files.hwnd, commit, RECT { top: left.top + scale(LIST_HEADER), bottom: message_top - scale(4), ..left });
+        place(self.message, commit && !operation, RECT { left: left.left + scale(8), top: message_top, right: left.right - scale(8), bottom: actions_top });
+        place(self.preview.hwnd, commit, RECT { left: split + 1, top: body.top + scale(LIST_HEADER), ..body });
+    }
+
+    unsafe fn button(dc: HDC, palette: &Palette, area: RECT, label: &str, primary: bool, enabled: bool) {
+        if primary && enabled {
+            fill(dc, &area, palette.accent);
+            text(dc, label, &area, palette.editor, DT_CENTER);
+        } else {
+            frame(dc, &area, palette.border);
+            text(dc, label, &area, if enabled { palette.fg } else { palette.muted }, DT_CENTER);
+        }
+    }
+
+    unsafe fn checkbox(dc: HDC, palette: &Palette, area: RECT, full: bool, partial: bool) {
+        frame(dc, &area, palette.muted);
+        if full {
+            fill(dc, &RECT { left: area.left + 3, top: area.top + 3, right: area.right - 3, bottom: area.bottom - 3 }, palette.accent);
+        } else if partial {
+            let middle = (area.top + area.bottom) / 2;
+            fill(dc, &RECT { left: area.left + 3, top: middle - 1, right: area.right - 3, bottom: middle + 1 }, palette.accent);
+        }
     }
 
     /// Da chiuso resta solo l'intestazione, così le tab si possono sempre cliccare.
@@ -302,6 +565,7 @@ impl Panel {
             tabs.push((area, tab));
             left += width;
         }
+        *self.tabs.borrow_mut() = tabs;
         let mut console_tabs = Vec::new();
         if visible && self.tab.get() == Tab::Console {
             fill(dc, &RECT { left: left + scale(6), top: header.top + scale(7), right: left + scale(7), bottom: header.bottom - scale(7) }, palette.border);
@@ -336,94 +600,153 @@ impl Panel {
             }
         }
         *self.console_tabs.borrow_mut() = console_tabs;
-        self.repo_rect.set(RECT { left: 0, top: 0, right: 0, bottom: 0 });
-        if let Some(root) = self.root.borrow().as_ref() {
-            let name = root.file_name().map_or_else(|| root.display().to_string(), |name| name.to_string_lossy().into_owned());
-            let label = if self.repo_count.get() > 1 { format!("⎇ {name} ▾") } else { format!("⎇ {name}") };
-            let right = rect.right - scale(12);
-            let width = text_width(dc, &label).min(right - left);
-            let area = RECT { left: right - width, right, ..header };
-            text(dc, &label, &area, palette.muted, DT_RIGHT | DT_END_ELLIPSIS);
-            if self.repo_count.get() > 1 {
-                self.repo_rect.set(RECT { left: area.left - scale(6), right: area.right + scale(6), ..area });
-            }
-        }
-        *self.tabs.borrow_mut() = tabs;
-
-        let mut chips = Vec::new();
-        if visible && self.tab.get() == Tab::Git {
-            let row = RECT { top: header.bottom, bottom: header.bottom + scale(FILTER_ROW), ..rect };
-            let filters = self.filters.borrow();
-            let short = |path: &String| Path::new(path).file_name().map_or_else(|| path.clone(), |name| name.to_string_lossy().into_owned());
-            let labels = [
-                (format!("Branch: {} ▾", filters.branch.as_deref().unwrap_or("tutti")), Chip::Branch),
-                (format!("Autore: {} ▾", filters.author.as_deref().unwrap_or("tutti")), Chip::Author),
-                (format!("Percorso: {} ▾", filters.path.as_ref().map_or_else(|| "tutti".to_string(), short)), Chip::Path),
-            ];
-            let mut left = row.left + scale(8);
-            for (label, chip) in labels {
-                let width = text_width(dc, &label) + scale(20);
-                let area = RECT { left, top: row.top + scale(4), right: left + width, bottom: row.bottom - scale(4) };
-                frame(dc, &area, palette.border);
-                text(dc, &label, &area, palette.fg, DT_CENTER);
-                chips.push((area, chip));
-                left += width + scale(6);
-            }
-        }
-        *self.chips.borrow_mut() = chips;
-
+        let mut repo_tabs = Vec::new();
         let mut buttons = Vec::new();
-        if visible && self.tab.get() == Tab::Commit {
-            let row = RECT { top: rect.bottom - scale(BUTTON_ROW), ..rect };
-            let mut left = row.left + scale(8);
-            for (label, button) in [("Commit", Button::Commit), ("Commit e Push", Button::CommitAndPush)] {
-                let width = text_width(dc, label) + scale(24);
-                let area = RECT { left, top: row.top + scale(6), right: left + width, bottom: row.bottom - scale(6) };
-                if button == Button::Commit {
-                    fill(dc, &area, palette.accent);
-                    text(dc, label, &area, palette.editor, DT_CENTER);
-                } else {
-                    frame(dc, &area, palette.border);
-                    text(dc, label, &area, palette.fg, DT_CENTER);
+        if !visible || self.tab.get() == Tab::Console {
+            *self.repo_tabs.borrow_mut() = repo_tabs;
+            *self.buttons.borrow_mut() = buttons;
+            return;
+        }
+
+        // Una tab per repository, con il numero di file cambiati.
+        let repos = self.repos.borrow();
+        if repos.len() > 1 {
+            let row = RECT { top: header.bottom, bottom: header.bottom + scale(REPO_ROW), ..rect };
+            fill(dc, &RECT { top: row.bottom - 1, ..row }, palette.border);
+            let mut left = row.left + scale(6);
+            let root = self.root.borrow();
+            for repo in repos.iter() {
+                let count = if repo.changes > 0 { repo.changes.to_string() } else { String::new() };
+                let badge = if count.is_empty() { 0 } else { text_width(dc, &count) + scale(12) };
+                let width = text_width(dc, &repo.name) + scale(20) + badge;
+                let area = RECT { left, top: row.top + scale(4), right: left + width, bottom: row.bottom - scale(4) };
+                let active = root.as_deref() == Some(repo.root.as_path());
+                if active {
+                    fill(dc, &area, palette.selection);
                 }
+                text(dc, &repo.name, &RECT { left: area.left + scale(10), right: area.right - badge, ..area }, if active { palette.fg } else { palette.muted }, DT_LEFT | DT_END_ELLIPSIS);
+                if badge > 0 {
+                    let pill = RECT { left: area.right - badge, top: area.top + scale(3), right: area.right - scale(6), bottom: area.bottom - scale(3) };
+                    fill(dc, &pill, palette.border);
+                    text(dc, &count, &pill, palette.fg, DT_CENTER);
+                }
+                repo_tabs.push((area, repo.root.clone()));
+                left = area.right + scale(4);
+            }
+        }
+        *self.repo_tabs.borrow_mut() = repo_tabs;
+        let body = self.body(rect, &scale);
+
+        // Nessun repository: come nella versione Tauri, git init e clona.
+        if self.root.borrow().is_none() {
+            let line = |top: i32| RECT { left: body.left + scale(16), top: body.top + scale(top), right: body.right - scale(16), bottom: body.top + scale(top + 24) };
+            let message = if self.has_folder.get() { "La cartella aperta non è un repository Git." } else { "Nessuna cartella aperta." };
+            text(dc, message, &line(16), palette.muted, DT_LEFT);
+            let mut left = body.left + scale(16);
+            let mut entries = vec![("Clona repository…", Button::Clone)];
+            if self.has_folder.get() {
+                entries.insert(0, ("Inizializza repository (git init)", Button::Init));
+            }
+            for (label, button) in entries {
+                let area = RECT { left, top: body.top + scale(48), right: left + text_width(dc, label) + scale(24), bottom: body.top + scale(76) };
+                Self::button(dc, palette, area, label, button == Button::Init, true);
                 buttons.push((area, button));
+                left = area.right + scale(8);
+            }
+            *self.buttons.borrow_mut() = buttons;
+            return;
+        }
+
+        if self.tab.get() == Tab::Git {
+            let details = self.selected_commit.borrow().is_some();
+            let center = RECT { left: body.left + scale(BRANCHES_WIDTH), right: if details { body.right - scale(DETAILS_WIDTH) } else { body.right }, ..body };
+            fill(dc, &RECT { left: center.left - 1, right: center.left, ..body }, palette.border);
+            if details {
+                fill(dc, &RECT { left: center.right, right: center.right + 1, ..body }, palette.border);
+            }
+            if self.graph_hidden.get() {
+                let field = (center.right - center.left - scale(16)) / 3 - scale(6);
+                let note_left = center.left + scale(8) + 3 * (field.min(scale(220)) + scale(6));
+                text(dc, "grafo nascosto con i filtri", &RECT { left: note_left, top: center.top, right: center.right - scale(8), bottom: center.top + scale(FILTER_ROW) }, palette.muted, DT_LEFT | DT_END_ELLIPSIS);
+            }
+        } else {
+            let split = Self::commit_split(&body);
+            fill(dc, &RECT { left: split - 1, right: split, ..body }, palette.border);
+            let changes = self.changes.borrow();
+            let staged = changes.iter().filter(|file| file.staged).count();
+            let all = !changes.is_empty() && changes.iter().all(|file| file.staged && !file.unstaged);
+            let header_row = RECT { right: split - 1, bottom: body.top + scale(LIST_HEADER), ..body };
+            let size = scale(CHECKBOX);
+            let middle = (header_row.top + header_row.bottom) / 2;
+            let check = RECT { left: header_row.left + scale(8), top: middle - size / 2, right: header_row.left + scale(8) + size, bottom: middle + size / 2 };
+            Self::checkbox(dc, palette, check, all, staged > 0);
+            let label = format!("Modifiche ({}) · {staged} in stage", changes.len());
+            text(dc, &label, &RECT { left: check.right + scale(8), ..header_row }, palette.fg, DT_LEFT | DT_END_ELLIPSIS);
+            buttons.push((RECT { left: check.left, right: check.right + scale(8) + text_width(dc, &label), ..header_row }, Button::StageAll));
+
+            let row = RECT { top: body.bottom - scale(BUTTON_ROW), right: split - 1, ..body };
+            let mut left = row.left + scale(8);
+            let message = crate::find::window_text(self.message);
+            let operation = self.operation.borrow().clone();
+            let mut entries: Vec<(String, Button, bool, bool)> = Vec::new();
+            if let Some(operation) = &operation {
+                let banner = RECT { top: row.top - scale(28), bottom: row.top, ..row };
+                let detail = if operation.conflicts > 0 { format!("{} file in conflitto: risolvili e mettili in stage", operation.conflicts) } else { "conflitti risolti".into() };
+                text(dc, &format!("{} in corso · {detail}", operation.name), &RECT { left: banner.left + scale(8), ..banner }, palette.danger, DT_LEFT | DT_END_ELLIPSIS);
+                entries.push((format!("Continua {}", operation.name.to_lowercase()), Button::Continue, true, operation.conflicts == 0));
+                entries.push((format!("Annulla {}", operation.name.to_lowercase()), Button::Abort, false, true));
+            } else {
+                let can_commit = !message.trim().is_empty() && (staged > 0 || self.amend.get());
+                entries.push(((if self.amend.get() { "Amend" } else { "Commit" }).into(), Button::Commit, true, can_commit));
+                if !self.amend.get() {
+                    entries.push(("Commit and Push".into(), Button::CommitAndPush, false, can_commit));
+                }
+            }
+            for (label, button, primary, enabled) in entries {
+                let width = text_width(dc, &label) + scale(24);
+                let area = RECT { left, top: row.top + scale(6), right: left + width, bottom: row.bottom - scale(6) };
+                Self::button(dc, palette, area, &label, primary, enabled);
+                if enabled {
+                    buttons.push((area, button));
+                }
                 left += width + scale(8);
             }
-            let size = scale(CHECKBOX);
-            let middle = (row.top + row.bottom) / 2;
-            let check = RECT { left: left + scale(4), top: middle - size / 2, right: left + scale(4) + size, bottom: middle + size / 2 };
-            frame(dc, &check, palette.muted);
-            if self.amend.get() {
-                fill(dc, &RECT { left: check.left + 3, top: check.top + 3, right: check.right - 3, bottom: check.bottom - 3 }, palette.accent);
+            if operation.is_none() {
+                let check = RECT { left: left + scale(4), top: (row.top + row.bottom) / 2 - size / 2, right: left + scale(4) + size, bottom: (row.top + row.bottom) / 2 + size / 2 };
+                Self::checkbox(dc, palette, check, self.amend.get(), false);
+                let label_area = RECT { left: check.right + scale(6), right: check.right + scale(6) + text_width(dc, "Amend"), ..row };
+                text(dc, "Amend", &label_area, palette.fg, DT_LEFT);
+                buttons.push((RECT { left: check.left, right: label_area.right, ..row }, Button::Amend));
             }
-            let label = "Modifica l'ultimo commit";
-            let label_area = RECT { left: check.right + scale(6), right: check.right + scale(6) + text_width(dc, label), ..row };
-            text(dc, label, &label_area, palette.fg, DT_LEFT);
-            buttons.push((RECT { left: check.left, right: label_area.right, ..row }, Button::Amend));
-            left = label_area.right + scale(16);
-            let checked = self.changes.borrow().iter().filter(|file| file.checked).count();
-            let hint = RECT { left, right: row.right - scale(12), ..row };
-            text(dc, &format!("{checked} file selezionati · Ctrl+Invio nel messaggio per il commit"), &hint, palette.muted, DT_LEFT | DT_END_ELLIPSIS);
+
+            let preview_header = RECT { left: split + scale(8), bottom: body.top + scale(LIST_HEADER), ..body };
+            match self.preview_path.borrow().as_deref() {
+                Some(path) => text(dc, path, &preview_header, palette.fg, DT_LEFT | DT_PATH_ELLIPSIS),
+                None => text(dc, "Seleziona un file per vedere le modifiche.", &preview_header, palette.muted, DT_LEFT),
+            }
         }
         *self.buttons.borrow_mut() = buttons;
     }
 
-    pub fn on_repo(&self, x: i32, y: i32) -> bool {
-        let r = self.repo_rect.get();
-        x >= r.left && x < r.right && y >= r.top && y < r.bottom
-    }
-
-    pub fn chip_at(&self, x: i32, y: i32) -> Option<Chip> {
-        self.chips.borrow().iter().find(|(r, _)| x >= r.left && x < r.right && y >= r.top && y < r.bottom).map(|(_, chip)| *chip)
+    fn hit<T: Copy>(items: &[(RECT, T)], x: i32, y: i32) -> Option<T> {
+        items.iter().find(|(r, _)| x >= r.left && x < r.right && y >= r.top && y < r.bottom).map(|(_, item)| *item)
     }
 
     pub fn tab_at(&self, x: i32, y: i32) -> Option<Tab> {
-        self.tabs.borrow().iter().find(|(r, _)| x >= r.left && x < r.right && y >= r.top && y < r.bottom).map(|(_, tab)| *tab)
+        Self::hit(&self.tabs.borrow(), x, y)
     }
 
     /// La × viene prima del suo tab nella lista, così vince sul clic.
     pub fn console_target_at(&self, x: i32, y: i32) -> Option<ConsoleTarget> {
-        self.console_tabs.borrow().iter().find(|(r, _)| x >= r.left && x < r.right && y >= r.top && y < r.bottom).map(|(_, target)| *target)
+        Self::hit(&self.console_tabs.borrow(), x, y)
+    }
+
+    pub fn button_at(&self, x: i32, y: i32) -> Option<Button> {
+        Self::hit(&self.buttons.borrow(), x, y)
+    }
+
+    pub fn repo_at(&self, x: i32, y: i32) -> Option<PathBuf> {
+        self.repo_tabs.borrow().iter().find(|(r, _)| x >= r.left && x < r.right && y >= r.top && y < r.bottom).map(|(_, root)| root.clone())
     }
 
     /// Il controllo che riceve il focus nella Console: il terminale scelto o il log.
@@ -436,40 +759,120 @@ impl Panel {
         self.terminals.borrow().iter().position(|terminal| terminal.sci.hwnd == hwnd)
     }
 
-    pub fn button_at(&self, x: i32, y: i32) -> Option<Button> {
-        self.buttons.borrow().iter().find(|(r, _)| x >= r.left && x < r.right && y >= r.top && y < r.bottom).map(|(_, button)| *button)
-    }
-
     pub fn set_commits(&self, commits: Vec<Commit>) {
-        *self.graph.borrow_mut() = layout_graph(commits.iter().map(|commit| (commit.hash.as_str(), commit.parents.as_slice())));
+        let graph = layout_graph(commits.iter().map(|commit| (commit.hash.as_str(), commit.parents.as_slice())));
+        self.graph_width.set(graph.iter().map(|row| row.width).max().unwrap_or(1).max(1));
+        *self.graph.borrow_mut() = graph;
         let count = commits.len();
         *self.commits.borrow_mut() = commits;
         self.log.set_rows(count);
     }
 
-    /// File cambiati del repository; la spunta si conserva per i file già in lista, i nuovi sono spuntati tranne i non tracciati.
+    /// File cambiati del repository, con lo stato dell'index; operazione in corso e conflitti per il banner.
     pub fn set_changes(&self, root: &Path, status: &RepoStatus) {
-        let previous: Vec<(String, bool)> = self.changes.borrow().iter().map(|file| (file.path.clone(), file.checked)).collect();
         let files: Vec<ChangedFile> = status
             .files
             .iter()
             .filter(|entry| entry.status != FileStatus::Ignored)
             .map(|entry| {
                 let relative = Path::new(&entry.path).strip_prefix(root).map_or_else(|_| entry.path.clone(), |path| path.to_string_lossy().into_owned());
-                let checked = previous.iter().find(|(path, _)| *path == entry.path).map_or(entry.status != FileStatus::Untracked, |(_, checked)| *checked);
-                ChangedFile { path: entry.path.clone(), relative, status: entry.status, staged: entry.staged, checked }
+                ChangedFile { path: entry.path.clone(), relative, status: entry.status, staged: entry.staged, unstaged: entry.unstaged }
             })
             .collect();
+        let conflicts = files.iter().filter(|file| file.status == FileStatus::Conflict).count();
+        *self.operation.borrow_mut() = status.operation.as_ref().map(|operation| PendingOperation {
+            name: match operation {
+                steroitor_core::git::parse::Operation::Merge => "Merge",
+                steroitor_core::git::parse::Operation::Rebase => "Rebase",
+                steroitor_core::git::parse::Operation::CherryPick => "Cherry-pick",
+                steroitor_core::git::parse::Operation::Revert => "Revert",
+            },
+            conflicts,
+        });
         let count = files.len();
         *self.changes.borrow_mut() = files;
         self.files.set_rows(count);
     }
 
-    pub fn toggle(&self, index: usize) {
-        if let Some(file) = self.changes.borrow_mut().get_mut(index) {
-            file.checked = !file.checked;
+    /// Branch del repository; le cartelle si chiudono tutte (tranne quella del branch corrente) quando cambia repository.
+    pub fn set_branches(&self, root: &Path, branches: Vec<BranchEntry>) {
+        if self.collapsed_root.borrow().as_deref() != Some(root) {
+            *self.collapsed.borrow_mut() = folders_to_collapse(&branches);
+            *self.collapsed_root.borrow_mut() = Some(root.to_path_buf());
         }
-        self.files.redraw();
+        *self.branch_list.borrow_mut() = branches;
+        self.rebuild_branch_rows();
+    }
+
+    fn rebuild_branch_rows(&self) {
+        let rows = branch_rows(&self.branch_list.borrow(), &self.collapsed.borrow());
+        let count = rows.len();
+        *self.branch_rows.borrow_mut() = rows;
+        self.branches.set_rows(count);
+    }
+
+    pub fn toggle_folder(&self, key: &str) {
+        {
+            let mut collapsed = self.collapsed.borrow_mut();
+            if !collapsed.remove(key) {
+                collapsed.insert(key.to_string());
+            }
+        }
+        self.rebuild_branch_rows();
+    }
+
+    pub fn clear_details(&self) {
+        *self.selected_commit.borrow_mut() = None;
+        self.detail_rows.borrow_mut().clear();
+        self.commit_files.borrow_mut().clear();
+        self.details.set_rows(0);
+    }
+
+    /// Dettagli del commit: messaggio, hash, autore, data, parent; i file arrivano dopo con `set_commit_files`.
+    pub fn show_details(&self, commit: &Commit) {
+        let mut rows = vec![DetailRow::Subject(commit.subject.clone())];
+        rows.extend(commit.body.trim_end().lines().map(|line| DetailRow::Body(line.to_string())));
+        rows.push(DetailRow::Field("Commit", commit.hash.clone()));
+        rows.push(DetailRow::Field("Autore", format!("{} <{}>", commit.author, commit.email)));
+        rows.push(DetailRow::Field("Data", local_time(commit.timestamp)));
+        if !commit.parents.is_empty() {
+            let parents = commit.parents.iter().map(|parent| parent.get(..7).unwrap_or(parent)).collect::<Vec<_>>().join(", ");
+            rows.push(DetailRow::Field(if commit.parents.len() > 1 { "Parent (merge)" } else { "Parent" }, parents));
+        }
+        rows.push(DetailRow::Files("File cambiati".into()));
+        let count = rows.len();
+        *self.detail_rows.borrow_mut() = rows;
+        self.commit_files.borrow_mut().clear();
+        *self.selected_commit.borrow_mut() = Some(commit.hash.clone());
+        self.details.set_rows(count);
+    }
+
+    pub fn set_commit_files(&self, root: &Path, hash: &str, files: Vec<steroitor_core::git::changes::ChangedFile>) {
+        if self.selected_commit.borrow().as_deref() != Some(hash) {
+            return;
+        }
+        let files: Vec<CommitFile> = files
+            .into_iter()
+            .map(|file| CommitFile { relative: Path::new(&file.path).strip_prefix(root).map_or_else(|_| file.path.clone(), |path| path.to_string_lossy().into_owned()), status: file.status })
+            .collect();
+        let mut rows = self.detail_rows.borrow_mut();
+        rows.retain(|row| !matches!(row, DetailRow::File(_)));
+        if let Some(DetailRow::Files(title)) = rows.last_mut() {
+            *title = if files.len() == 1 { "1 file cambiato".into() } else { format!("{} file cambiati", files.len()) };
+        }
+        rows.extend((0..files.len()).map(DetailRow::File));
+        let count = rows.len();
+        drop(rows);
+        *self.commit_files.borrow_mut() = files;
+        self.details.set_rows(count);
+    }
+
+    /// Anteprima delle modifiche del file selezionato (diff unificato), o nulla.
+    pub fn set_preview(&self, path: Option<String>, diff: &str) {
+        *self.preview_path.borrow_mut() = path;
+        self.preview.call(SCI_SETREADONLY, 0, 0);
+        self.preview.set_text(diff.as_bytes());
+        self.preview.call(SCI_SETREADONLY, 1, 0);
     }
 
     /// true se il punto (coordinate schermo) cade sulla casella di spunta della lista dei file.
@@ -510,83 +913,153 @@ impl Panel {
         self.console.call(SCI_DOCUMENTEND, 0, 0);
     }
 
+    unsafe fn row_start(row: &RowPaint, palette: &Palette, font: HFONT) {
+        SelectObject(row.dc, font);
+        SetBkMode(row.dc, TRANSPARENT as i32);
+        if row.selected {
+            fill(row.dc, &row.rect, if row.focused { palette.selection } else { palette.active_line });
+        }
+    }
+
+    pub unsafe fn paint_branch_row(&self, row: &RowPaint, palette: &Palette, font: HFONT, scale: impl Fn(i32) -> i32) {
+        let rows = self.branch_rows.borrow();
+        let Some(entry) = rows.get(row.index) else { return };
+        let dc = row.dc;
+        Self::row_start(row, palette, font);
+        let reference = self.reference.borrow();
+        let rect = row.rect;
+        let indent = |depth: usize| rect.left + scale(8) + depth as i32 * scale(12);
+        match entry {
+            BranchRow::All => {
+                if reference.is_none() && !row.selected {
+                    fill(dc, &rect, palette.active_line);
+                }
+                text(dc, "Tutti i branch", &RECT { left: rect.left + scale(8), ..rect }, if reference.is_none() { palette.accent } else { palette.fg }, DT_LEFT);
+            }
+            BranchRow::Header(title) => text(dc, title, &RECT { left: rect.left + scale(8), ..rect }, palette.muted, DT_LEFT),
+            BranchRow::Folder { key, name, depth } => {
+                let open = !self.collapsed.borrow().contains(key);
+                text(dc, &format!("{} {name}", if open { "▾" } else { "▸" }), &RECT { left: indent(*depth), ..rect }, palette.muted, DT_LEFT | DT_END_ELLIPSIS);
+            }
+            BranchRow::Branch { index, name, depth } => {
+                let branches = self.branch_list.borrow();
+                let current = branches.get(*index).is_some_and(|branch| branch.current);
+                let full = branches.get(*index).map(|branch| branch.name.as_str());
+                if reference.as_deref() == full && full.is_some() && !row.selected {
+                    fill(dc, &rect, palette.active_line);
+                }
+                text(dc, name, &RECT { left: indent(*depth) + scale(12), ..rect }, if current { palette.accent } else { palette.fg }, DT_LEFT | DT_END_ELLIPSIS);
+            }
+        }
+    }
+
     pub unsafe fn paint_log_row(&self, row: &RowPaint, palette: &Palette, font: HFONT, scale: impl Fn(i32) -> i32) {
         let commits = self.commits.borrow();
         let graph = self.graph.borrow();
         let (Some(commit), Some(layout)) = (commits.get(row.index), graph.get(row.index)) else { return };
         let dc = row.dc;
-        SelectObject(dc, font);
-        SetBkMode(dc, TRANSPARENT as i32);
+        Self::row_start(row, palette, font);
         let rect = row.rect;
-        if row.selected {
-            fill(dc, &rect, if row.focused { palette.selection } else { palette.active_line });
-        }
         let lane = scale(LANE);
         let middle = (rect.top + rect.bottom) / 2;
-        let x = |lane_index: usize| rect.left + scale(6) + lane_index as i32 * lane + lane / 2;
         let hidden = self.graph_hidden.get();
-        for segment in layout.segments.iter().filter(|_| !hidden) {
-            let pen = CreatePen(PS_SOLID, scale(2).max(1), rgb(LANE_COLORS[segment.color % LANE_COLORS.len()]));
-            let previous = SelectObject(dc, pen);
-            let (from_y, to_y) = match segment.half {
-                Half::Top => (rect.top, middle),
-                Half::Bottom => (middle, rect.bottom),
-            };
-            MoveToEx(dc, x(segment.from), from_y, std::ptr::null_mut());
-            LineTo(dc, x(segment.to), to_y);
-            SelectObject(dc, previous);
+        let mut left = rect.left + scale(6);
+        if !hidden {
+            let x = |lane_index: usize| rect.left + scale(6) + lane_index as i32 * lane + lane / 2;
+            for segment in &layout.segments {
+                let pen = CreatePen(PS_SOLID, scale(2).max(1), rgb(LANE_COLORS[segment.color % LANE_COLORS.len()]));
+                let previous = SelectObject(dc, pen);
+                let (from_y, to_y) = match segment.half {
+                    Half::Top => (rect.top, middle),
+                    Half::Bottom => (middle, rect.bottom),
+                };
+                MoveToEx(dc, x(segment.from), from_y, std::ptr::null_mut());
+                LineTo(dc, x(segment.to), to_y);
+                SelectObject(dc, previous);
+                DeleteObject(pen);
+            }
+            let color = rgb(LANE_COLORS[layout.color % LANE_COLORS.len()]);
+            let brush = CreateSolidBrush(color);
+            let pen = CreatePen(PS_SOLID, 1, color);
+            let (old_brush, old_pen) = (SelectObject(dc, brush), SelectObject(dc, pen));
+            let radius = if commit.parents.len() > 1 { scale(4) } else { scale(4) * 7 / 8 };
+            let center = x(layout.lane);
+            Ellipse(dc, center - radius, middle - radius, center + radius + 1, middle + radius + 1);
+            SelectObject(dc, old_brush);
+            SelectObject(dc, old_pen);
+            DeleteObject(brush);
             DeleteObject(pen);
+            left += self.graph_width.get() as i32 * lane;
         }
-        let color = rgb(LANE_COLORS[layout.color % LANE_COLORS.len()]);
-        let brush = CreateSolidBrush(color);
-        let pen = CreatePen(PS_SOLID, 1, color);
-        let (old_brush, old_pen) = (SelectObject(dc, brush), SelectObject(dc, pen));
-        let radius = scale(4);
-        let center = if hidden { x(0) } else { x(layout.lane) };
-        Ellipse(dc, center - radius, middle - radius, center + radius + 1, middle + radius + 1);
-        SelectObject(dc, old_brush);
-        SelectObject(dc, old_pen);
-        DeleteObject(brush);
-        DeleteObject(pen);
-
-        let mut right = rect.right - scale(8);
-        for (value, width, color) in [
-            (commit.short_hash.as_str(), 70, palette.muted),
-            (&*local_time(commit.timestamp), 120, palette.muted),
-            (commit.author.as_str(), 150, palette.muted),
-        ] {
-            let area = RECT { left: right - scale(width), right, ..rect };
-            text(dc, value, &area, color, DT_LEFT | DT_END_ELLIPSIS);
-            right -= scale(width) + scale(8);
-        }
-        let mut left = rect.left + scale(6) + if hidden { 1 } else { layout.width as i32 } * lane + scale(6);
-        if !commit.refs.is_empty() {
-            let refs = commit.refs.join(", ");
-            let width = text_width(dc, &refs).min((right - left) / 2);
-            let area = RECT { left, right: left + width, ..rect };
-            text(dc, &refs, &area, palette.accent, DT_LEFT | DT_END_ELLIPSIS);
-            left += width + scale(8);
+        // Colonne come nella versione Tauri: hash, messaggio con i ref, autore, data relativa.
+        let date = RECT { left: rect.right - scale(110), right: rect.right - scale(8), ..rect };
+        let author = RECT { left: date.left - scale(146), right: date.left - scale(6), ..rect };
+        text(dc, &relative_time(commit.timestamp, now()), &date, palette.muted, DT_LEFT | DT_END_ELLIPSIS);
+        text(dc, &commit.author, &author, palette.muted, DT_LEFT | DT_END_ELLIPSIS);
+        text(dc, &commit.short_hash, &RECT { left, right: left + scale(64), ..rect }, palette.muted, DT_LEFT);
+        left += scale(64);
+        let right = author.left - scale(8);
+        for reference in &commit.refs {
+            let (label, kind) = ref_label(reference);
+            let color = match kind {
+                RefKind::Head => palette.accent,
+                RefKind::Tag => palette.git_added,
+                RefKind::Branch => palette.muted,
+            };
+            let width = (text_width(dc, label) + scale(10)).min((right - left).max(0));
+            if width <= scale(10) {
+                break;
+            }
+            let badge = RECT { left, top: rect.top + scale(3), right: left + width, bottom: rect.bottom - scale(3) };
+            frame(dc, &badge, color);
+            text(dc, label, &badge, color, DT_CENTER | DT_END_ELLIPSIS);
+            left = badge.right + scale(4);
         }
         text(dc, &commit.subject, &RECT { left, right, ..rect }, palette.fg, DT_LEFT | DT_END_ELLIPSIS);
+    }
+
+    pub unsafe fn paint_detail_row(&self, row: &RowPaint, palette: &Palette, font: HFONT, scale: impl Fn(i32) -> i32) {
+        let rows = self.detail_rows.borrow();
+        let Some(entry) = rows.get(row.index) else { return };
+        let dc = row.dc;
+        Self::row_start(row, palette, font);
+        let rect = RECT { left: row.rect.left + scale(10), right: row.rect.right - scale(8), ..row.rect };
+        match entry {
+            DetailRow::Subject(subject) => text(dc, subject, &rect, palette.fg, DT_LEFT | DT_END_ELLIPSIS),
+            DetailRow::Body(line) => text(dc, line, &rect, palette.muted, DT_LEFT | DT_END_ELLIPSIS),
+            DetailRow::Field(label, value) => {
+                text(dc, label, &RECT { right: rect.left + scale(90), ..rect }, palette.muted, DT_LEFT);
+                text(dc, value, &RECT { left: rect.left + scale(94), ..rect }, palette.fg, DT_LEFT | DT_END_ELLIPSIS);
+            }
+            DetailRow::Files(title) => text(dc, title, &rect, palette.accent, DT_LEFT),
+            DetailRow::File(index) => {
+                let files = self.commit_files.borrow();
+                let Some(file) = files.get(*index) else { return };
+                let color = match file.status.as_str() {
+                    "A" => palette.git_added,
+                    "D" => palette.git_ignored,
+                    _ => palette.git_modified,
+                };
+                text(dc, &file.status, &RECT { right: rect.left + scale(14), ..rect }, color, DT_LEFT);
+                let name = Path::new(&file.relative).file_name().map_or_else(|| file.relative.clone(), |name| name.to_string_lossy().into_owned());
+                let name_area = RECT { left: rect.left + scale(16), right: (rect.left + scale(16) + text_width(dc, &name)).min(rect.right), ..rect };
+                text(dc, &name, &name_area, color, DT_LEFT | DT_END_ELLIPSIS);
+                let dir = Path::new(&file.relative).parent().map(|dir| dir.display().to_string()).unwrap_or_default();
+                text(dc, &dir, &RECT { left: name_area.right + scale(8), ..rect }, palette.muted, DT_LEFT | DT_PATH_ELLIPSIS);
+            }
+        }
     }
 
     pub unsafe fn paint_file_row(&self, row: &RowPaint, palette: &Palette, font: HFONT, scale: impl Fn(i32) -> i32) {
         let changes = self.changes.borrow();
         let Some(file) = changes.get(row.index) else { return };
         let dc = row.dc;
-        SelectObject(dc, font);
-        SetBkMode(dc, TRANSPARENT as i32);
+        Self::row_start(row, palette, font);
         let rect = row.rect;
-        if row.selected {
-            fill(dc, &rect, if row.focused { palette.selection } else { palette.active_line });
-        }
         let size = scale(CHECKBOX);
         let middle = (rect.top + rect.bottom) / 2;
         let checkbox = RECT { left: rect.left + scale(8), top: middle - size / 2, right: rect.left + scale(8) + size, bottom: middle + size / 2 };
-        frame(dc, &checkbox, palette.muted);
-        if file.checked {
-            fill(dc, &RECT { left: checkbox.left + 3, top: checkbox.top + 3, right: checkbox.right - 3, bottom: checkbox.bottom - 3 }, palette.accent);
-        }
+        Self::checkbox(dc, palette, checkbox, file.staged && !file.unstaged, file.staged && file.unstaged);
         let (letter, color) = match file.status {
             FileStatus::Added => ("A", palette.git_added),
             FileStatus::Modified => ("M", palette.git_modified),
@@ -597,7 +1070,11 @@ impl Panel {
         };
         let left = checkbox.right + scale(8);
         text(dc, letter, &RECT { left, right: left + scale(16), ..rect }, color, DT_LEFT);
-        text(dc, &file.relative, &RECT { left: left + scale(20), right: rect.right - scale(8), ..rect }, color, DT_LEFT | DT_PATH_ELLIPSIS);
+        let name = Path::new(&file.relative).file_name().map_or_else(|| file.relative.clone(), |name| name.to_string_lossy().into_owned());
+        let name_area = RECT { left: left + scale(20), right: (left + scale(20) + text_width(dc, &name)).min(rect.right - scale(8)), ..rect };
+        text(dc, &name, &name_area, color, DT_LEFT | DT_END_ELLIPSIS);
+        let dir = Path::new(&file.relative).parent().map(|dir| dir.display().to_string()).unwrap_or_default();
+        text(dc, &dir, &RECT { left: name_area.right + scale(8), right: rect.right - scale(8), ..rect }, palette.muted, DT_LEFT | DT_PATH_ELLIPSIS);
     }
 }
 
@@ -610,5 +1087,44 @@ mod tests {
         let formatted = local_time(1_700_000_000);
         assert_eq!(formatted.len(), "14/11/2023 22:13".len());
         assert!(formatted.contains("/11/2023"));
+    }
+
+    #[test]
+    fn formats_relative_times_like_the_tauri_version() {
+        let now = 1_700_000_000;
+        assert_eq!(relative_time(now - 20, now), "adesso");
+        assert_eq!(relative_time(now - 120, now), "2 minuti fa");
+        assert_eq!(relative_time(now - 3_600, now), "1 ora fa");
+        assert_eq!(relative_time(now - 86_400, now), "ieri");
+        assert_eq!(relative_time(now - 2 * 86_400, now), "l'altro ieri");
+        assert_eq!(relative_time(now - 5 * 86_400, now), "5 giorni fa");
+        assert_eq!(relative_time(now - 40_000_000, now), "l'anno scorso");
+    }
+
+    #[test]
+    fn labels_refs() {
+        assert_eq!(ref_label("HEAD -> main"), ("main", RefKind::Head));
+        assert_eq!(ref_label("tag: v1.0"), ("v1.0", RefKind::Tag));
+        assert_eq!(ref_label("origin/main"), ("origin/main", RefKind::Branch));
+    }
+
+    #[test]
+    fn builds_the_branch_tree() {
+        let branch = |name: &str, remote: bool, current: bool| BranchEntry { name: name.into(), remote, current };
+        let branches = vec![branch("main", false, true), branch("feature/b", false, false), branch("feature/a", false, false), branch("origin/main", true, false)];
+        let collapsed = folders_to_collapse(&branches);
+        assert!(collapsed.contains("local/feature") && collapsed.contains("remote/origin"));
+        let rows = branch_rows(&branches, &HashSet::new());
+        let names: Vec<String> = rows
+            .iter()
+            .map(|row| match row {
+                BranchRow::All => "*".into(),
+                BranchRow::Header(title) => title.to_string(),
+                BranchRow::Folder { name, depth, .. } => format!("{depth}/{name}/"),
+                BranchRow::Branch { name, depth, .. } => format!("{depth}/{name}"),
+            })
+            .collect();
+        assert_eq!(names, ["*", "Locali", "0/feature/", "1/a", "1/b", "0/main", "Remoti", "0/origin/", "1/main"]);
+        assert_eq!(branch_rows(&branches, &collapsed).len(), 6);
     }
 }
