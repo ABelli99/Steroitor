@@ -30,6 +30,7 @@ use crate::find::{self, window_text, FindBar};
 use crate::hunks;
 use crate::git::{line_changes, repo_name, repo_of, CommitRequest, Event, FileColors, Repo, Worker, WM_COMMAND_LOGGED, WM_GIT_EVENT};
 use crate::lang::{self, Language};
+use crate::minimap::{self, Minimap, WM_MINIMAP_LINE};
 use crate::list::{decode_event, ListEvent, RowPaint, WM_LIST_EVENT, WM_LIST_PAINT};
 use crate::paint::{fill, frame, text, text_width};
 use crate::panel::{self, ConsoleTarget, Panel, Tab};
@@ -57,6 +58,11 @@ const EXPLORER_MIN: i32 = 120;
 const EDITOR_MIN: i32 = 200;
 const PROJECT_BAR: i32 = 36;
 const PROJECT_BUTTON: i32 = 28;
+/// Striscia delle modifiche accanto all'editor: un segno per ogni riga cambiata, in proporzione al file.
+const RULER: i32 = 10;
+const SCI_GETLINECOUNT: u32 = 2154;
+const SCI_LINESONSCREEN: u32 = 2370;
+const SCI_VISIBLEFROMDOCLINE: u32 = 2220;
 /// Il watcher (altro thread) avvisa la finestra con questo messaggio; le cartelle cambiate aspettano in `changes`.
 const WM_FILES_CHANGED: u32 = WM_APP + 1;
 const MENU_OPEN_FOLDER: usize = 1;
@@ -165,6 +171,11 @@ fn modified_time(path: &Path) -> Option<SystemTime> {
 pub struct App {
     hwnd: HWND,
     sci: Sci,
+    minimap: Minimap,
+    minimap_on: Cell<bool>,
+    minimap_rect: Cell<RECT>,
+    /// Righe cambiate rispetto a HEAD e colore, per la striscia delle modifiche.
+    ruler: RefCell<Vec<(usize, u32)>>,
     explorer: Explorer,
     panel: Panel,
     dragging_panel: Cell<bool>,
@@ -373,6 +384,10 @@ impl App {
         let app: &'static App = Box::leak(Box::new(App {
             hwnd,
             sci: Sci::new(editor),
+            minimap: Minimap::create(hwnd, instance, editor, &palette),
+            minimap_on: Cell::new(session.minimap),
+            minimap_rect: Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }),
+            ruler: RefCell::new(Vec::new()),
             explorer: Explorer::create(hwnd, instance, &palette),
             panel: Panel::create(hwnd, instance, &palette),
             dragging_panel: Cell::new(false),
@@ -494,9 +509,10 @@ impl App {
         sci.call(SCI_SETMARGINWIDTHN, BLAME_MARGIN, 0);
         sci.call(SCI_SETMARGINSENSITIVEN, BLAME_MARGIN, 1);
         sci.call(SCI_SETMARGINMASKN, BLAME_MARGIN, 0);
-        for (marker, color) in [(MARKER_ADDED, self.palette.git_added), (MARKER_MODIFIED, self.palette.git_modified), (MARKER_DELETED, self.palette.git_ignored)] {
+        for (marker, color) in [(MARKER_ADDED, self.palette.git_added), (MARKER_MODIFIED, self.palette.git_modified), (MARKER_DELETED, self.palette.danger)] {
             sci.call(SCI_MARKERDEFINE, marker, SC_MARK_LEFTRECT);
             sci.call(SCI_MARKERSETBACK, marker, color as isize);
+            self.minimap.define_marker(marker, SC_MARK_LEFTRECT, color);
         }
         sci.call(SCI_SETWRAPMODE, if self.wrap.get() { SC_WRAP_WORD } else { 0 }, 0);
         let opaque = |color: u32| (color | 0xFF00_0000) as isize;
@@ -527,6 +543,7 @@ impl App {
     fn apply_styles(&self, language: &Language) {
         let style = self.settings.borrow().editor;
         lang::apply_styles(&self.sci, language, &self.palette, style.font_size_fraction());
+        self.minimap.show_document(self.sci.call(SCI_GETDOCPOINTER, 0, 0), language, &self.palette, self.wrap.get());
         let (ascent, descent) = style.line_spacing(self.dpi());
         self.sci.call(SCI_SETEXTRAASCENT, ascent as usize, 0);
         self.sci.call(SCI_SETEXTRADESCENT, descent as usize, 0);
@@ -1065,6 +1082,45 @@ impl App {
     fn toggle_wrap(&self) {
         self.wrap.set(!self.wrap.get());
         self.sci.call(SCI_SETWRAPMODE, if self.wrap.get() { SC_WRAP_WORD } else { 0 }, 0);
+        self.minimap.sci.call(SCI_SETWRAPMODE, if self.wrap.get() { SC_WRAP_WORD } else { 0 }, 0);
+    }
+
+    fn toggle_minimap(&self) {
+        self.minimap_on.set(!self.minimap_on.get());
+        self.layout();
+        self.minimap.sync(&self.sci);
+    }
+
+    /// Larghezza a destra dell'editor: striscia delle modifiche e minimap.
+    fn right_strip(&self) -> i32 {
+        self.scale(RULER) + if self.minimap_on.get() { self.scale(minimap::WIDTH) } else { 0 }
+    }
+
+    fn ruler_rect(&self) -> RECT {
+        let client = self.client_rect();
+        let top = self.scale(TAB_HEIGHT) + self.scale(self.find.height());
+        let right = client.right - if self.minimap_on.get() { self.scale(minimap::WIDTH) } else { 0 };
+        RECT { left: right - self.scale(RULER), top, right, bottom: self.panel_rect().top }
+    }
+
+    /// Porta la riga del documento al centro dell'editor, senza spostare il cursore.
+    fn center_line(&self, line: usize) {
+        let visible = self.sci.call(SCI_VISIBLEFROMDOCLINE, line, 0);
+        let half = self.sci.call(SCI_LINESONSCREEN, 0, 0) / 2;
+        self.sci.call(SCI_SETFIRSTVISIBLELINE, (visible - half).max(0) as usize, 0);
+    }
+
+    unsafe fn paint_ruler(&self, dc: HDC) {
+        let rect = self.ruler_rect();
+        fill(dc, &rect, self.palette.editor);
+        fill(dc, &RECT { right: rect.left + 1, ..rect }, self.palette.border);
+        let total = self.sci.call(SCI_GETLINECOUNT, 0, 0).max(1) as i32;
+        let height = rect.bottom - rect.top;
+        let mark = self.scale(3).max(2);
+        for &(line, color) in self.ruler.borrow().iter() {
+            let top = rect.top + (line as i32 * height / total).min(height - mark);
+            fill(dc, &RECT { left: rect.left + self.scale(3), top, right: rect.right - self.scale(2), bottom: top + mark }, color);
+        }
     }
 
     fn open_find(&self, replacing: bool) {
@@ -1265,7 +1321,10 @@ impl App {
         unsafe {
             ShowWindow(self.explorer.hwnd(), if self.explorer_visible.get() { SW_SHOW } else { SW_HIDE });
             MoveWindow(self.explorer.hwnd(), self.bar_width(), tab, self.explorer_edge() - self.bar_width(), (bottom - tab).max(0), 1);
-            MoveWindow(self.sci.hwnd, left, tab + find_height, (client.right - left).max(0), (bottom - tab - find_height).max(0), 1);
+            MoveWindow(self.sci.hwnd, left, tab + find_height, (client.right - left - self.right_strip()).max(0), (bottom - tab - find_height).max(0), 1);
+            let minimap_width = self.scale(minimap::WIDTH);
+            ShowWindow(self.minimap.sci.hwnd, if self.minimap_on.get() { SW_SHOW } else { SW_HIDE });
+            MoveWindow(self.minimap.sci.hwnd, client.right - minimap_width, tab + find_height, minimap_width, (bottom - tab - find_height).max(0), 1);
             InvalidateRect(self.hwnd, std::ptr::null(), 0);
         }
         self.find.layout(RECT { left, top: tab, right: client.right, bottom: tab + find_height }, |value| self.scale(value));
@@ -1323,6 +1382,9 @@ impl App {
             }
             SCN_UPDATEUI => {
                 self.match_braces();
+                if self.minimap_on.get() {
+                    self.minimap.sync(&self.sci);
+                }
                 // SAFETY: finestra valida.
                 unsafe { InvalidateRect(self.hwnd, &self.status_rect(), 0) };
             }
@@ -1397,6 +1459,7 @@ impl App {
                 self.find.paint(dc, self.find_rect(), &self.palette, |value| self.scale(value));
             }
             self.panel.paint(dc, self.panel_rect(), &self.palette, |value| self.scale(value));
+            self.paint_ruler(dc);
             self.paint_status(dc);
             BitBlt(target, 0, 0, client.right, client.bottom, dc, 0, 0, SRCCOPY);
             SelectObject(dc, previous_font);
@@ -1470,14 +1533,18 @@ impl App {
         let line = self.sci.call(SCI_LINEFROMPOSITION, caret as usize, 0) + 1;
         let column = self.sci.call(SCI_GETCOLUMN, caret as usize, 0) + 1;
         let padding = self.scale(TAB_PADDING);
-        // Da destra a sinistra: linguaggio, encoding, fine riga (cliccabile), posizione.
-        let segments = [doc.language.name.to_string(), format!("{}{}", doc.encoding, if doc.bom { " BOM" } else { "" }), eol_label(doc.eol).to_string(), format!("Ln {line}, Col {column}")];
+        // Da destra a sinistra: minimap (cliccabile), linguaggio, encoding, fine riga (cliccabile), posizione.
+        let segments = ["Minimap".to_string(), doc.language.name.to_string(), format!("{}{}", doc.encoding, if doc.bom { " BOM" } else { "" }), eol_label(doc.eol).to_string(), format!("Ln {line}, Col {column}")];
         let mut right = rect.right - padding;
         for (index, segment) in segments.iter().enumerate() {
             let width = text_width(dc, segment);
             let area = RECT { left: right - width, right, ..rect };
-            text(dc, segment, &area, palette.muted, DT_LEFT);
-            if index == 2 {
+            let on = index == 0 && self.minimap_on.get();
+            text(dc, segment, &area, if on { palette.accent } else { palette.muted }, DT_LEFT);
+            if index == 0 {
+                self.minimap_rect.set(RECT { left: area.left - padding / 2, right: area.right + padding / 2, ..area });
+            }
+            if index == 3 {
                 self.eol_rect.set(RECT { left: area.left - padding / 2, right: area.right + padding / 2, ..area });
             }
             right -= width + padding * 2;
@@ -1524,6 +1591,9 @@ impl App {
     /// Marker nel gutter: righe aggiunte, modificate o tolte rispetto a HEAD. Il contenuto di HEAD si chiede una volta e resta in cache.
     fn update_markers(&self) {
         self.sci.call(SCI_MARKERDELETEALL, usize::MAX, 0);
+        self.ruler.borrow_mut().clear();
+        // SAFETY: finestra valida; la striscia si ridisegna con i marker.
+        unsafe { InvalidateRect(self.hwnd, &self.ruler_rect(), 0) };
         let Some(path) = self.active_path() else { return };
         let root = repo_of(&self.repos.borrow(), &path).map(|repo| repo.root.clone());
         let Some(root) = root else { return };
@@ -1537,9 +1607,12 @@ impl App {
         };
         let Some(head) = head else { return };
         let changes = line_changes(&head, &self.sci.text());
-        for (lines, marker) in [(changes.added, MARKER_ADDED), (changes.modified, MARKER_MODIFIED), (changes.deleted, MARKER_DELETED)] {
+        let palette = &self.palette;
+        let mut ruler = self.ruler.borrow_mut();
+        for (lines, marker, color) in [(changes.added, MARKER_ADDED, palette.git_added), (changes.modified, MARKER_MODIFIED, palette.git_modified), (changes.deleted, MARKER_DELETED, palette.danger)] {
             for line in lines {
                 self.sci.call(SCI_MARKERADD, line, marker as isize);
+                ruler.push((line, color));
             }
         }
     }
@@ -2314,6 +2387,15 @@ impl App {
         if contains(&self.eol_rect.get(), x, y) {
             return self.toggle_eol();
         }
+        if contains(&self.minimap_rect.get(), x, y) {
+            return self.toggle_minimap();
+        }
+        let ruler = self.ruler_rect();
+        if contains(&ruler, x, y) {
+            let total = self.sci.call(SCI_GETLINECOUNT, 0, 0).max(1);
+            let line = (y - ruler.top) as isize * total / (ruler.bottom - ruler.top).max(1) as isize;
+            return self.center_line(line.clamp(0, total - 1) as usize);
+        }
         if contains(&self.vcs_rect.get(), x, y) {
             return self.vcs_menu();
         }
@@ -2515,6 +2597,7 @@ impl App {
             window,
             maximized,
             wrap: self.wrap.get(),
+            minimap: self.minimap_on.get(),
             ..Session::default()
         }
         .save();
@@ -2528,7 +2611,7 @@ impl App {
             ScreenToClient(self.hwnd, &mut point);
         }
         let over_splitter = self.splitter_rect().is_some_and(|splitter| contains(&splitter, point.x, point.y));
-        let clickable = contains(&self.eol_rect.get(), point.x, point.y) || contains(&self.vcs_rect.get(), point.x, point.y) || contains(&self.settings_rect.get(), point.x, point.y) || self.project_at(point.x, point.y).is_some() || (self.explorer_visible.get() && contains(&self.header_rect(), point.x, point.y));
+        let clickable = contains(&self.eol_rect.get(), point.x, point.y) || contains(&self.minimap_rect.get(), point.x, point.y) || contains(&self.vcs_rect.get(), point.x, point.y) || contains(&self.settings_rect.get(), point.x, point.y) || self.project_at(point.x, point.y).is_some() || (self.explorer_visible.get() && contains(&self.header_rect(), point.x, point.y));
         let over_panel = self.over_panel_splitter(point.y) || self.dragging_panel.get();
         let cursor = match (over_splitter || self.dragging.get(), clickable) {
             _ if over_panel => IDC_SIZENS,
@@ -2698,6 +2781,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             let mut problems = Vec::new();
             app.with_plugins(|plugins, sci, settings, path| problems = plugins.on_event(sci, settings, path));
             app.panel.append_console(&problems);
+            0
+        }
+        WM_MINIMAP_LINE => {
+            app.center_line(wparam);
             0
         }
         WM_FILES_CHANGED => {

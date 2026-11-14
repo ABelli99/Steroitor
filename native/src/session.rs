@@ -49,6 +49,7 @@ pub struct Session {
     pub window: Option<[i32; 4]>,
     pub maximized: bool,
     pub wrap: bool,
+    pub minimap: bool,
 }
 
 fn session_file() -> Option<PathBuf> {

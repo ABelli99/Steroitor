@@ -10,6 +10,7 @@ mod git;
 mod hunks;
 mod lang;
 mod list;
+mod minimap;
 mod paint;
 mod panel;
 mod plugins;
