@@ -3,7 +3,7 @@ use std::path::Path;
 
 use super::parse::{parse_blame, parse_log, parse_stashes, BlameLine, Commit, Operation, Stash, LOG_FORMAT, STASH_FORMAT};
 use super::runner::{repo_relative, Git};
-use crate::files::decode;
+use crate::text::decode;
 
 #[derive(Deserialize, Default, Debug)]
 #[serde(rename_all = "camelCase")]

@@ -30,7 +30,9 @@ mod tests {
 
         let target = sandbox.0.join("nested").join("copy").to_string_lossy().into_owned();
         git.clone_repo(&source, &target).unwrap();
-        assert_eq!(std::fs::read_to_string(std::path::Path::new(&target).join("a.txt")).unwrap(), "a\n");
+        // Con core.autocrlf=true (default di Git for Windows) il checkout scrive CRLF: conta il contenuto.
+        let content = std::fs::read_to_string(std::path::Path::new(&target).join("a.txt")).unwrap();
+        assert_eq!(content.replace("\r\n", "\n"), "a\n");
         assert_eq!(git.repo_root(&target).unwrap().map(|root| root.to_lowercase()), Some(target.to_lowercase()));
     }
 

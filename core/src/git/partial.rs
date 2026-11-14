@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use super::runner::{repo_relative, Git};
-use crate::files::decode;
+use crate::text::decode;
 
 const DEFAULT_MODE: &str = "100644";
 

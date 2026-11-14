@@ -2,7 +2,7 @@ use std::path::Path;
 
 use super::parse::{parse_branches, parse_status, Branch, RepoStatus, BRANCH_FORMAT};
 use super::runner::{repo_relative, to_native, Git};
-use crate::files::{decode, TextFile};
+use crate::text::{decode, TextFile};
 
 const DEFAULT_REMOTE: &str = "origin";
 

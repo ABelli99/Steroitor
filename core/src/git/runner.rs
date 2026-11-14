@@ -2,45 +2,22 @@ use serde::Serialize;
 use std::path::{Path, MAIN_SEPARATOR};
 use std::io::Write;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::RwLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 const CONSOLE_OUTPUT_LIMIT: usize = 16 * 1024;
-const SETTINGS_FILE: &str = "settings.json";
-
-/// Percorso dell'eseguibile git: `gitPath` in settings.json, altrimenti `git` dal PATH.
-pub struct GitConfig {
-    executable: RwLock<String>,
-    next_id: AtomicU64,
-}
-
-impl GitConfig {
-    pub fn load(app: &AppHandle) -> Self {
-        let configured = app
-            .path()
-            .app_data_dir()
-            .ok()
-            .and_then(|dir| std::fs::read_to_string(dir.join(SETTINGS_FILE)).ok())
-            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-            .and_then(|settings| settings.get("gitPath")?.as_str().map(str::to_owned));
-        Self { executable: RwLock::new(configured.unwrap_or_else(|| "git".into())), next_id: AtomicU64::new(1) }
-    }
-}
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandLog {
-    id: u64,
-    command: String,
-    cwd: String,
-    code: Option<i32>,
-    duration_ms: u128,
-    started_at: u128,
-    stdout: String,
-    stderr: String,
-    background: bool,
+    pub id: u64,
+    pub command: String,
+    pub cwd: String,
+    pub code: Option<i32>,
+    pub duration_ms: u128,
+    pub started_at: u128,
+    pub stdout: String,
+    pub stderr: String,
+    pub background: bool,
 }
 
 pub struct Output {
@@ -55,7 +32,7 @@ impl Output {
     }
 }
 
-type Sink = Box<dyn Fn(CommandLog) + Send>;
+pub type Sink = Box<dyn Fn(CommandLog) + Send>;
 
 /// Esegue l'eseguibile git reale e notifica ogni comando al `sink` (la Console).
 pub struct Git {
@@ -66,21 +43,6 @@ pub struct Git {
 impl Git {
     pub fn new(executable: impl Into<String>, sink: Sink) -> Self {
         Self { executable: executable.into(), sink }
-    }
-
-    /// I comandi finiscono nella Console della sola finestra che li ha lanciati.
-    pub fn for_window(window: &WebviewWindow) -> Self {
-        let app = window.app_handle().clone();
-        let config = app.state::<GitConfig>();
-        let executable = config.executable.read().map(|value| value.clone()).unwrap_or_else(|_| "git".into());
-        let label = window.label().to_owned();
-        Self::new(
-            executable,
-            Box::new(move |mut log| {
-                log.id = app.state::<GitConfig>().next_id.fetch_add(1, Ordering::Relaxed);
-                let _ = app.emit_to(label.as_str(), "git-command", log);
-            }),
-        )
     }
 
     pub fn run(&self, cwd: &Path, args: &[&str], background: bool) -> Result<Output, String> {

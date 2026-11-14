@@ -1,14 +1,14 @@
 use tauri::WebviewWindow;
 
-use super::changes::{ChangedFile, FileRevision};
-use super::history::{ConflictVersions, LogFilter, ResetMode};
-use super::parse::{BlameLine, Branch, Commit, RepoStatus, Stash};
-use super::runner::Git;
+use steroitor_core::git::changes::{ChangedFile, FileRevision};
+use steroitor_core::git::history::{ConflictVersions, LogFilter, ResetMode};
+use steroitor_core::git::parse::{BlameLine, Branch, Commit, RepoStatus, Stash};
+use steroitor_core::git::runner::Git;
 use crate::files::TextFile;
 
 /// Esegue un'operazione git fuori dal thread dei comandi Tauri.
 async fn with_git<T: Send + 'static>(window: WebviewWindow, task: impl FnOnce(Git) -> Result<T, String> + Send + 'static) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(move || task(Git::for_window(&window))).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || task(super::git_for(&window))).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

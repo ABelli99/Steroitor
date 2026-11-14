@@ -6,7 +6,7 @@ use std::path::Path;
 
 use super::parse::{parse_log, Commit, LOG_FORMAT};
 use super::runner::{native_path, repo_relative, Git};
-use crate::files::decode;
+use crate::text::decode;
 
 #[derive(Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
