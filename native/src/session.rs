@@ -58,21 +58,29 @@ impl Default for EditorStyle {
     }
 }
 
+/// Le impostazioni della versione Tauri che valgono anche qui.
 #[derive(Deserialize, Default)]
-#[serde(default)]
-struct Settings {
-    editor: EditorStyle,
+#[serde(default, rename_all = "camelCase")]
+pub struct Settings {
+    pub editor: EditorStyle,
+    /// "merge" (default) o "rebase", per il pull.
+    pub update_method: String,
 }
 
-impl EditorStyle {
-    pub fn load() -> EditorStyle {
+impl Settings {
+    pub fn load() -> Settings {
         data_dir()
             .and_then(|dir| std::fs::read_to_string(dir.join("preferences").join("settings.json")).ok())
-            .and_then(|text| serde_json::from_str::<Settings>(&text).ok())
-            .map(|settings| settings.editor)
+            .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or_default()
     }
 
+    pub fn pull_rebase(&self) -> bool {
+        self.update_method == "rebase"
+    }
+}
+
+impl EditorStyle {
     /// Dimensione in centesimi di punto per SCI_STYLESETSIZEFRACTIONAL: i px della versione web sono a 96 DPI.
     pub fn font_size_fraction(&self) -> isize {
         (self.font_size.clamp(6.0, 72.0) * 75.0).round() as isize
@@ -85,7 +93,8 @@ mod tests {
 
     #[test]
     fn reads_partial_settings_with_defaults() {
-        let settings: Settings = serde_json::from_str(r#"{"editor":{"fontSize":16,"useTabs":true},"other":1}"#).unwrap();
+        let settings: Settings = serde_json::from_str(r#"{"editor":{"fontSize":16,"useTabs":true},"updateMethod":"rebase","other":1}"#).unwrap();
+        assert!(settings.pull_rebase());
         assert_eq!(settings.editor.font_size, 16.0);
         assert!(settings.editor.use_tabs);
         assert_eq!(settings.editor.tab_size, 4);

@@ -123,6 +123,11 @@ impl Explorer {
         (index < self.nodes.borrow().len()).then_some(index)
     }
 
+    /// Percorso della voce con questo lParam (le notifiche di disegno riportano il lParam, non l'elemento).
+    pub fn path_of_param(&self, param: LPARAM) -> Option<PathBuf> {
+        self.nodes.borrow().get(param as usize).map(|node| node.path.clone())
+    }
+
     fn load(&self, index: usize) {
         let (item, path, loaded) = {
             let node = &self.nodes.borrow()[index];

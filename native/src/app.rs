@@ -1,6 +1,7 @@
 //! Finestra principale: explorer a sinistra, tab, barra di ricerca ed editor Scintilla a destra, status bar in basso.
 //! Tab, intestazioni e status bar sono disegnate a mano; c'è un documento Scintilla per tab.
 use std::cell::{Cell, OnceCell, RefCell};
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -12,21 +13,24 @@ use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RE
 use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
-use windows_sys::Win32::UI::Controls::{SetWindowTheme, NMHDR};
+use windows_sys::Win32::UI::Controls::{SetWindowTheme, CDDS_ITEMPREPAINT, CDDS_PREPAINT, CDRF_DODEFAULT, CDRF_NOTIFYITEMDRAW, NMHDR, NMTVCUSTOMDRAW, NM_CUSTOMDRAW};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
+use steroitor_core::git::parse::FileStatus;
 use steroitor_core::text::{decode, encode};
 
 use crate::dialogs::{message_box, open_files, pick_folder, save_file, wide};
 use crate::explorer::{popup_menu, Action, Explorer};
 use crate::find::{self, FindBar};
+use crate::git::{line_changes, repo_of, Event, FileColors, Repo, Worker, WM_COMMAND_LOGGED, WM_GIT_EVENT};
 use crate::lang::{self, Language};
 use crate::paint::{fill, text, text_width};
+use crate::prompt::prompt;
 use crate::sci::*;
-use crate::session::{EditorStyle, Session};
+use crate::session::{Session, Settings};
 use crate::theme::{system_palette, Palette};
 
 extern "C" {
@@ -50,6 +54,18 @@ const EDITOR_MIN: i32 = 200;
 const WM_FILES_CHANGED: u32 = WM_APP + 1;
 const MENU_OPEN_FOLDER: usize = 1;
 const MENU_CLOSE_FOLDER: usize = 2;
+const MARKER_TIMER: usize = 1;
+const MARKER_DELAY_MS: u32 = 300;
+const GIT_MARGIN: usize = 1;
+const MARKER_ADDED: usize = 0;
+const MARKER_MODIFIED: usize = 1;
+const MARKER_DELETED: usize = 2;
+const VCS_PULL: usize = 1;
+const VCS_PUSH: usize = 2;
+const VCS_FETCH: usize = 3;
+const VCS_NEW_BRANCH: usize = 4;
+const VCS_CHECKOUT: usize = 1000;
+const VCS_MERGE: usize = 3000;
 
 struct Doc {
     pointer: isize,
@@ -89,7 +105,14 @@ pub struct App {
     explorer: Explorer,
     find: FindBar,
     palette: Palette,
-    style: EditorStyle,
+    settings: Settings,
+    worker: Worker,
+    repos: RefCell<Vec<Repo>>,
+    colors: RefCell<FileColors>,
+    /// Contenuto in HEAD dei file aperti (None = non tracciato), per i marker nel gutter.
+    heads: RefCell<HashMap<String, Option<String>>>,
+    vcs_rect: Cell<RECT>,
+    head_requests: RefCell<std::collections::HashSet<String>>,
     docs: RefCell<Vec<Doc>>,
     active: Cell<usize>,
     next_untitled: Cell<u32>,
@@ -102,7 +125,8 @@ pub struct App {
     dragging: Cell<bool>,
     wrap: Cell<bool>,
     watcher: RefCell<Option<Debouncer<RecommendedWatcher>>>,
-    changes: Arc<Mutex<Vec<String>>>,
+    /// Dal watcher: cartelle cambiate e repository con metadati Git cambiati.
+    changes: Arc<Mutex<(Vec<String>, Vec<PathBuf>)>>,
 }
 
 thread_local! {
@@ -210,7 +234,13 @@ impl App {
             explorer: Explorer::create(hwnd, instance, &palette),
             find: FindBar::create(hwnd, instance),
             palette,
-            style: EditorStyle::load(),
+            settings: Settings::load(),
+            worker: Worker::new(hwnd),
+            repos: RefCell::new(Vec::new()),
+            colors: RefCell::new(FileColors::default()),
+            heads: RefCell::new(HashMap::new()),
+            vcs_rect: Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }),
+            head_requests: RefCell::default(),
             docs: RefCell::new(Vec::new()),
             active: Cell::new(0),
             next_untitled: Cell::new(1),
@@ -224,7 +254,7 @@ impl App {
             dragging: Cell::new(false),
             wrap: Cell::new(session.wrap),
             watcher: RefCell::new(None),
-            changes: Arc::new(Mutex::new(Vec::new())),
+            changes: Arc::default(),
         }));
         APP.with(|cell| cell.set(app).ok());
         app.configure_editor();
@@ -290,7 +320,14 @@ impl App {
         sci.call(SCI_SETINDENTATIONGUIDES, SC_IV_LOOKBOTH, 0);
         sci.call(SCI_SETMARGINTYPEN, 0, SC_MARGIN_NUMBER);
         sci.call(SCI_SETMARGINLEFT, 0, 4);
-        sci.call(SCI_SETMODEVENTMASK, 0, 0);
+        sci.call(SCI_SETMODEVENTMASK, (SC_MOD_INSERTTEXT | SC_MOD_DELETETEXT) as usize, 0);
+        sci.call(SCI_SETMARGINTYPEN, GIT_MARGIN, SC_MARGIN_SYMBOL);
+        sci.call(SCI_SETMARGINMASKN, GIT_MARGIN, 0b111);
+        sci.call(SCI_SETMARGINWIDTHN, GIT_MARGIN, self.scale(4) as isize);
+        for (marker, color) in [(MARKER_ADDED, self.palette.git_added), (MARKER_MODIFIED, self.palette.git_modified), (MARKER_DELETED, self.palette.git_ignored)] {
+            sci.call(SCI_MARKERDEFINE, marker, SC_MARK_LEFTRECT);
+            sci.call(SCI_MARKERSETBACK, marker, color as isize);
+        }
         sci.call(SCI_SETWRAPMODE, if self.wrap.get() { SC_WRAP_WORD } else { 0 }, 0);
         let opaque = |color: u32| (color | 0xFF00_0000) as isize;
         let palette = &self.palette;
@@ -300,6 +337,7 @@ impl App {
         sci.call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_SELECTION_ADDITIONAL_BACK, opaque(palette.selection));
         sci.call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_SELECTION_INACTIVE_BACK, opaque(palette.selection));
         sci.call(SCI_SETMARGINBACKN, 0, palette.editor as isize);
+        sci.call(SCI_SETMARGINBACKN, GIT_MARGIN, palette.editor as isize);
         sci.call(SCI_INDICSETSTYLE, find::INDICATOR, INDIC_ROUNDBOX);
         sci.call(SCI_INDICSETFORE, find::INDICATOR, palette.accent as isize);
         sci.call(SCI_INDICSETALPHA, find::INDICATOR, 60);
@@ -312,7 +350,7 @@ impl App {
         let sci = &self.sci;
         let palette = &self.palette;
         sci.call_str(SCI_STYLESETFONT, STYLE_DEFAULT, "Cascadia Mono");
-        sci.call(SCI_STYLESETSIZEFRACTIONAL, STYLE_DEFAULT, self.style.font_size_fraction());
+        sci.call(SCI_STYLESETSIZEFRACTIONAL, STYLE_DEFAULT, self.settings.editor.font_size_fraction());
         sci.call(SCI_STYLESETFORE, STYLE_DEFAULT, palette.fg as isize);
         sci.call(SCI_STYLESETBACK, STYLE_DEFAULT, palette.editor as isize);
         sci.call(SCI_STYLECLEARALL, 0, 0);
@@ -365,13 +403,14 @@ impl App {
         self.active.set(index);
         self.sci.call(SCI_SETCODEPAGE, SC_CP_UTF8, 0);
         self.sci.call(SCI_SETEOLMODE, eol, 0);
-        self.sci.call(SCI_SETTABWIDTH, self.style.tab_size, 0);
-        self.sci.call(SCI_SETINDENT, self.style.indent_size, 0);
-        self.sci.call(SCI_SETUSETABS, self.style.use_tabs.into(), 0);
+        self.sci.call(SCI_SETTABWIDTH, self.settings.editor.tab_size, 0);
+        self.sci.call(SCI_SETINDENT, self.settings.editor.indent_size, 0);
+        self.sci.call(SCI_SETUSETABS, self.settings.editor.use_tabs.into(), 0);
         self.set_language(language);
         self.apply_styles(language);
         self.sci.set_text(text.as_bytes());
         self.refresh();
+        self.update_markers();
     }
 
     pub fn new_document(&self) {
@@ -454,6 +493,7 @@ impl App {
         if self.find.is_open() {
             self.find.highlight(&self.sci);
         }
+        self.update_markers();
         self.refresh();
         self.focus_editor();
     }
@@ -558,12 +598,20 @@ impl App {
     fn set_folder(&self, folder: Option<PathBuf>) {
         self.watcher.borrow_mut().take();
         self.explorer.set_root(folder.as_deref());
+        let roots = folder.as_deref().map(steroitor_core::repos::find_repos).unwrap_or_default();
+        *self.repos.borrow_mut() = roots.iter().map(|root| Repo { root: root.clone(), status: None, branches: Vec::new() }).collect();
+        *self.colors.borrow_mut() = FileColors::default();
+        self.heads.borrow_mut().clear();
+        for root in &roots {
+            self.worker.refresh(root);
+        }
         if let Some(folder) = &folder {
             let changes = Arc::clone(&self.changes);
             let target = self.hwnd as usize;
-            let watcher = steroitor_core::watch::watch(folder, move |_, dirs| {
+            let watcher = steroitor_core::watch::watch(folder, move |repos, dirs| {
                 if let Ok(mut pending) = changes.lock() {
-                    pending.extend(dirs);
+                    pending.0.extend(dirs);
+                    pending.1.extend(repos);
                 }
                 // SAFETY: PostMessageW è sicura da qualsiasi thread; se la finestra non esiste più non fa nulla.
                 unsafe { PostMessageW(target as HWND, WM_FILES_CHANGED, 0, 0) };
@@ -582,7 +630,18 @@ impl App {
     }
 
     fn on_files_changed(&self) {
-        let dirs: Vec<String> = self.changes.lock().map(|mut pending| std::mem::take(&mut *pending)).unwrap_or_default();
+        let (dirs, git_dirs) = self.changes.lock().map(|mut pending| std::mem::take(&mut *pending)).unwrap_or_default();
+        let touched: Vec<PathBuf> = {
+            let repos = self.repos.borrow();
+            let changed = dirs.iter().map(PathBuf::from).chain(git_dirs);
+            let mut roots: Vec<PathBuf> = changed.filter_map(|path| repo_of(&repos, &path).map(|repo| repo.root.clone())).collect();
+            roots.sort();
+            roots.dedup();
+            roots
+        };
+        for root in touched {
+            self.worker.refresh(&root);
+        }
         for dir in &dirs {
             self.explorer.refresh_dir(Path::new(dir));
         }
@@ -702,6 +761,7 @@ impl App {
             match key {
                 0x31 => self.toggle_explorer(),
                 0x5A => self.toggle_wrap(),
+                0xC0 => self.vcs_menu(),
                 _ => return false,
             }
             return true;
@@ -754,6 +814,7 @@ impl App {
             (VK_TAB, true) => self.cycle(-1),
             (0x46, false) => self.open_find(false),
             (0x48, false) => self.open_find(true),
+            (0x4B, true) => self.push(),
             _ => return false,
         }
         true
@@ -817,6 +878,10 @@ impl App {
                     doc.dirty = notification.code == SCN_SAVEPOINTLEFT;
                 }
                 self.refresh();
+            }
+            SCN_MODIFIED => {
+                // SAFETY: timer della finestra principale; se esiste già viene solo riavviato.
+                unsafe { SetTimer(self.hwnd, MARKER_TIMER, MARKER_DELAY_MS, None) };
             }
             SCN_UPDATEUI => {
                 self.match_braces();
@@ -972,9 +1037,202 @@ impl App {
             }
             right -= width + padding * 2;
         }
+        let mut left_edge = rect.left + padding;
+        let branch = {
+            let repos = self.repos.borrow();
+            let repo = doc.path.as_deref().and_then(|path| repo_of(&repos, path)).or_else(|| repos.first());
+            repo.and_then(|repo| repo.status.as_ref()).map(|status| {
+                let branch = &status.branch;
+                let name = branch.head.clone().unwrap_or_else(|| format!("HEAD staccato ({})", branch.oid.as_deref().and_then(|oid| oid.get(..7)).unwrap_or("?")));
+                let ahead = if branch.ahead > 0 { format!(" ↑{}", branch.ahead) } else { String::new() };
+                let behind = if branch.behind > 0 { format!(" ↓{}", branch.behind) } else { String::new() };
+                format!("⎇ {name}{ahead}{behind}")
+            })
+        };
+        match branch {
+            Some(label) => {
+                let width = text_width(dc, &label);
+                let area = RECT { left: left_edge, right: left_edge + width, ..rect };
+                text(dc, &label, &area, palette.fg, DT_LEFT);
+                self.vcs_rect.set(RECT { left: area.left - padding / 2, right: area.right + padding / 2, ..area });
+                left_edge = area.right + padding * 2;
+            }
+            None => self.vcs_rect.set(RECT { left: 0, top: 0, right: 0, bottom: 0 }),
+        }
         let path = doc.path.as_ref().map_or_else(String::new, |path| path.display().to_string());
-        let left = RECT { left: rect.left + padding, right, ..rect };
+        let left = RECT { left: left_edge, right, ..rect };
         text(dc, &path, &left, palette.muted, DT_LEFT | DT_PATH_ELLIPSIS);
+    }
+
+    fn active_path(&self) -> Option<PathBuf> {
+        self.docs.borrow().get(self.active.get()).and_then(|doc| doc.path.clone())
+    }
+
+    /// Repository del file attivo, altrimenti il primo della cartella.
+    fn active_repo_root(&self) -> Option<PathBuf> {
+        let repos = self.repos.borrow();
+        let of_file = self.active_path().and_then(|path| repo_of(&repos, &path).map(|repo| repo.root.clone()));
+        of_file.or_else(|| repos.first().map(|repo| repo.root.clone()))
+    }
+
+    /// Marker nel gutter: righe aggiunte, modificate o tolte rispetto a HEAD. Il contenuto di HEAD si chiede una volta e resta in cache.
+    fn update_markers(&self) {
+        self.sci.call(SCI_MARKERDELETEALL, usize::MAX, 0);
+        let Some(path) = self.active_path() else { return };
+        let root = repo_of(&self.repos.borrow(), &path).map(|repo| repo.root.clone());
+        let Some(root) = root else { return };
+        let key = crate::git::key(&path);
+        let head = self.heads.borrow().get(&key).cloned();
+        let Some(head) = head else {
+            if self.head_requests.borrow_mut().insert(key) {
+                self.worker.head(&root, &path);
+            }
+            return;
+        };
+        let Some(head) = head else { return };
+        let changes = line_changes(&head, &self.sci.text());
+        for (lines, marker) in [(changes.added, MARKER_ADDED), (changes.modified, MARKER_MODIFIED), (changes.deleted, MARKER_DELETED)] {
+            for line in lines {
+                self.sci.call(SCI_MARKERADD, line, marker as isize);
+            }
+        }
+    }
+
+    fn on_git_events(&self) {
+        for event in self.worker.take() {
+            match event {
+                Event::Status(root, Ok(status)) => {
+                    let head_moved = {
+                        let mut repos = self.repos.borrow_mut();
+                        let Some(repo) = repos.iter_mut().find(|repo| repo.root == root) else { continue };
+                        let moved = repo.status.as_ref().map(|old| old.branch.oid.clone()) != Some(status.branch.oid.clone());
+                        repo.status = Some(status);
+                        moved
+                    };
+                    *self.colors.borrow_mut() = FileColors::build(&self.repos.borrow());
+                    if head_moved {
+                        // Commit, checkout, reset: il contenuto in HEAD dei file di questo repository va riletto.
+                        let prefix = crate::git::key(&root);
+                        self.heads.borrow_mut().retain(|key, _| !key.starts_with(&prefix));
+                        self.update_markers();
+                    }
+                    // SAFETY: controllo valido; ridisegno per i nuovi colori.
+                    unsafe { InvalidateRect(self.explorer.hwnd, std::ptr::null(), 0) };
+                }
+                Event::Status(_, Err(_)) => {}
+                Event::Branches(root, branches) => {
+                    if let Some(repo) = self.repos.borrow_mut().iter_mut().find(|repo| repo.root == root) {
+                        repo.branches = branches;
+                    }
+                }
+                Event::Head(file, content) => {
+                    let key = crate::git::key(&file);
+                    self.head_requests.borrow_mut().remove(&key);
+                    self.heads.borrow_mut().insert(key, content);
+                    if self.active_path().as_deref() == Some(file.as_path()) {
+                        self.update_markers();
+                    }
+                }
+                Event::Finished(root, result) => {
+                    if let Err(error) = result {
+                        message_box(self.hwnd, &error, MB_ICONERROR);
+                    }
+                    self.worker.refresh(&root);
+                }
+            }
+        }
+        self.invalidate();
+    }
+
+    fn git_color(&self, param: LPARAM) -> Option<u32> {
+        let path = self.explorer.path_of_param(param)?;
+        let palette = &self.palette;
+        Some(match self.colors.borrow().of(&path)? {
+            FileStatus::Added => palette.git_added,
+            FileStatus::Modified | FileStatus::Deleted => palette.git_modified,
+            FileStatus::Untracked => palette.git_untracked,
+            FileStatus::Ignored => palette.git_ignored,
+            FileStatus::Conflict => palette.danger,
+        })
+    }
+
+    fn push(&self) {
+        if let Some(root) = self.active_repo_root() {
+            self.worker.run(&root, |git, root| git.push(root));
+        }
+    }
+
+    /// Menu VCS (clic sul branch nella status bar o Alt+`): pull, push, fetch, nuovo branch, checkout, merge.
+    fn vcs_menu(&self) {
+        let Some(root) = self.active_repo_root() else { return };
+        let branches: Vec<(String, bool, bool)> = self
+            .repos
+            .borrow()
+            .iter()
+            .find(|repo| repo.root == root)
+            .map(|repo| repo.branches.iter().map(|branch| (branch.name.clone(), branch.remote, branch.current)).collect())
+            .unwrap_or_default();
+        let anchor = self.vcs_rect.get();
+        // SAFETY: menu creato, mostrato e distrutto qui (DestroyMenu distrugge anche i sottomenu); le stringhe vivono per tutta la chiamata.
+        let command = unsafe {
+            let menu = CreatePopupMenu();
+            let labels: Vec<Vec<u16>> = branches.iter().map(|(name, _, _)| wide(name)).collect();
+            let fixed: Vec<(usize, Vec<u16>)> = [(VCS_PULL, "Aggiorna (pull)"), (VCS_PUSH, "Push\tCtrl+Shift+K"), (VCS_FETCH, "Fetch"), (VCS_NEW_BRANCH, "Nuovo branch…")]
+                .iter()
+                .map(|(id, label)| (*id, wide(label)))
+                .collect();
+            for (index, (id, label)) in fixed.iter().enumerate() {
+                if index == 3 {
+                    AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+                }
+                AppendMenuW(menu, MF_STRING, *id, label.as_ptr());
+            }
+            let checkout = CreatePopupMenu();
+            let merge = CreatePopupMenu();
+            for (index, ((_, remote, current), label)) in branches.iter().zip(&labels).enumerate() {
+                let flags = if *current { MF_STRING | MF_CHECKED | MF_GRAYED } else { MF_STRING };
+                if *remote && index > 0 && !branches[index - 1].1 {
+                    AppendMenuW(checkout, MF_SEPARATOR, 0, std::ptr::null());
+                }
+                AppendMenuW(checkout, flags, VCS_CHECKOUT + index, label.as_ptr());
+                if !current {
+                    AppendMenuW(merge, MF_STRING, VCS_MERGE + index, label.as_ptr());
+                }
+            }
+            let (checkout_label, merge_label) = (wide("Checkout"), wide("Merge nel branch corrente"));
+            AppendMenuW(menu, MF_POPUP, checkout as usize, checkout_label.as_ptr());
+            AppendMenuW(menu, MF_POPUP, merge as usize, merge_label.as_ptr());
+            let mut point = POINT { x: anchor.left, y: anchor.top };
+            ClientToScreen(self.hwnd, &mut point);
+            let command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_BOTTOMALIGN | TPM_LEFTALIGN, point.x, point.y, 0, self.hwnd, std::ptr::null());
+            DestroyMenu(menu);
+            command as usize
+        };
+        let branch = |offset: usize| branches.get(command - offset).cloned();
+        match command {
+            VCS_PULL => {
+                let rebase = self.settings.pull_rebase();
+                self.worker.run(&root, move |git, root| git.pull(root, rebase));
+            }
+            VCS_PUSH => self.push(),
+            VCS_FETCH => self.worker.run(&root, |git, root| git.fetch(root)),
+            VCS_NEW_BRANCH => {
+                if let Some(name) = prompt(self.hwnd, &self.palette, self.font.get(), "Nuovo branch", "Nome del nuovo branch (parte da HEAD e diventa quello corrente):", "") {
+                    self.worker.run(&root, move |git, root| git.create_branch(root, &name, true, None));
+                }
+            }
+            id if (VCS_CHECKOUT..VCS_MERGE).contains(&id) => {
+                if let Some((name, remote, _)) = branch(VCS_CHECKOUT) {
+                    self.worker.run(&root, move |git, root| git.switch(root, &name, remote));
+                }
+            }
+            id if id >= VCS_MERGE => {
+                if let Some((name, _, _)) = branch(VCS_MERGE) {
+                    self.worker.run(&root, move |git, root| git.merge(root, &name));
+                }
+            }
+            _ => {}
+        }
     }
 
     fn tab_at(&self, x: i32, y: i32) -> Option<(usize, bool)> {
@@ -1001,6 +1259,9 @@ impl App {
         }
         if contains(&self.eol_rect.get(), x, y) {
             return self.toggle_eol();
+        }
+        if contains(&self.vcs_rect.get(), x, y) {
+            return self.vcs_menu();
         }
         match self.tab_at(x, y) {
             Some((index, true)) => self.close(index),
@@ -1088,7 +1349,7 @@ impl App {
             ScreenToClient(self.hwnd, &mut point);
         }
         let over_splitter = self.splitter_rect().is_some_and(|splitter| contains(&splitter, point.x, point.y));
-        let clickable = contains(&self.eol_rect.get(), point.x, point.y) || (self.explorer_visible.get() && contains(&self.header_rect(), point.x, point.y));
+        let clickable = contains(&self.eol_rect.get(), point.x, point.y) || contains(&self.vcs_rect.get(), point.x, point.y) || (self.explorer_visible.get() && contains(&self.header_rect(), point.x, point.y));
         let cursor = match (over_splitter || self.dragging.get(), clickable) {
             (true, _) => IDC_SIZEWE,
             (false, true) => IDC_HAND,
@@ -1155,6 +1416,19 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 app.on_notify(&*(lparam as *const Notification));
                 return 0;
             }
+            if header.hwndFrom == app.explorer.hwnd && header.code == NM_CUSTOMDRAW {
+                let draw = &mut *(lparam as *mut NMTVCUSTOMDRAW);
+                return match draw.nmcd.dwDrawStage {
+                    CDDS_PREPAINT => CDRF_NOTIFYITEMDRAW as LRESULT,
+                    CDDS_ITEMPREPAINT => {
+                        if let Some(color) = app.git_color(draw.nmcd.lItemlParam) {
+                            draw.clrText = color;
+                        }
+                        CDRF_DODEFAULT as LRESULT
+                    }
+                    _ => CDRF_DODEFAULT as LRESULT,
+                };
+            }
             if header.hwndFrom == app.explorer.hwnd {
                 let (result, action) = app.explorer.on_notify(hwnd, header, lparam);
                 if let Some(action) = action {
@@ -1180,6 +1454,16 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
         }
         WM_DROPFILES => {
             app.on_drop(wparam as HDROP);
+            0
+        }
+        WM_GIT_EVENT => {
+            app.on_git_events();
+            0
+        }
+        WM_COMMAND_LOGGED => 0,
+        WM_TIMER if wparam == MARKER_TIMER => {
+            KillTimer(hwnd, MARKER_TIMER);
+            app.update_markers();
             0
         }
         WM_FILES_CHANGED => {

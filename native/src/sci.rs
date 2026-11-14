@@ -80,6 +80,16 @@ pub const SCI_CONVERTEOLS: u32 = 2029;
 pub const SCFIND_MATCHCASE: usize = 0x4;
 pub const INDIC_ROUNDBOX: isize = 7;
 pub const SC_WRAP_WORD: usize = 1;
+pub const SCI_MARKERDEFINE: u32 = 2040;
+pub const SCI_MARKERSETBACK: u32 = 2042;
+pub const SCI_MARKERADD: u32 = 2043;
+pub const SCI_MARKERDELETEALL: u32 = 2045;
+pub const SCI_SETMARGINMASKN: u32 = 2244;
+pub const SC_MARGIN_SYMBOL: isize = 0;
+pub const SC_MARK_LEFTRECT: isize = 27;
+pub const SC_MOD_INSERTTEXT: isize = 0x1;
+pub const SC_MOD_DELETETEXT: isize = 0x2;
+pub const SCN_MODIFIED: u32 = 2008;
 
 pub const SCN_SAVEPOINTREACHED: u32 = 2002;
 pub const SCN_SAVEPOINTLEFT: u32 = 2003;

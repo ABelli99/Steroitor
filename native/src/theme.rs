@@ -27,6 +27,10 @@ pub struct Palette {
     pub property: u32,
     pub tag: u32,
     pub attribute: u32,
+    pub git_added: u32,
+    pub git_modified: u32,
+    pub git_untracked: u32,
+    pub git_ignored: u32,
 }
 
 const DARK: Palette = Palette {
@@ -49,6 +53,10 @@ const DARK: Palette = Palette {
     property: rgb(0xc77dbb),
     tag: rgb(0xd5b778),
     attribute: rgb(0xbababa),
+    git_added: rgb(0x73c991),
+    git_modified: rgb(0x6ea8fe),
+    git_untracked: rgb(0xd9776e),
+    git_ignored: rgb(0x6f737a),
 };
 
 const LIGHT: Palette = Palette {
@@ -71,6 +79,10 @@ const LIGHT: Palette = Palette {
     property: rgb(0x871094),
     tag: rgb(0x0033b3),
     attribute: rgb(0x174ad4),
+    git_added: rgb(0x2e7d32),
+    git_modified: rgb(0x1f5fbf),
+    git_untracked: rgb(0xb0433a),
+    git_ignored: rgb(0x9e9e9e),
 };
 
 /// Tema delle app scelto in Impostazioni di Windows → Personalizzazione → Colori.
