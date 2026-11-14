@@ -115,6 +115,7 @@ pub const SCI_CALLTIPSETBACK: u32 = 2205;
 pub const SCI_CALLTIPSETFORE: u32 = 2206;
 pub const SCI_SETMOUSEDWELLTIME: u32 = 2264;
 pub const SCI_WORDSTARTPOSITION: u32 = 2266;
+pub const SCI_WORDENDPOSITION: u32 = 2267;
 pub const INDIC_SQUIGGLEPIXMAP: isize = 13;
 pub const SC_ELEMENT_LIST: usize = 0;
 pub const SC_ELEMENT_LIST_BACK: usize = 1;

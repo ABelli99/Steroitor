@@ -936,6 +936,39 @@ impl App {
         text
     }
 
+    /// Ctrl+B (come IntelliJ): dichiarazione del simbolo sotto il cursore, dal server del plugin o cercandola nel file.
+    fn go_to_declaration(&self) {
+        let mut asked = false;
+        self.with_plugins(|plugins, sci, settings, path| asked = plugins.definition(sci, settings, path));
+        if !asked {
+            self.local_declaration();
+        }
+    }
+
+    fn local_declaration(&self) {
+        let caret = self.sci.call(SCI_GETCURRENTPOS, 0, 0) as usize;
+        let start = self.sci.call(SCI_WORDSTARTPOSITION, caret, 1) as usize;
+        let end = self.sci.call(SCI_WORDENDPOSITION, caret, 1) as usize;
+        let text = self.sci.text();
+        let Some(word) = text.get(start..end).filter(|word| !word.is_empty()) else { return };
+        if let Some(found) = plugins::local_declaration(&text, word) {
+            self.sci.call(SCI_SETSEL, found, (found + word.len()) as isize);
+            self.center_line(self.sci.call(SCI_LINEFROMPOSITION, found, 0).max(0) as usize);
+        }
+    }
+
+    /// Apre il file e porta il cursore a (riga, colonna UTF-16), come le danno i server.
+    fn navigate(&self, path: &Path, position: (usize, usize)) {
+        self.open(path);
+        if self.active_path().as_deref() != Some(path) {
+            return;
+        }
+        let offset = plugins::offset_of(&self.sci.text(), position);
+        self.sci.call(SCI_GOTOPOS, offset, 0);
+        self.center_line(position.0);
+        self.focus_editor();
+    }
+
     /// Ctrl+P: un file del progetto per nome.
     fn quick_open(&self) {
         let Some(root) = self.explorer.root() else { return };
@@ -1338,6 +1371,7 @@ impl App {
             (VK_TAB, true) => self.cycle(-1),
             (0x46, false) => self.open_find(false),
             (0x50, false) => self.quick_open(),
+            (0x42, false) if focus == self.sci.hwnd => self.go_to_declaration(),
             (0x48, false) => self.open_find(true),
             (0x4B, true) => self.push(),
             (0x54, false) => self.new_terminal(),
@@ -2875,6 +2909,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             let mut problems = Vec::new();
             app.with_plugins(|plugins, sci, settings, path| problems = plugins.on_event(sci, settings, path));
             app.panel.append_console(&problems);
+            match app.plugins.take_navigation() {
+                Some(Some((path, position))) => app.navigate(&path, position),
+                Some(None) => app.local_declaration(),
+                None => {}
+            }
             0
         }
         WM_MINIMAP_LINE => {

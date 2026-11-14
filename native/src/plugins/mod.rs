@@ -133,6 +133,25 @@ fn document_words(text: &str, prefix: &str) -> Vec<String> {
     words
 }
 
+const DECLARATIONS: [&str; 17] = ["function", "class", "interface", "type", "enum", "const", "let", "var", "def", "fn", "struct", "trait", "record", "namespace", "module", "mod", "macro_rules!"];
+
+/// Offset della dichiarazione di `word` nel testo, senza server: la prima occorrenza preceduta da una parola come
+/// `function`, `class`, `const`, `def`, `fn`; altrimenti la prima occorrenza del nome.
+pub fn local_declaration(text: &str, word: &str) -> Option<usize> {
+    let is_word = |ch: char| ch.is_alphanumeric() || ch == '_' || ch == '$';
+    let occurrences: Vec<usize> = text
+        .match_indices(word)
+        .map(|(index, _)| index)
+        .filter(|&index| !text[..index].ends_with(is_word) && !text[index + word.len()..].starts_with(is_word))
+        .collect();
+    let declared = occurrences.iter().copied().find(|&index| {
+        let before = text[..index].trim_end();
+        let previous = &before[before.rfind(|ch: char| !(is_word(ch) || ch == '!')).map_or(0, |at| at + 1)..];
+        DECLARATIONS.contains(&previous)
+    });
+    declared.or_else(|| occurrences.first().copied())
+}
+
 fn trim_tip(text: &str) -> String {
     let mut tip: String = text.lines().take(MAX_TIP_LINES).collect::<Vec<_>>().join("\n");
     if tip.len() > MAX_TIP_CHARS {
@@ -177,6 +196,9 @@ pub struct Host {
     palette: Palette,
     font: Cell<HFONT>,
     diagnostics: RefCell<HashMap<String, [Vec<Diagnostic>; 2]>>,
+    definition: Cell<Option<u64>>,
+    /// Risposta a Vai alla dichiarazione, per l'app: Some(None) se il server non ha trovato nulla.
+    navigation: RefCell<Option<Option<(PathBuf, (usize, usize))>>>,
 }
 
 impl Host {
@@ -197,6 +219,8 @@ impl Host {
             palette,
             font: Cell::new(std::ptr::null_mut()),
             diagnostics: RefCell::default(),
+            definition: Cell::new(None),
+            navigation: RefCell::new(None),
         }
     }
 
@@ -346,6 +370,30 @@ impl Host {
         self.with_server(server, |server| server.item_doc(ticket, &origin, &item));
     }
 
+    /// Vai alla dichiarazione dal server del plugin; false se il plugin o il server non c'è (l'app cerca nel file).
+    pub fn definition(&self, sci: &Sci, settings: &Settings, path: Option<&Path>) -> bool {
+        let Some((plugin, path)) = path.and_then(|path| plugin_for(path).map(|plugin| (plugin, path))) else { return false };
+        if !wants_server(settings, plugin) {
+            return false;
+        }
+        let Some(server) = self.server_for(plugin, path) else { return false };
+        let text = sci.text();
+        let caret = sci.call(SCI_GETCURRENTPOS, 0, 0) as usize;
+        let ticket = self.ticket.get() + 1;
+        self.ticket.set(ticket);
+        self.definition.set(Some(ticket));
+        let origin = Origin { path: path.to_path_buf(), position: position_of(&text, caret) };
+        self.with_server(server, |server| {
+            server.sync(path, &text);
+            server.definition(ticket, &origin);
+        });
+        true
+    }
+
+    pub fn take_navigation(&self) -> Option<Option<(PathBuf, (usize, usize))>> {
+        self.navigation.borrow_mut().take()
+    }
+
     pub fn on_list_closed(&self, sci: &Sci) {
         self.tip.set(None);
         self.popup.hide();
@@ -493,6 +541,12 @@ impl Host {
                     Some(position) => show_tip(sci, position, &text),
                     None if sci.call(SCI_AUTOCACTIVE, 0, 0) != 0 => self.show_doc(&text),
                     None => {}
+                }
+            }
+            Reply::Definition(ticket, found) => {
+                if self.definition.get() == Some(ticket) {
+                    self.definition.set(None);
+                    *self.navigation.borrow_mut() = Some(found);
                 }
             }
             Reply::Diagnostics { path: file, slot, list } => {
@@ -648,6 +702,38 @@ mod tests {
 
     #[test]
     #[ignore]
+    fn real_server_tsserver_definition() {
+        let dir = std::env::temp_dir().join(format!("steroitor-definition-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.ts");
+        let source = "export const label = 'x';\nconsole.log(label);\n";
+        std::fs::write(&path, source).unwrap();
+        let queue: Queue = Arc::default();
+        let process = Process::spawn(servers::tsserver(&dir).unwrap(), 1, Arc::clone(&queue), std::ptr::null_mut()).unwrap();
+        let mut server = Server::new(Protocol::TsServer, process, &dir, "typescript");
+        server.sync(&path, source);
+        server.definition(1, &Origin { path: path.clone(), position: position_of(source, source.rfind("label").unwrap() + 2) });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut found = None;
+        while found.is_none() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            for message in std::mem::take(&mut *queue.lock().unwrap()) {
+                if let Incoming::Message(_, value) = message {
+                    if let Some(Reply::Definition(_, location)) = server.receive(&value) {
+                        found = Some(location);
+                    }
+                }
+            }
+        }
+        server.kill();
+        let _ = std::fs::remove_dir_all(&dir);
+        let (file, position) = found.flatten().expect("definizione");
+        assert_eq!(file.file_name().unwrap(), "a.ts");
+        assert_eq!(position, (0, 13));
+    }
+
+    #[test]
+    #[ignore]
     fn real_server_tsserver() {
         real_server(0, "a.ts", "const label: string = 'x';\nconst n: number = label;\nlabel.", "label.", "trim");
     }
@@ -656,6 +742,15 @@ mod tests {
     #[ignore]
     fn real_server_jdtls() {
         real_server(1, "src/main/java/Main.java", "public class Main {\n  void f() {\n    String s = \"x\";\n    int n = s;\n    s.tr\n  }\n}\n", "s.tr", "trim");
+    }
+
+    #[test]
+    fn finds_local_declarations() {
+        let text = "call(total);\nconst total = 1;\nfunction run() {}\nrun();";
+        assert_eq!(local_declaration(text, "total"), text.find("total ="));
+        assert_eq!(local_declaration(text, "run"), text.find("run()"));
+        assert_eq!(local_declaration("x = subtotal; total", "total"), Some(14));
+        assert_eq!(local_declaration("nothing", "missing"), None);
     }
 
     #[test]

@@ -34,6 +34,8 @@ pub enum Reply {
     /// `incomplete`: il server ha tagliato la lista, va richiesta a ogni carattere.
     Completions { ticket: u64, items: Vec<Item>, incomplete: bool },
     Doc(u64, String),
+    /// Dove è dichiarato il simbolo; None se il server non lo sa.
+    Definition(u64, Option<(PathBuf, (usize, usize))>),
     /// Diagnostica di un file; `slot` separa sintassi e semantica di tsserver, che arrivano in eventi distinti.
     Diagnostics { path: PathBuf, slot: usize, list: Vec<Diagnostic> },
 }
@@ -43,6 +45,7 @@ enum Purpose {
     Initialize,
     Completion(u64),
     Doc(u64),
+    Definition(u64),
 }
 
 /// Dove era stato chiesto il completamento: tsserver lo vuole anche per i dettagli della voce.
@@ -248,6 +251,12 @@ impl Server {
         }
     }
 
+    pub fn definition(&mut self, ticket: u64, origin: &Origin) {
+        let params = self.location(origin);
+        let method = if self.protocol == Protocol::Lsp { "textDocument/definition" } else { "definition" };
+        self.send(Some(Purpose::Definition(ticket)), method, params, false);
+    }
+
     pub fn hover(&mut self, ticket: u64, origin: &Origin) {
         let params = self.location(origin);
         let method = if self.protocol == Protocol::Lsp { "textDocument/hover" } else { "quickinfo" };
@@ -307,6 +316,14 @@ impl Server {
                 };
                 Some(Reply::Doc(ticket, text))
             }
+            Purpose::Definition(ticket) => {
+                // Location, Location[] o LocationLink[]: vale la prima.
+                let first = result.get(0).unwrap_or(result);
+                let uri = first.get("targetUri").or_else(|| first.get("uri")).and_then(Value::as_str);
+                let start = &first.get("targetSelectionRange").or_else(|| first.get("range")).unwrap_or(&Value::Null)["start"];
+                let point = start["line"].as_u64().zip(start["character"].as_u64()).map(|(line, column)| (line as usize, column as usize));
+                Some(Reply::Definition(ticket, uri.and_then(uri_path).zip(point)))
+            }
         }
     }
 
@@ -339,6 +356,13 @@ impl Server {
                     join_doc(text_of(&body["displayString"]), text_of(&body["documentation"]))
                 };
                 Some(Reply::Doc(ticket, text.unwrap_or_default()))
+            }
+            Purpose::Definition(ticket) => {
+                let first = &body[0];
+                let file = first["file"].as_str().map(|file| PathBuf::from(file.replace('/', "\\")));
+                let start = &first["start"];
+                let point = start["line"].as_u64().zip(start["offset"].as_u64()).map(|(line, offset)| ((line as usize).saturating_sub(1), (offset as usize).saturating_sub(1)));
+                Some(Reply::Definition(ticket, file.zip(point)))
             }
         }
     }
