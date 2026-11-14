@@ -3,7 +3,7 @@
 use std::cell::{Cell, OnceCell, RefCell};
 use std::path::{Path, PathBuf};
 
-use steroitor_core::git::changes::ChangedFile;
+use steroitor_core::git::changes::{ChangedFile, FileRevision};
 use steroitor_core::git::history::ConflictVersions;
 use steroitor_core::text::{decode, encode, TextFile};
 use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -15,7 +15,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, SetFocus, VK_
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dialogs::{message_box, wide};
-use crate::diff::{changed_lines, parse_conflicts, resolve_all};
+use crate::diff::{changed_lines, parse_conflicts, resolve_all, Kind};
 use crate::git::{Event, Worker};
 use crate::lang;
 use crate::list::{decode_event, List, ListEvent, RowPaint, WM_LIST_EVENT, WM_LIST_PAINT};
@@ -28,6 +28,11 @@ const CLASS_NAME: &str = "SteroitorCompare";
 const HEADER: i32 = 40;
 const LABELS: i32 = 22;
 const FILES_WIDTH: i32 = 280;
+const HISTORY_WIDTH: i32 = 320;
+/// Margine attorno al dialogo, come il `calc(100% - 48px)` della versione Tauri.
+const INSET: i32 = 24;
+/// Il dialogo chiede alla finestra principale di aprire un file (wParam: 0), letto da `take_open_request`.
+pub const WM_COMPARE_OPEN: u32 = WM_APP + 41;
 const ROW_HEIGHT: i32 = 24;
 const SCI_SETREADONLY: u32 = 2171;
 const SCI_GETMODIFY: u32 = 2159;
@@ -39,6 +44,7 @@ pub enum Loaded {
     /// Generazione della richiesta (per scartare le risposte superate), testo a sinistra e a destra.
     Pair(u64, Result<(String, String), String>),
     Conflict(PathBuf, Result<(ConflictVersions, TextFile), String>),
+    History(PathBuf, Result<Vec<FileRevision>, String>),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -46,6 +52,7 @@ enum Mode {
     Diff,
     Commit,
     Merge,
+    History,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -56,6 +63,8 @@ enum Button {
     AllTheirs,
     Apply,
     Cancel,
+    OpenInEditor,
+    OnlyChanges,
 }
 
 struct MergeFile {
@@ -75,6 +84,13 @@ struct State {
     stops: Vec<usize>,
     path: PathBuf,
     merge: Option<MergeFile>,
+    /// Sotto il titolo: il percorso del file (diff e history).
+    subtitle: String,
+    revisions: Vec<FileRevision>,
+    lines: Option<(u32, u32)>,
+    only_changes: bool,
+    /// Tipo di ogni riga del diff mostrato, per "Solo le zone cambiate".
+    kinds: Vec<Kind>,
 }
 
 pub struct Compare {
@@ -89,6 +105,7 @@ pub struct Compare {
     generation: Cell<u64>,
     state: RefCell<State>,
     buttons: RefCell<Vec<(RECT, Button)>>,
+    open_request: RefCell<Option<PathBuf>>,
 }
 
 thread_local! {
@@ -123,7 +140,7 @@ impl Compare {
             };
             RegisterClassExW(&class);
             let title = wide("Confronto");
-            let hwnd = CreateWindowExW(0, class_name.as_ptr(), title.as_ptr(), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, 0, 0, 0, 0, owner, std::ptr::null_mut(), instance, std::ptr::null());
+            let hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, class_name.as_ptr(), title.as_ptr(), WS_POPUP | WS_BORDER | WS_CLIPCHILDREN, 0, 0, 0, 0, owner, std::ptr::null_mut(), instance, std::ptr::null());
             let dark: i32 = palette.dark.into();
             DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE as u32, (&dark as *const i32).cast(), 4);
             let panes = [0; 3].map(|_| {
@@ -156,8 +173,14 @@ impl Compare {
                 stops: Vec::new(),
                 path: PathBuf::new(),
                 merge: None,
+                subtitle: String::new(),
+                revisions: Vec::new(),
+                lines: None,
+                only_changes: false,
+                kinds: Vec::new(),
             }),
             buttons: RefCell::new(Vec::new()),
+            open_request: RefCell::new(None),
         }));
         compare.files.attach();
         for pane in &compare.panes {
@@ -193,6 +216,9 @@ impl Compare {
             state.stops.clear();
             state.merge = None;
             state.files.clear();
+            state.revisions.clear();
+            state.subtitle.clear();
+            state.kinds.clear();
         }
         self.font.set(font);
         self.files.set_rows(0);
@@ -201,15 +227,15 @@ impl Compare {
             self.set_text(pane, "", &lang::PLAIN);
         }
         let title = wide(&title);
-        // SAFETY: finestre valide; la prima volta la finestra prende la posizione della principale, rientrata.
+        // SAFETY: finestre valide; il dialogo copre l'area della finestra principale meno il margine, come nella versione Tauri.
         unsafe {
             SetWindowTextW(self.hwnd, title.as_ptr());
-            if IsWindowVisible(self.hwnd) == 0 {
-                let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-                GetWindowRect(self.owner, &mut rect);
-                let inset = self.scale(48);
-                MoveWindow(self.hwnd, rect.left + inset, rect.top + inset, (rect.right - rect.left - 2 * inset).max(600), (rect.bottom - rect.top - 2 * inset).max(400), 0);
-            }
+            let mut client = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+            GetClientRect(self.owner, &mut client);
+            let mut origin = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+            ClientToScreen(self.owner, &mut origin);
+            let inset = self.scale(INSET);
+            MoveWindow(self.hwnd, origin.x + inset, origin.y + inset, (client.right - 2 * inset).max(400), (client.bottom - 2 * inset).max(300), 0);
             ShowWindow(self.hwnd, SW_SHOW);
             SetForegroundWindow(self.hwnd);
         }
@@ -220,7 +246,11 @@ impl Compare {
     /// Diff del file di lavoro rispetto a HEAD.
     pub fn show_file(&self, root: &Path, path: &Path, font: HFONT) {
         self.open(Mode::Diff, root, file_name(path), ["HEAD", "Copia di lavoro", ""], font);
-        self.state.borrow_mut().path = path.to_path_buf();
+        {
+            let mut state = self.state.borrow_mut();
+            state.path = path.to_path_buf();
+            state.subtitle = path.strip_prefix(root).map_or_else(|_| path.display().to_string(), |relative| relative.display().to_string());
+        }
         let generation = self.next_generation();
         let (root, path) = (root.to_string_lossy().into_owned(), path.to_path_buf());
         self.worker.spawn(move |git| {
@@ -242,9 +272,56 @@ impl Compare {
         });
     }
 
+    /// Commit che hanno toccato il file (o, con `lines`, quelle righe), con il diff di quello scelto.
+    pub fn show_history(&self, root: &Path, path: &Path, lines: Option<(u32, u32)>, font: HFONT) {
+        let title = format!("History di {}{}", file_name(path), if lines.is_some() { " (selezione)" } else { "" });
+        self.open(Mode::History, root, title, ["Prima", "Dopo", ""], font);
+        {
+            let mut state = self.state.borrow_mut();
+            state.path = path.to_path_buf();
+            state.lines = lines;
+            state.only_changes = lines.is_some();
+            state.subtitle = path.strip_prefix(root).map_or_else(|_| path.display().to_string(), |relative| relative.display().to_string());
+        }
+        self.files.set_row_height(self.scale(ROW_HEIGHT) * 2);
+        let (root, path) = (root.to_string_lossy().into_owned(), path.to_path_buf());
+        self.worker.spawn(move |git| {
+            let history = git.file_history(&root, &path.to_string_lossy(), lines);
+            Event::Compare(Loaded::History(path, history))
+        });
+    }
+
+    fn select_revision(&self, index: usize) {
+        let (root, revision) = {
+            let state = self.state.borrow();
+            let Some(revision) = state.revisions.get(index) else { return };
+            (state.root.to_string_lossy().into_owned(), (revision.commit.hash.clone(), revision.commit.parents.is_empty(), revision.path.clone(), revision.old_path.clone()))
+        };
+        let (hash, first, path, old_path) = revision;
+        let short = hash.get(..7).unwrap_or(&hash).to_owned();
+        {
+            let mut state = self.state.borrow_mut();
+            state.labels = [if first { "(file nuovo)".into() } else { "Prima".into() }, format!("Dopo ({short})"), String::new()];
+            state.path = PathBuf::from(&path);
+        }
+        self.invalidate();
+        let generation = self.next_generation();
+        self.worker.spawn(move |git| {
+            let before = if first { Ok(None) } else { git.file_at(&root, &format!("{hash}^"), old_path.as_deref().unwrap_or(&path)) };
+            let after = git.file_at(&root, &hash, &path);
+            let pair = before.and_then(|before| after.map(|after| (before.unwrap_or_default(), after.unwrap_or_default())));
+            Event::Compare(Loaded::Pair(generation, pair))
+        });
+    }
+
+    /// Il file che il dialogo ha chiesto di aprire nell'editor.
+    pub fn take_open_request(&self) -> Option<PathBuf> {
+        self.open_request.borrow_mut().take()
+    }
+
     /// Merge a 3 vie di un file in conflitto.
     pub fn show_merge(&self, root: &Path, path: &Path, font: HFONT) {
-        self.open(Mode::Merge, root, format!("Conflitti in {}", file_name(path)), ["Nostra (HEAD)", "Risultato", "Loro"], font);
+        self.open(Mode::Merge, root, format!("Conflitti in {}", file_name(path)), ["Nostra (HEAD)", "Result", "Loro"], font);
         self.state.borrow_mut().path = path.to_path_buf();
         let (root, path) = (root.to_string_lossy().into_owned(), path.to_path_buf());
         self.worker.spawn(move |git| {
@@ -275,7 +352,16 @@ impl Compare {
             }
             Loaded::Pair(generation, Ok((left, right))) if generation == self.generation.get() => self.show_pair(&left, &right),
             Loaded::Conflict(path, Ok((versions, current))) if path == self.state.borrow().path => self.show_conflict(versions, current),
-            Loaded::Files(_, Err(error)) | Loaded::Pair(_, Err(error)) | Loaded::Conflict(_, Err(error)) => {
+            Loaded::History(path, Ok(revisions)) if self.state.borrow().mode == Mode::History && path == self.state.borrow().path => {
+                let count = revisions.len();
+                self.state.borrow_mut().revisions = revisions;
+                self.files.set_rows(count);
+                if count > 0 {
+                    self.files.select(0, ListEvent::Select);
+                }
+                self.invalidate();
+            }
+            Loaded::Files(_, Err(error)) | Loaded::Pair(_, Err(error)) | Loaded::Conflict(_, Err(error)) | Loaded::History(_, Err(error)) => {
                 message_box(self.hwnd, &error, MB_ICONERROR);
             }
             _ => {}
@@ -311,8 +397,14 @@ impl Compare {
 
     fn show_pair(&self, left: &str, right: &str) {
         let path = self.state.borrow().path.clone();
-        let stops = side_by_side::show([&self.panes[0], &self.panes[1]], left, right, &path, &self.palette, self.font_fraction.get());
-        self.state.borrow_mut().stops = stops;
+        let (stops, kinds) = side_by_side::show([&self.panes[0], &self.panes[1]], left, right, &path, &self.palette, self.font_fraction.get());
+        let only = self.state.borrow().only_changes;
+        side_by_side::only_changes([&self.panes[0], &self.panes[1]], &kinds, only);
+        {
+            let mut state = self.state.borrow_mut();
+            state.stops = stops;
+            state.kinds = kinds;
+        }
         self.jump(1);
     }
 
@@ -465,9 +557,9 @@ impl Compare {
                 MoveWindow(hwnd, rect.left, rect.top, (rect.right - rect.left).max(0), (rect.bottom - rect.top).max(0), 1);
             }
         };
-        let with_files = mode == Mode::Commit;
+        let with_files = matches!(mode, Mode::Commit | Mode::History);
         if with_files {
-            left = self.scale(FILES_WIDTH);
+            left = self.scale(if mode == Mode::History { HISTORY_WIDTH } else { FILES_WIDTH });
         }
         place(self.files.hwnd, with_files, RECT { left: 0, top, right: left - 1, bottom: client.bottom });
         let count = if mode == Mode::Merge { 3 } else { 2 };
@@ -522,14 +614,26 @@ impl Compare {
                 ("Applica e segna risolto", Button::Apply),
                 ("Annulla", Button::Cancel),
             ],
-            _ => &[("◀ Precedente", Button::Previous), ("Successivo ▶", Button::Next), ("Chiudi", Button::Cancel)],
+            Mode::Diff => &[("Apri nell'editor", Button::OpenInEditor), ("Chiudi", Button::Cancel)],
+            Mode::History => &[("Solo le zone cambiate", Button::OnlyChanges), ("Chiudi", Button::Cancel)],
+            Mode::Commit => &[("Chiudi", Button::Cancel)],
         };
         let mut right = header.right - self.scale(10);
         let mut buttons = Vec::new();
         for &(label, button) in entries.iter().rev() {
-            let width = text_width(dc, label) + self.scale(20);
+            let check = if button == Button::OnlyChanges { self.scale(20) } else { 0 };
+            let width = text_width(dc, label) + self.scale(20) + check;
             let area = RECT { left: right - width, top: header.top + self.scale(7), right, bottom: header.bottom - self.scale(7) };
-            if button == Button::Apply {
+            if button == Button::OnlyChanges {
+                let size = self.scale(14);
+                let middle = (area.top + area.bottom) / 2;
+                let box_rect = RECT { left: area.left + self.scale(6), top: middle - size / 2, right: area.left + self.scale(6) + size, bottom: middle + size / 2 };
+                frame(dc, &box_rect, palette.muted);
+                if state.only_changes {
+                    fill(dc, &RECT { left: box_rect.left + 3, top: box_rect.top + 3, right: box_rect.right - 3, bottom: box_rect.bottom - 3 }, palette.accent);
+                }
+                text(dc, label, &RECT { left: box_rect.right + self.scale(6), ..area }, palette.fg, DT_LEFT);
+            } else if button == Button::Apply {
                 fill(dc, &area, palette.accent);
                 text(dc, label, &area, palette.editor, DT_CENTER);
             } else {
@@ -539,12 +643,15 @@ impl Compare {
             buttons.push((area, button));
             right = area.left - self.scale(6);
         }
-        let mut title = state.title.clone();
+        let title = state.title.clone();
+        let title_width = text_width(dc, &title).min(right - self.scale(24));
+        text(dc, &title, &RECT { left: header.left + self.scale(12), right: header.left + self.scale(12) + title_width, ..header }, palette.fg, DT_LEFT | DT_END_ELLIPSIS);
         if state.mode == Mode::Merge && state.merge.is_some() {
             let remaining = state.stops.len();
-            title.push_str(&if remaining == 0 { " · tutti risolti".to_owned() } else { format!(" · {remaining} da risolvere") });
+            let (label, color) = if remaining == 0 { ("tutti risolti".to_string(), palette.git_added) } else { (format!("{remaining} da risolvere"), palette.danger) };
+            text(dc, &label, &RECT { left: header.left + self.scale(20) + title_width, right: right - self.scale(12), ..header }, color, DT_LEFT | DT_END_ELLIPSIS);
         }
-        text(dc, &title, &RECT { left: header.left + self.scale(12), right: right - self.scale(12), ..header }, palette.fg, DT_LEFT | DT_END_ELLIPSIS);
+        text(dc, &state.subtitle, &RECT { left: header.left + self.scale(22) + title_width, right: right - self.scale(12), ..header }, palette.muted, DT_LEFT | DT_PATH_ELLIPSIS);
         *self.buttons.borrow_mut() = buttons;
 
         let count = if state.mode == Mode::Merge { 3 } else { 2 };
@@ -557,6 +664,12 @@ impl Compare {
             let area = RECT { left: self.scale(8), right: self.scale(FILES_WIDTH), ..labels };
             text(dc, &format!("{} file cambiati", state.files.len()), &area, palette.muted, DT_LEFT);
         }
+        if state.mode == Mode::History {
+            let area = RECT { left: self.scale(10), right: self.scale(HISTORY_WIDTH), ..labels };
+            let count = if state.revisions.len() == 1 { "1 commit".to_string() } else { format!("{} commit", state.revisions.len()) };
+            let range = state.lines.map_or_else(String::new, |(from, to)| format!(" · righe {from}–{to}"));
+            text(dc, &format!("{count}{range}"), &area, palette.muted, DT_LEFT);
+        }
 
         BitBlt(target, 0, 0, client.right, client.bottom, dc, 0, 0, SRCCOPY);
         SelectObject(dc, previous_font);
@@ -568,7 +681,6 @@ impl Compare {
 
     unsafe fn paint_file_row(&self, row: &RowPaint) {
         let state = self.state.borrow();
-        let Some(file) = state.files.get(row.index) else { return };
         let palette = &self.palette;
         let dc = row.dc;
         SelectObject(dc, self.font.get());
@@ -576,6 +688,19 @@ impl Compare {
         if row.selected {
             fill(dc, &row.rect, if row.focused { palette.selection } else { palette.active_line });
         }
+        // History: oggetto, poi hash · autore · data relativa, su due righe come nella versione Tauri.
+        if state.mode == Mode::History {
+            let Some(revision) = state.revisions.get(row.index) else { return };
+            let commit = &revision.commit;
+            let middle = (row.rect.top + row.rect.bottom) / 2;
+            let left = row.rect.left + self.scale(10);
+            text(dc, &commit.subject, &RECT { left, top: row.rect.top + self.scale(2), right: row.rect.right - self.scale(8), bottom: middle }, palette.fg, DT_LEFT | DT_END_ELLIPSIS);
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs() as i64);
+            let meta = format!("{} · {} · {}", commit.short_hash, commit.author, crate::panel::relative_time(commit.timestamp, now));
+            text(dc, &meta, &RECT { left, top: middle, right: row.rect.right - self.scale(8), bottom: row.rect.bottom - self.scale(2) }, palette.muted, DT_LEFT | DT_END_ELLIPSIS);
+            return;
+        }
+        let Some(file) = state.files.get(row.index) else { return };
         let color = match file.status.as_str() {
             "A" => palette.git_added,
             "D" => palette.git_ignored,
@@ -596,6 +721,22 @@ impl Compare {
             Some(Button::AllTheirs) => self.resolve_all(false),
             Some(Button::Apply) => self.apply(),
             Some(Button::Cancel) => self.cancel(),
+            Some(Button::OpenInEditor) => {
+                let path = self.state.borrow().path.clone();
+                *self.open_request.borrow_mut() = Some(path);
+                self.hide();
+                // SAFETY: messaggio alla finestra principale, che apre il file.
+                unsafe { PostMessageW(self.owner, WM_COMPARE_OPEN, 0, 0) };
+            }
+            Some(Button::OnlyChanges) => {
+                let (on, kinds) = {
+                    let mut state = self.state.borrow_mut();
+                    state.only_changes = !state.only_changes;
+                    (state.only_changes, state.kinds.clone())
+                };
+                side_by_side::only_changes([&self.panes[0], &self.panes[1]], &kinds, on);
+                self.invalidate();
+            }
             None => {}
         }
     }
@@ -642,12 +783,22 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
         WM_LIST_EVENT => {
             let (event, index) = decode_event(lparam);
             if event == ListEvent::Select {
-                compare.select_file(index);
+                if compare.state.borrow().mode == Mode::History {
+                    compare.select_revision(index);
+                } else {
+                    compare.select_file(index);
+                }
             }
             0
         }
         WM_CLOSE => {
             compare.cancel();
+            0
+        }
+        WM_ACTIVATE if (wparam & 0xFFFF) as u32 == WA_INACTIVE && lparam as HWND == compare.owner => {
+            if compare.state.borrow().mode != Mode::Merge {
+                compare.hide();
+            }
             0
         }
         _ => DefWindowProcW(hwnd, message, wparam, lparam),

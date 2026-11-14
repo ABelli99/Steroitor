@@ -17,6 +17,11 @@ pub enum Action {
     Open(PathBuf),
     Renamed { from: PathBuf, to: PathBuf },
     Deleted(PathBuf),
+    /// Nuovo file o cartella in questa cartella: il nome lo chiede l'app.
+    Create { dir: PathBuf, folder: bool },
+    Rename(PathBuf),
+    Blame(PathBuf),
+    History(PathBuf),
 }
 
 struct Node {
@@ -38,6 +43,9 @@ const MENU_RENAME: usize = 3;
 const MENU_DELETE: usize = 4;
 const MENU_REVEAL: usize = 5;
 const MENU_COPY_PATH: usize = 6;
+const MENU_BLAME: usize = 7;
+const MENU_HISTORY: usize = 8;
+const MENU_REFRESH: usize = 9;
 
 fn send(hwnd: HWND, message: u32, wparam: usize, lparam: isize) -> isize {
     // SAFETY: messaggi TreeView verso una finestra valida, con puntatori a strutture che vivono per la chiamata.
@@ -47,18 +55,17 @@ fn send(hwnd: HWND, message: u32, wparam: usize, lparam: isize) -> isize {
 impl Explorer {
     pub fn create(parent: HWND, instance: HINSTANCE, palette: &Palette) -> Explorer {
         let class = wide("SysTreeView32");
-        let style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | (TVS_HASBUTTONS | TVS_LINESATROOT | TVS_SHOWSELALWAYS | TVS_EDITLABELS | TVS_FULLROWSELECT) as u32;
+        let style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | (TVS_HASBUTTONS | TVS_LINESATROOT | TVS_SHOWSELALWAYS | TVS_FULLROWSELECT) as u32;
         // SAFETY: creazione di un controllo figlio della finestra principale.
         let hwnd = unsafe {
             let controls = INITCOMMONCONTROLSEX { dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32, dwICC: ICC_TREEVIEW_CLASSES };
             InitCommonControlsEx(&controls);
             CreateWindowExW(0, class.as_ptr(), std::ptr::null(), style, 0, 0, 0, 0, parent, std::ptr::null_mut(), instance, std::ptr::null())
         };
-        if palette.dark {
-            let theme = wide("DarkMode_Explorer");
-            // SAFETY: controllo valido, stringa terminata da zero.
-            unsafe { SetWindowTheme(hwnd, theme.as_ptr(), std::ptr::null()) };
-        }
+        // Il tema di Esplora risorse dà le frecce al posto dei +/− (anche in chiaro).
+        let theme = wide(if palette.dark { "DarkMode_Explorer" } else { "Explorer" });
+        // SAFETY: controllo valido, stringa terminata da zero.
+        unsafe { SetWindowTheme(hwnd, theme.as_ptr(), std::ptr::null()) };
         send(hwnd, TVM_SETEXTENDEDSTYLE, TVS_EX_DOUBLEBUFFER as usize, TVS_EX_DOUBLEBUFFER as isize);
         send(hwnd, TVM_SETBKCOLOR, 0, palette.panel as isize);
         send(hwnd, TVM_SETTEXTCOLOR, 0, palette.fg as isize);
@@ -76,9 +83,14 @@ impl Explorer {
         self.nodes.swap(&other.nodes);
     }
 
-    pub fn set_font(&self, font: HFONT, item_height: i32) {
+    pub fn set_font(&self, font: HFONT, item_height: i32, indent: i32) {
         send(self.hwnd(), WM_SETFONT, font as usize, 1);
         send(self.hwnd(), TVM_SETITEMHEIGHT, item_height as usize, 0);
+        send(self.hwnd(), TVM_SETINDENT, indent as usize, 0);
+    }
+
+    pub fn set_image_list(&self, list: HIMAGELIST) {
+        send(self.hwnd(), TVM_SETIMAGELIST, TVSIL_NORMAL as usize, list as isize);
     }
 
     pub fn root(&self) -> Option<PathBuf> {
@@ -102,7 +114,11 @@ impl Explorer {
             let mut insert: TVINSERTSTRUCTW = std::mem::zeroed();
             insert.hParent = parent;
             insert.hInsertAfter = after;
-            insert.Anonymous.itemex.mask = TVIF_TEXT | TVIF_PARAM | TVIF_CHILDREN;
+            let (image, expanded) = crate::icons::image_of(Path::new(&entry.path), entry.is_dir);
+            insert.Anonymous.itemex.mask = TVIF_TEXT | TVIF_PARAM | TVIF_CHILDREN | TVIF_IMAGE | TVIF_SELECTEDIMAGE | TVIF_EXPANDEDIMAGE;
+            insert.Anonymous.itemex.iImage = image;
+            insert.Anonymous.itemex.iSelectedImage = image;
+            insert.Anonymous.itemex.iExpandedImage = expanded;
             insert.Anonymous.itemex.pszText = text.as_mut_ptr();
             insert.Anonymous.itemex.lParam = index as LPARAM;
             insert.Anonymous.itemex.cChildren = i32::from(entry.is_dir);
@@ -211,8 +227,43 @@ impl Explorer {
         self.node_of(send(self.hwnd(), TVM_GETNEXTITEM, TVGN_CARET as usize, 0) as HTREEITEM)
     }
 
+    /// Seleziona la voce di `path` (aprendo la cartella che la contiene, se è caricata) e la porta in vista.
+    pub fn reveal(&self, path: &Path) {
+        if let Some(parent) = path.parent() {
+            let folder = self.nodes.borrow().iter().position(|node| node.path == parent && node.item != 0);
+            if let Some(index) = folder {
+                self.load(index);
+                send(self.hwnd(), TVM_EXPAND, TVE_EXPAND as usize, self.nodes.borrow()[index].item as isize);
+            }
+        }
+        let item = self.nodes.borrow().iter().find(|node| node.path == path && node.item != 0).map(|node| node.item);
+        if let Some(item) = item {
+            send(self.hwnd(), TVM_SELECTITEM, TVGN_CARET as usize, item as isize);
+            send(self.hwnd(), TVM_ENSUREVISIBLE, 0, item as isize);
+        }
+    }
+
+    /// Ricarica tutte le cartelle aperte (pulsante ⟳).
+    pub fn refresh_all(&self) {
+        let Some(root) = self.root() else { return };
+        self.refresh_dir(&root);
+        let open: Vec<PathBuf> = self.nodes.borrow().iter().filter(|node| node.is_dir && node.loaded && node.item != 0).map(|node| node.path.clone()).collect();
+        for dir in open {
+            self.refresh_dir(&dir);
+        }
+    }
+
+    /// Chiude tutte le cartelle (pulsante ⊟).
+    pub fn collapse_all(&self) {
+        let items: Vec<HTREEITEM> = self.nodes.borrow().iter().filter(|node| node.is_dir && node.item != 0).map(|node| node.item).collect();
+        for item in items {
+            send(self.hwnd(), TVM_EXPAND, TVE_COLLAPSE as usize, item as isize);
+        }
+    }
+
     /// Gestisce le notifiche della TreeView; il valore restituito va al chiamante di WM_NOTIFY.
-    pub fn on_notify(&self, owner: HWND, header: &NMHDR, lparam: LPARAM) -> (isize, Option<Action>) {
+    /// `in_repo` dice se un file sta in un repository Git (per Annotate e Mostra history nel menu).
+    pub fn on_notify(&self, owner: HWND, header: &NMHDR, lparam: LPARAM, in_repo: &dyn Fn(&Path) -> bool) -> (isize, Option<Action>) {
         match header.code {
             TVN_ITEMEXPANDINGW => {
                 // SAFETY: per questa notifica lParam punta a NMTREEVIEWW.
@@ -222,50 +273,57 @@ impl Explorer {
                 }
                 (0, None)
             }
-            TVN_SELCHANGEDW => {
-                // SAFETY: per questa notifica lParam punta a NMTREEVIEWW.
-                let view = unsafe { &*(lparam as *const NMTREEVIEWW) };
-                let open = view.action == TVC_BYMOUSE;
-                (0, open.then(|| self.file_at(view.itemNew.hItem)).flatten().map(Action::Open))
+            // Un clic apre il file o apre/chiude la cartella, come nella versione Tauri; la freccia la gestisce la TreeView.
+            NM_CLICK => {
+                let (item, on_button) = self.hit_at_cursor();
+                let Some(index) = self.node_of(item).filter(|_| !on_button) else { return (0, None) };
+                send(self.hwnd(), TVM_SELECTITEM, TVGN_CARET as usize, item as isize);
+                let (is_dir, path) = {
+                    let node = &self.nodes.borrow()[index];
+                    (node.is_dir, node.path.clone())
+                };
+                if is_dir {
+                    self.load(index);
+                    send(self.hwnd(), TVM_EXPAND, TVE_TOGGLE as usize, item as isize);
+                    return (1, None);
+                }
+                (1, Some(Action::Open(path)))
             }
-            NM_RETURN => (0, self.selected().and_then(|index| self.file_at(self.nodes.borrow()[index].item)).map(Action::Open)),
+            NM_RETURN => {
+                let Some(index) = self.selected() else { return (0, None) };
+                let (is_dir, path, item) = {
+                    let node = &self.nodes.borrow()[index];
+                    (node.is_dir, node.path.clone(), node.item)
+                };
+                if is_dir {
+                    self.load(index);
+                    send(self.hwnd(), TVM_EXPAND, TVE_TOGGLE as usize, item as isize);
+                    return (1, None);
+                }
+                (1, Some(Action::Open(path)))
+            }
             NM_RCLICK => {
                 let item = self.item_at_cursor();
                 if item != 0 {
                     send(self.hwnd(), TVM_SELECTITEM, TVGN_CARET as usize, item as isize);
                 }
-                (1, self.context_menu(owner, self.node_of(item)))
-            }
-            TVN_BEGINLABELEDITW => (0, None),
-            TVN_ENDLABELEDITW => {
-                // SAFETY: per questa notifica lParam punta a NMTVDISPINFOW; pszText è null se la modifica è annullata.
-                let info = unsafe { &*(lparam as *const NMTVDISPINFOW) };
-                if info.item.pszText.is_null() {
-                    return (0, None);
-                }
-                // SAFETY: testo terminato da zero fornito dal controllo.
-                let name = unsafe { String::from_utf16_lossy(std::slice::from_raw_parts(info.item.pszText, (0..).take_while(|&i| *info.item.pszText.add(i) != 0).count())) };
-                let Some(index) = self.node_of(info.item.hItem) else { return (0, None) };
-                let from = self.nodes.borrow()[index].path.clone();
-                match fs::rename_path(from.to_string_lossy().into_owned(), name) {
-                    Ok(to) => {
-                        self.refresh_parent(&from);
-                        (0, Some(Action::Renamed { from, to: PathBuf::from(to) }))
-                    }
-                    Err(error) => {
-                        message_box(owner, &error, MB_ICONERROR);
-                        (0, None)
-                    }
-                }
+                (1, self.context_menu(owner, self.node_of(item), in_repo))
             }
             _ => (0, None),
         }
     }
 
-    fn file_at(&self, item: HTREEITEM) -> Option<PathBuf> {
-        let index = self.node_of(item)?;
-        let node = &self.nodes.borrow()[index];
-        (!node.is_dir).then(|| node.path.clone())
+    fn hit_at_cursor(&self) -> (HTREEITEM, bool) {
+        // SAFETY: hit test con coordinate client del controllo.
+        unsafe {
+            let mut point = POINT { x: 0, y: 0 };
+            GetCursorPos(&mut point);
+            ScreenToClient(self.hwnd(), &mut point);
+            let mut hit: TVHITTESTINFO = std::mem::zeroed();
+            hit.pt = point;
+            let item = send(self.hwnd(), TVM_HITTEST, 0, &mut hit as *mut _ as isize) as HTREEITEM;
+            (item, hit.flags & TVHT_ONITEMBUTTON != 0)
+        }
     }
 
     fn refresh_parent(&self, path: &Path) {
@@ -289,21 +347,27 @@ impl Explorer {
         }
     }
 
-    fn context_menu(&self, owner: HWND, node: Option<usize>) -> Option<Action> {
-        let entries: &[(usize, &str)] = if node.is_some() {
-            &[(MENU_NEW_FILE, "Nuovo file"), (MENU_NEW_FOLDER, "Nuova cartella"), (0, ""), (MENU_RENAME, "Rinomina\tF2"), (MENU_DELETE, "Elimina\tCanc"), (0, ""), (MENU_REVEAL, "Mostra in Esplora risorse"), (MENU_COPY_PATH, "Copia percorso")]
-        } else {
-            &[(MENU_NEW_FILE, "Nuovo file"), (MENU_NEW_FOLDER, "Nuova cartella"), (0, ""), (MENU_REVEAL, "Mostra in Esplora risorse")]
-        };
-        let command = popup_menu(owner, entries);
-        let path = node.map(|index| self.nodes.borrow()[index].path.clone()).or_else(|| self.root())?;
-        match command {
-            MENU_NEW_FILE | MENU_NEW_FOLDER => self.create_entry(owner, node, command == MENU_NEW_FOLDER),
-            MENU_RENAME => {
-                let item = self.nodes.borrow()[node?].item;
-                send(self.hwnd(), TVM_EDITLABELW, 0, item as isize);
-                None
+    /// Menu come nella versione Tauri; su un file in un repository anche Annotate e Mostra history.
+    fn context_menu(&self, owner: HWND, node: Option<usize>, in_repo: &dyn Fn(&Path) -> bool) -> Option<Action> {
+        let file = node.map(|index| {
+            let node = &self.nodes.borrow()[index];
+            (node.path.clone(), node.is_dir)
+        });
+        let mut entries = vec![(MENU_NEW_FILE, "Nuovo file…"), (MENU_NEW_FOLDER, "Nuova cartella…"), (0, "")];
+        match &file {
+            Some((path, is_dir)) => {
+                entries.extend([(MENU_RENAME, "Rinomina…"), (MENU_DELETE, "Elimina"), (0, ""), (MENU_REVEAL, "Mostra in Esplora risorse"), (MENU_COPY_PATH, "Copia percorso")]);
+                if !is_dir && in_repo(path) {
+                    entries.extend([(0, ""), (MENU_BLAME, "Annotate con Git Blame"), (MENU_HISTORY, "Mostra history")]);
+                }
             }
+            None => entries.extend([(MENU_REVEAL, "Mostra in Esplora risorse"), (MENU_COPY_PATH, "Copia percorso"), (0, ""), (MENU_REFRESH, "Aggiorna")]),
+        }
+        let command = popup_menu(owner, &entries);
+        let path = file.as_ref().map(|(path, _)| path.clone()).or_else(|| self.root())?;
+        match command {
+            MENU_NEW_FILE | MENU_NEW_FOLDER => Some(Action::Create { dir: self.target_dir(node)?, folder: command == MENU_NEW_FOLDER }),
+            MENU_RENAME => Some(Action::Rename(path)),
             MENU_DELETE => self.delete(owner, &path),
             MENU_REVEAL => {
                 let _ = fs::reveal_in_os(path.to_string_lossy().into_owned());
@@ -311,6 +375,12 @@ impl Explorer {
             }
             MENU_COPY_PATH => {
                 copy_to_clipboard(owner, &path.to_string_lossy());
+                None
+            }
+            MENU_BLAME => Some(Action::Blame(path)),
+            MENU_HISTORY => Some(Action::History(path)),
+            MENU_REFRESH => {
+                self.refresh_all();
                 None
             }
             _ => None,
@@ -322,15 +392,15 @@ impl Explorer {
         self.delete(owner, &path)
     }
 
-    pub fn rename_selected(&self) {
-        if let Some(index) = self.selected() {
-            send(self.hwnd(), TVM_EDITLABELW, 0, self.nodes.borrow()[index].item as isize);
-        }
+    pub fn rename_selected(&self) -> Option<Action> {
+        let index = self.selected()?;
+        Some(Action::Rename(self.nodes.borrow()[index].path.clone()))
     }
 
     fn delete(&self, owner: HWND, path: &Path) -> Option<Action> {
         let name = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
-        if message_box(owner, &format!("Spostare \"{name}\" nel Cestino?"), MB_YESNO | MB_ICONQUESTION) != IDYES {
+        let kind = if path.is_dir() { "la cartella" } else { "il file" };
+        if message_box(owner, &format!("Spostare nel Cestino {kind} \"{name}\"?"), MB_YESNO | MB_ICONWARNING) != IDYES {
             return None;
         }
         if let Err(error) = fs::delete_to_trash(path.to_string_lossy().into_owned()) {
@@ -341,41 +411,9 @@ impl Explorer {
         Some(Action::Deleted(path.to_path_buf()))
     }
 
-    /// Crea con un nome libero e lascia subito rinominare, come in IntelliJ.
-    fn create_entry(&self, owner: HWND, node: Option<usize>, folder: bool) -> Option<Action> {
-        let dir = self.target_dir(node)?;
-        if let Some(index) = node.filter(|&index| self.nodes.borrow()[index].is_dir) {
-            self.load(index);
-            send(self.hwnd(), TVM_EXPAND, TVE_EXPAND as usize, self.nodes.borrow()[index].item as isize);
-        }
-        let base = if folder { "nuova-cartella" } else { "nuovo-file.txt" };
-        let name = (1..).map(|n| numbered(base, n)).find(|name| !dir.join(name).exists())?;
-        let created = if folder { fs::create_dir(dir.to_string_lossy().into_owned(), name) } else { fs::create_file(dir.to_string_lossy().into_owned(), name) };
-        let path = match created {
-            Ok(path) => PathBuf::from(path),
-            Err(error) => {
-                message_box(owner, &error, MB_ICONERROR);
-                return None;
-            }
-        };
-        self.refresh_dir(&dir);
-        let item = self.nodes.borrow().iter().find(|node| node.path == path && node.item != 0).map(|node| node.item);
-        if let Some(item) = item {
-            send(self.hwnd(), TVM_SELECTITEM, TVGN_CARET as usize, item as isize);
-            send(self.hwnd(), TVM_EDITLABELW, 0, item as isize);
-        }
-        (!folder).then_some(Action::Open(path))
-    }
-}
-
-/// `nuovo-file.txt`, `nuovo-file-2.txt`, …; `nuova-cartella`, `nuova-cartella-2`, …
-fn numbered(base: &str, n: usize) -> String {
-    if n == 1 {
-        return base.to_string();
-    }
-    match base.split_once('.') {
-        Some((stem, extension)) => format!("{stem}-{n}.{extension}"),
-        None => format!("{base}-{n}"),
+    /// Cartella in cui crea il pulsante + dell'intestazione: quella selezionata, quella del file selezionato o la radice.
+    pub fn create_target(&self) -> Option<PathBuf> {
+        self.target_dir(self.selected())
     }
 }
 
@@ -388,6 +426,9 @@ pub fn popup_menu(owner: HWND, entries: &[(usize, &str)]) -> usize {
         for ((id, _), label) in entries.iter().zip(&labels) {
             if *id == 0 {
                 AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+            } else if *id == usize::MAX {
+                // Etichetta di sezione, come le voci disattivate dei menu della versione Tauri.
+                AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, label.as_ptr());
             } else {
                 AppendMenuW(menu, MF_STRING, *id, label.as_ptr());
             }
@@ -400,14 +441,3 @@ pub fn popup_menu(owner: HWND, entries: &[(usize, &str)]) -> usize {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::numbered;
-
-    #[test]
-    fn numbers_new_names_before_the_extension() {
-        assert_eq!(numbered("nuovo-file.txt", 1), "nuovo-file.txt");
-        assert_eq!(numbered("nuovo-file.txt", 2), "nuovo-file-2.txt");
-        assert_eq!(numbered("nuova-cartella", 3), "nuova-cartella-3");
-    }
-}

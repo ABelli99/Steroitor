@@ -69,13 +69,55 @@ fn show_side(sci: &Sci, side: &Side, language: &'static Language, palette: &Pale
     sci.call(SCI_SETREADONLY, 1, 0);
 }
 
-/// Mostra `left` e `right` allineati, in sola lettura; restituisce la prima riga di ogni modifica.
-pub fn show(panes: [&Sci; 2], left: &str, right: &str, path: &Path, palette: &Palette, font_fraction: isize) -> Vec<usize> {
+/// Mostra `left` e `right` allineati, in sola lettura; restituisce la prima riga di ogni modifica e il tipo di ogni riga.
+pub fn show(panes: [&Sci; 2], left: &str, right: &str, path: &Path, palette: &Palette, font_fraction: isize) -> (Vec<usize>, Vec<Kind>) {
     let language = lang::detect(path);
     let aligned = align(left, right);
     show_side(panes[0], &aligned.left, language, palette, font_fraction);
     show_side(panes[1], &aligned.right, language, palette, font_fraction);
-    aligned.changes
+    let kinds = aligned.left.kinds.iter().zip(&aligned.right.kinds).map(|(left, right)| if *left == Kind::Same && *right == Kind::Same { Kind::Same } else { Kind::Modified }).collect();
+    (aligned.changes, kinds)
+}
+
+const SCI_HIDELINES: u32 = 2227;
+const SCI_SHOWLINES: u32 = 2226;
+/// Righe uguali tenute attorno a ogni modifica con "Solo le zone cambiate".
+const CONTEXT: usize = 3;
+
+/// Righe da nascondere per mostrare solo le zone cambiate: quelle uguali a più di CONTEXT righe da una modifica.
+pub fn hidden_lines(kinds: &[Kind]) -> Vec<bool> {
+    let mut hidden = vec![true; kinds.len()];
+    for (line, kind) in kinds.iter().enumerate() {
+        if *kind != Kind::Same {
+            for near in line.saturating_sub(CONTEXT)..(line + CONTEXT + 1).min(kinds.len()) {
+                hidden[near] = false;
+            }
+        }
+    }
+    hidden
+}
+
+/// Nasconde (o rimostra) le righe uguali lontane dalle modifiche, sui due lati.
+pub fn only_changes(panes: [&Sci; 2], kinds: &[Kind], on: bool) {
+    for pane in panes {
+        pane.call(SCI_SHOWLINES, 0, kinds.len().saturating_sub(1) as isize);
+        if !on {
+            continue;
+        }
+        let hidden = hidden_lines(kinds);
+        let mut line = 0;
+        while line < hidden.len() {
+            if !hidden[line] {
+                line += 1;
+                continue;
+            }
+            let start = line;
+            while line < hidden.len() && hidden[line] {
+                line += 1;
+            }
+            pane.call(SCI_HIDELINES, start, (line - 1) as isize);
+        }
+    }
 }
 
 /// I due lati hanno le stesse righe: quando uno scorre, l'altro lo segue.
@@ -95,6 +137,15 @@ pub fn sync_scroll(panes: [&Sci; 2], source: windows_sys::Win32::Foundation::HWN
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hides_unchanged_lines_far_from_changes() {
+        let mut kinds = vec![Kind::Same; 12];
+        kinds[6] = Kind::Modified;
+        let hidden = hidden_lines(&kinds);
+        assert_eq!(hidden.iter().filter(|hidden| !**hidden).count(), 7);
+        assert!(hidden[0] && hidden[2] && !hidden[3] && !hidden[9] && hidden[10]);
+    }
 
     #[test]
     fn blends_two_colors() {

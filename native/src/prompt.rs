@@ -63,16 +63,21 @@ unsafe extern "system" fn prompt_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
 
 /// Chiede un testo all'utente; None se annulla o lascia il campo vuoto.
 pub fn prompt(owner: HWND, palette: &Palette, font: HFONT, title: &str, label: &str, initial: &str) -> Option<String> {
-    ask(owner, palette, font, title, label, initial, false)
+    ask(owner, palette, font, title, label, initial, false, None)
+}
+
+/// Come `prompt`, con selezionati solo i primi `selected` caratteri (UTF-16): per un nome, fino all'estensione.
+pub fn prompt_selected(owner: HWND, palette: &Palette, font: HFONT, title: &str, label: &str, initial: &str, selected: usize) -> Option<String> {
+    ask(owner, palette, font, title, label, initial, false, Some(selected))
 }
 
 /// Come `prompt`, con un campo su più righe (es. un messaggio di commit): Invio va a capo, Ctrl+Invio conferma.
 pub fn prompt_text(owner: HWND, palette: &Palette, font: HFONT, title: &str, label: &str, initial: &str) -> Option<String> {
     let initial = initial.replace("\r\n", "\n").replace('\n', "\r\n");
-    ask(owner, palette, font, title, label, &initial, true).map(|text| text.replace("\r\n", "\n"))
+    ask(owner, palette, font, title, label, &initial, true, None).map(|text| text.replace("\r\n", "\n"))
 }
 
-fn ask(owner: HWND, palette: &Palette, font: HFONT, title: &str, label: &str, initial: &str, multiline: bool) -> Option<String> {
+fn ask(owner: HWND, palette: &Palette, font: HFONT, title: &str, label: &str, initial: &str, multiline: bool, selection: Option<usize>) -> Option<String> {
     let class_name = wide(CLASS_NAME);
     let (title, label, initial) = (wide(title), wide(label), wide(initial));
     // SAFETY: finestra modale creata, usata e distrutta qui; il proprietario è disabilitato per tutta la durata.
@@ -106,7 +111,7 @@ fn ask(owner: HWND, palette: &Palette, font: HFONT, title: &str, label: &str, in
         let edit_height = if multiline { client.bottom - 80 * scale / 96 } else { 26 * scale / 96 };
         let edit = CreateWindowExW(0, edit_class.as_ptr(), initial.as_ptr(), WS_CHILD | WS_VISIBLE | WS_BORDER | style, 16 * scale / 96, 40 * scale / 96, client.right - 32 * scale / 96, edit_height, hwnd, std::ptr::null_mut(), instance, std::ptr::null());
         SendMessageW(edit, WM_SETFONT, font as usize, 0);
-        SendMessageW(edit, 0x00B1, 0, -1);
+        SendMessageW(edit, 0x00B1, 0, selection.map_or(-1, |end| end as isize));
 
         EnableWindow(owner, 0);
         ShowWindow(hwnd, SW_SHOW);

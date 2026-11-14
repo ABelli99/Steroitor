@@ -889,7 +889,7 @@ impl Panel {
     pub fn set_preview(&self, path: Option<String>, before: &str, after: &str, palette: &Palette, font_fraction: isize) {
         let file = PathBuf::from(path.clone().unwrap_or_default());
         *self.preview_path.borrow_mut() = path;
-        crate::side_by_side::show([&self.preview[0], &self.preview[1]], before, after, &file, palette, font_fraction);
+        let _ = crate::side_by_side::show([&self.preview[0], &self.preview[1]], before, after, &file, palette, font_fraction);
     }
 
     pub fn preview_pane(&self, hwnd: HWND) -> bool {

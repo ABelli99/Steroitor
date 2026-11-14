@@ -32,10 +32,10 @@ use crate::git::{line_changes, repo_name, repo_of, CommitRequest, Event, FileCol
 use crate::lang::{self, Language};
 use crate::minimap::{self, Minimap, WM_MINIMAP_LINE};
 use crate::list::{decode_event, ListEvent, RowPaint, WM_LIST_EVENT, WM_LIST_PAINT};
-use crate::paint::{fill, text, text_width};
+use crate::paint::{fill, frame, text, text_width};
 use crate::panel::{self, BranchEntry, BranchRow, ConsoleTarget, DetailRow, Panel, RepoTab, Tab};
 use crate::plugins::{self, Host};
-use crate::prompt::{prompt, prompt_text};
+use crate::prompt::{prompt, prompt_selected, prompt_text};
 use crate::quick_open;
 use crate::sci::*;
 use crate::session::{ProjectSession, Session, Settings, UnsavedTab};
@@ -52,7 +52,6 @@ const EXPLORER_HEADER: i32 = 30;
 const BADGE_FONT_PX: i32 = 10;
 const STATUS_HEIGHT: i32 = 24;
 const SPLITTER: i32 = 4;
-const TAB_PADDING: i32 = 12;
 const TAB_MAX_WIDTH: i32 = 220;
 const CLOSE_SIZE: i32 = 16;
 const UI_FONT_PX: i32 = 13;
@@ -69,14 +68,32 @@ const SCI_LINESONSCREEN: u32 = 2370;
 const SCI_VISIBLEFROMDOCLINE: u32 = 2220;
 /// Il watcher (altro thread) avvisa la finestra con questo messaggio; le cartelle cambiate aspettano in `changes`.
 const WM_FILES_CHANGED: u32 = WM_APP + 1;
-const MENU_OPEN_FOLDER: usize = 1;
-const MENU_CLOSE_FOLDER: usize = 2;
-const MENU_SETTINGS: usize = 3;
-const MENU_NEW_PROJECT: usize = 4;
-const MENU_CLOSE_PROJECT: usize = 5;
-const MENU_CLONE: usize = 6;
-const MENU_INIT: usize = 7;
-const MARKER_TIMER: usize = 1;
+const VCS_COMMIT: usize = 8;
+const VCS_FETCH_ALL: usize = 9;
+const VCS_HISTORY: usize = 10;
+const VCS_HISTORY_SELECTION: usize = 11;
+const VCS_METHOD_MERGE: usize = 12;
+const VCS_METHOD_REBASE: usize = 13;
+const VCS_BRANCH_FROM: usize = 9000;
+const EDIT_DECLARATION: usize = 1;
+const EDIT_CUT: usize = 2;
+const EDIT_COPY: usize = 3;
+const EDIT_PASTE: usize = 4;
+const EDIT_SELECT_ALL: usize = 5;
+const EDIT_BLAME: usize = 6;
+const EDIT_HISTORY: usize = 7;
+const EDIT_HISTORY_SELECTION: usize = 8;
+const SCI_POSITIONFROMPOINT: u32 = 2022;
+const SCI_CUT: u32 = 2177;
+const SCI_COPY: u32 = 2178;
+const SCI_PASTE: u32 = 2179;
+const SCI_SELECTALL: u32 = 2013;
+const SCI_USEPOPUP: u32 = 2371;
+const SCI_MARKERNEXT: u32 = 2047;
+const SCI_GOTOLINE: u32 = 2024;
+const SCN_MARGINRIGHTCLICK: u32 = 2031;
+const TREE_INDENT: i32 = 14;
+const HEADER_FONT_PX: i32 = 11;const MARKER_TIMER: usize = 1;
 const MARKER_DELAY_MS: u32 = 300;
 const GIT_MARGIN: usize = 1;
 const BLAME_MARGIN: usize = 2;
@@ -160,6 +177,16 @@ fn blame_label(entry: &BlameLine) -> String {
     format!(" {} {} {}", entry.hash.get(..7).unwrap_or(&entry.hash), date.get(..10).unwrap_or(&date), entry.author)
 }
 
+/// Pulsanti dell'intestazione dell'explorer e del suo stato vuoto.
+#[derive(Clone, Copy, PartialEq)]
+enum HeaderButton {
+    NewFile,
+    Refresh,
+    Collapse,
+    OpenFolder,
+    Clone,
+}
+
 /// Pulsanti della barra in alto, nell'ordine della versione Tauri.
 #[derive(Clone, Copy, PartialEq)]
 enum TopButton {
@@ -225,6 +252,9 @@ pub struct App {
     edit_brush: HBRUSH,
     tabs: RefCell<Vec<(RECT, RECT)>>,
     top_buttons: RefCell<Vec<(RECT, TopButton)>>,
+    explorer_icons: Cell<windows_sys::Win32::UI::Controls::HIMAGELIST>,
+    header_font: Cell<HFONT>,
+    header_buttons: RefCell<Vec<(RECT, HeaderButton)>>,
     /// Ultima posizione del mouse nella finestra, per gli effetti al passaggio; None quando esce.
     pointer: Cell<Option<(i32, i32)>>,
     tracking: Cell<bool>,
@@ -476,6 +506,9 @@ impl App {
             edit_brush: unsafe { CreateSolidBrush(palette.editor) },
             tabs: RefCell::new(Vec::new()),
             top_buttons: RefCell::new(Vec::new()),
+            explorer_icons: Cell::new(0),
+            header_font: Cell::new(std::ptr::null_mut()),
+            header_buttons: RefCell::new(Vec::new()),
             pointer: Cell::new(None),
             tracking: Cell::new(false),
             vcs_rects: RefCell::new(Vec::new()),
@@ -556,9 +589,21 @@ impl App {
             for control in [self.find.find, self.find.replace] {
                 SendMessageW(control, WM_SETFONT, font as usize, 1);
             }
-            self.explorer.set_font(font, self.scale(TREE_ITEM_HEIGHT));
+            let icons = crate::icons::image_list(&self.palette, self.scale(16));
+            self.explorer.set_font(font, self.scale(TREE_ITEM_HEIGHT), self.scale(TREE_INDENT));
+            self.explorer.set_image_list(icons);
             for parked in self.projects.borrow().iter().flatten() {
-                parked.explorer.set_font(font, self.scale(TREE_ITEM_HEIGHT));
+                parked.explorer.set_font(font, self.scale(TREE_ITEM_HEIGHT), self.scale(TREE_INDENT));
+                parked.explorer.set_image_list(icons);
+            }
+            let old_icons = self.explorer_icons.replace(icons);
+            if old_icons != 0 {
+                windows_sys::Win32::UI::Controls::ImageList_Destroy(old_icons);
+            }
+            let header = CreateFontW(-self.scale(HEADER_FONT_PX), 0, 0, 0, 600, 0, 0, 0, DEFAULT_CHARSET as u32, 0, 0, CLEARTYPE_QUALITY as u32, 0, face.as_ptr());
+            let old_header = self.header_font.replace(header);
+            if !old_header.is_null() {
+                DeleteObject(old_header);
             }
             self.plugins.set_font(font);
             for control in [self.panel.message, self.panel.filter_text, self.panel.filter_author, self.panel.filter_path] {
@@ -582,6 +627,7 @@ impl App {
     fn configure_editor(&self) {
         let sci = &self.sci;
         sci.call(SCI_SETMULTIPLESELECTION, 1, 0);
+        sci.call(SCI_USEPOPUP, 0, 0);
         sci.call(SCI_SETADDITIONALSELECTIONTYPING, 1, 0);
         sci.call(SCI_SETMULTIPASTE, 1, 0);
         sci.call(SCI_SETSCROLLWIDTH, 1, 0);
@@ -941,7 +987,8 @@ impl App {
     fn park(&self, pending: Option<ProjectSession>) -> Parked {
         // SAFETY: modulo dell'eseguibile; l'explorer nasce nascosto finché il progetto non diventa attivo.
         let explorer = unsafe { Explorer::create(self.hwnd, GetModuleHandleW(std::ptr::null()), &self.palette) };
-        explorer.set_font(self.font.get(), self.scale(TREE_ITEM_HEIGHT));
+        explorer.set_font(self.font.get(), self.scale(TREE_ITEM_HEIGHT), self.scale(TREE_INDENT));
+        explorer.set_image_list(self.explorer_icons.get());
         // SAFETY: controllo appena creato.
         unsafe { ShowWindow(explorer.hwnd(), SW_HIDE) };
         Parked { explorer, docs: Vec::new(), active: 0, repos: Vec::new(), colors: FileColors::default(), heads: HashMap::new(), watcher: None, changes: Changes::default(), panel: self.panel.new_state(), pending }
@@ -1203,6 +1250,53 @@ impl App {
     fn on_explorer_action(&self, action: Action) {
         match action {
             Action::Open(path) => self.open(&path),
+            Action::Create { dir, folder } => {
+                let title = if folder { "Nuova cartella" } else { "Nuovo file" };
+                let Some(name) = prompt(self.hwnd, &self.palette, self.font.get(), title, "Nome:", "") else { return };
+                let created = if folder { steroitor_core::fs::create_dir(dir.to_string_lossy().into_owned(), name) } else { steroitor_core::fs::create_file(dir.to_string_lossy().into_owned(), name) };
+                match created {
+                    Ok(path) => {
+                        let path = PathBuf::from(path);
+                        self.explorer.refresh_dir(&dir);
+                        self.explorer.reveal(&path);
+                        if !folder {
+                            self.open(&path);
+                        }
+                    }
+                    Err(error) => {
+                        message_box(self.hwnd, &error, MB_ICONERROR);
+                    }
+                }
+            }
+            Action::Rename(from) => {
+                let name = folder_name(Some(&from));
+                // Selezionato il nome fino all'estensione, come nella versione Tauri (tutto, per le cartelle).
+                let selected = if from.is_dir() { name.encode_utf16().count() } else { name.rfind('.').filter(|&dot| dot > 0).map_or(name.encode_utf16().count(), |dot| name[..dot].encode_utf16().count()) };
+                let Some(new) = prompt_selected(self.hwnd, &self.palette, self.font.get(), "Rinomina", "Nuovo nome:", &name, selected) else { return };
+                if new == name {
+                    return;
+                }
+                match steroitor_core::fs::rename_path(from.to_string_lossy().into_owned(), new) {
+                    Ok(to) => {
+                        let to = PathBuf::from(to);
+                        if let Some(parent) = from.parent() {
+                            self.explorer.refresh_dir(parent);
+                        }
+                        self.explorer.reveal(&to);
+                        self.on_explorer_action(Action::Renamed { from, to });
+                    }
+                    Err(error) => {
+                        message_box(self.hwnd, &error, MB_ICONERROR);
+                    }
+                }
+            }
+            Action::Blame(path) => {
+                self.open(&path);
+                if let Some(root) = repo_of(&self.repos.borrow(), &path).map(|repo| repo.root.clone()) {
+                    self.worker.blame(&root, &path);
+                }
+            }
+            Action::History(path) => self.show_file_history(&path, None),
             Action::Renamed { from, to } => {
                 let renamed: Vec<(usize, PathBuf)> = self
                     .docs
@@ -1395,7 +1489,11 @@ impl App {
         }
         if focus == self.explorer.hwnd() && !ctrl {
             match key {
-                VK_F2 => self.explorer.rename_selected(),
+                VK_F2 => {
+                    if let Some(action) = self.explorer.rename_selected() {
+                        self.on_explorer_action(action);
+                    }
+                }
                 VK_DELETE => {
                     if let Some(action) = self.explorer.delete_selected(self.hwnd) {
                         self.on_explorer_action(action);
@@ -1513,7 +1611,8 @@ impl App {
         let tree_top = self.main_top() + self.scale(EXPLORER_HEADER);
         // SAFETY: finestre valide create da questo thread.
         unsafe {
-            ShowWindow(self.explorer.hwnd(), if self.explorer_visible.get() { SW_SHOW } else { SW_HIDE });
+            let tree = self.explorer_visible.get() && self.explorer.root().is_some();
+            ShowWindow(self.explorer.hwnd(), if tree { SW_SHOW } else { SW_HIDE });
             MoveWindow(self.explorer.hwnd(), self.bar_width(), tree_top, self.explorer_edge() - self.bar_width(), (bottom - tree_top).max(0), 1);
             MoveWindow(self.sci.hwnd, left, tab + find_height, (client.right - left - self.right_strip()).max(0), (bottom - tab - find_height).max(0), 1);
             let minimap_width = self.scale(minimap::WIDTH);
@@ -1565,6 +1664,14 @@ impl App {
             SCN_AUTOCCANCELLED | SCN_AUTOCCOMPLETED => self.plugins.on_list_closed(&self.sci),
             SCN_DWELLSTART => self.with_plugins(|plugins, sci, settings, path| plugins.on_dwell(sci, settings, path, notification.position)),
             SCN_DWELLEND => self.plugins.on_dwell_end(&self.sci),
+            SCN_MARGINRIGHTCLICK => {
+                let mut point = POINT { x: 0, y: 0 };
+                // SAFETY: posizione del cursore per il menu.
+                unsafe { GetCursorPos(&mut point) };
+                let line = self.sci.call(SCI_LINEFROMPOSITION, notification.position.max(0) as usize, 0);
+                self.sci.call(SCI_GOTOLINE, line.max(0) as usize, 0);
+                self.editor_menu(point, true);
+            }
             SCN_MARGINCLICK => {
                 let line = self.sci.call(SCI_LINEFROMPOSITION, notification.position.max(0) as usize, 0).max(0) as usize;
                 match notification.margin as usize {
@@ -1721,16 +1828,68 @@ impl App {
         self.invalidate();
     }
 
+    /// Intestazione dell'explorer: nome della cartella in maiuscolo e i pulsanti +, ⟳, ⊟, …; senza cartella il messaggio e due pulsanti.
     unsafe fn paint_header(&self, dc: HDC) {
+        let palette = &self.palette;
         let rect = self.header_rect();
-        fill(dc, &RECT { top: rect.bottom - 1, ..rect }, self.palette.border);
-        let inner = RECT { left: rect.left + self.scale(TAB_PADDING), right: rect.right - self.scale(TAB_PADDING), ..rect };
-        match self.explorer.root() {
-            Some(root) => {
-                let name = root.file_name().map_or_else(|| root.display().to_string(), |name| name.to_string_lossy().into_owned());
-                text(dc, &name, &inner, self.palette.fg, DT_LEFT | DT_END_ELLIPSIS);
+        let root = self.explorer.root();
+        let pointer = self.pointer.get();
+        let mut buttons = Vec::new();
+        let mut entries = Vec::new();
+        if root.is_some() {
+            entries.extend([("+", HeaderButton::NewFile), ("⟳", HeaderButton::Refresh), ("⊟", HeaderButton::Collapse)]);
+        }
+        entries.push(("…", HeaderButton::OpenFolder));
+        let mut right = rect.right - self.scale(4);
+        for (label, button) in entries.iter().rev() {
+            let area = RECT { left: right - text_width(dc, label) - self.scale(12), top: rect.top + self.scale(4), right, bottom: rect.bottom - self.scale(4) };
+            if pointer.is_some_and(|(x, y)| contains(&area, x, y)) {
+                fill(dc, &area, palette.hover);
             }
-            None => text(dc, "Apri cartella…", &inner, self.palette.accent, DT_LEFT | DT_END_ELLIPSIS),
+            text(dc, label, &area, palette.muted, DT_CENTER);
+            buttons.push((area, *button));
+            right = area.left;
+        }
+        let title = root.as_deref().map_or_else(|| "EXPLORER".to_string(), |root| folder_name(Some(root)).to_uppercase());
+        let previous = SelectObject(dc, self.header_font.get());
+        text(dc, &title, &RECT { left: rect.left + self.scale(12), right: right - self.scale(4), ..rect }, palette.muted, DT_LEFT | DT_END_ELLIPSIS);
+        SelectObject(dc, previous);
+        if root.is_none() {
+            let body = RECT { top: rect.bottom, bottom: self.panel_rect().top, ..rect };
+            text(dc, "Nessuna cartella aperta.", &RECT { left: body.left + self.scale(12), top: body.top + self.scale(4), right: body.right - self.scale(12), bottom: body.top + self.scale(28) }, palette.muted, DT_LEFT);
+            let mut top = body.top + self.scale(34);
+            for (label, button) in [("Apri cartella", HeaderButton::OpenFolder), ("Clona repository…", HeaderButton::Clone)] {
+                let area = RECT { left: body.left + self.scale(12), top, right: body.left + self.scale(12) + text_width(dc, label) + self.scale(24), bottom: top + self.scale(26) };
+                if pointer.is_some_and(|(x, y)| contains(&area, x, y)) {
+                    fill(dc, &area, palette.hover);
+                }
+                frame(dc, &area, palette.border);
+                text(dc, label, &area, palette.fg, DT_CENTER);
+                buttons.push((area, button));
+                top = area.bottom + self.scale(6);
+            }
+        }
+        *self.header_buttons.borrow_mut() = buttons;
+    }
+
+    fn header_button_at(&self, x: i32, y: i32) -> Option<HeaderButton> {
+        if !self.explorer_visible.get() {
+            return None;
+        }
+        self.header_buttons.borrow().iter().find(|(rect, _)| contains(rect, x, y)).map(|(_, button)| *button)
+    }
+
+    fn on_header_button(&self, button: HeaderButton) {
+        match button {
+            HeaderButton::NewFile => {
+                if let Some(dir) = self.explorer.create_target() {
+                    self.on_explorer_action(Action::Create { dir, folder: false });
+                }
+            }
+            HeaderButton::Refresh => self.explorer.refresh_all(),
+            HeaderButton::Collapse => self.explorer.collapse_all(),
+            HeaderButton::OpenFolder => self.open_folder(),
+            HeaderButton::Clone => self.clone_repository(),
         }
     }
 
@@ -2011,6 +2170,9 @@ impl App {
     fn git_color(&self, param: LPARAM) -> Option<u32> {
         let path = self.explorer.path_of_param(param)?;
         let palette = &self.palette;
+        if self.active_path().as_deref() == Some(path.as_path()) {
+            return Some(palette.accent);
+        }
         Some(match self.colors.borrow().of(&path)? {
             FileStatus::Added => palette.git_added,
             FileStatus::Modified | FileStatus::Deleted => palette.git_modified,
@@ -2033,16 +2195,42 @@ impl App {
         }
     }
 
+    /// Righe (da 1) della selezione nell'editor, se c'è.
+    fn selected_lines(&self) -> Option<(u32, u32)> {
+        let (start, end) = (self.sci.call(SCI_GETSELECTIONSTART, 0, 0), self.sci.call(SCI_GETSELECTIONEND, 0, 0));
+        if end <= start {
+            return None;
+        }
+        let first = self.sci.call(SCI_LINEFROMPOSITION, start as usize, 0) + 1;
+        let last = self.sci.call(SCI_LINEFROMPOSITION, (end - 1) as usize, 0) + 1;
+        Some((first as u32, last as u32))
+    }
+
+    /// History del file (o delle righe) nella finestra di confronto.
+    fn show_file_history(&self, path: &Path, lines: Option<(u32, u32)>) {
+        let Some(root) = repo_of(&self.repos.borrow(), path).map(|repo| repo.root.clone()) else { return };
+        self.compare.show_history(&root, path, lines, self.font.get());
+    }
+
+    /// Menu VCS come nella versione Tauri: operazione in corso, update, commit, push, fetch, history, branch, stash, metodo di update, branch locali e remoti.
     fn vcs_menu_for(&self, root: PathBuf) {
-        let (branches, operation): (Vec<(String, bool, bool)>, Option<&'static str>) = {
+        let (branches, operation, current) = {
             let repos = self.repos.borrow();
             let repo = repos.iter().find(|repo| repo.root == root);
-            let branches = repo.map(|repo| repo.branches.iter().map(|branch| (branch.name.clone(), branch.remote, branch.current)).collect()).unwrap_or_default();
-            let operation = repo.and_then(|repo| repo.status.as_ref()).and_then(|status| status.operation.as_ref()).map(operation_name);
-            (branches, operation)
+            let branches: Vec<(String, bool, bool)> = repo.map(|repo| repo.branches.iter().map(|branch| (branch.name.clone(), branch.remote, branch.current)).collect()).unwrap_or_default();
+            let status = repo.and_then(|repo| repo.status.as_ref());
+            let operation = status.and_then(|status| status.operation.as_ref().map(|operation| (operation_name(operation), status.files.iter().filter(|file| file.status == FileStatus::Conflict).count())));
+            let current = status.and_then(|status| status.branch.head.clone()).unwrap_or_else(|| "HEAD".into());
+            (branches, operation, current)
         };
-        let path = root.to_string_lossy().into_owned();
-        let stashes = self.worker.now(|git| git.stashes(&path)).unwrap_or_default();
+        let path_text = root.to_string_lossy().into_owned();
+        let stashes = self.worker.now(|git| git.stashes(&path_text)).unwrap_or_default();
+        let rebase = self.settings.borrow().pull_rebase();
+        let several = self.repos.borrow().len() > 1;
+        let file = self.active_path().filter(|path| repo_of(&self.repos.borrow(), path).is_some_and(|repo| repo.root == root));
+        let selection = file.as_ref().and_then(|_| self.selected_lines());
+        let locals: Vec<String> = branches.iter().filter(|(_, remote, _)| !remote).map(|(name, _, _)| name.clone()).collect();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs() as i64);
         // SAFETY: menu creato, mostrato e distrutto qui (DestroyMenu distrugge anche i sottomenu); le stringhe vivono per tutta la chiamata.
         let command = unsafe {
             let mut strings: Vec<Vec<u16>> = Vec::new();
@@ -2051,43 +2239,73 @@ impl App {
                 strings.last().map_or(std::ptr::null(), |text| text.as_ptr())
             };
             let menu = CreatePopupMenu();
-            if let Some(operation) = operation {
-                AppendMenuW(menu, MF_STRING, VCS_CONTINUE, label(&format!("Continua {operation}")));
-                AppendMenuW(menu, MF_STRING, VCS_ABORT, label(&format!("Annulla {operation}")));
+            if let Some((name, conflicts)) = operation {
+                let title = format!("{}{} in corso · {conflicts} conflitti", name[..1].to_uppercase(), &name[1..]);
+                AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, label(&title));
+                AppendMenuW(menu, MF_STRING, VCS_CONTINUE, label(&format!("Continua {name}")));
+                AppendMenuW(menu, MF_STRING, VCS_ABORT, label(&format!("Annulla {name}…")));
                 AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
             }
-            AppendMenuW(menu, MF_STRING, VCS_PULL, label("Aggiorna (pull)"));
-            AppendMenuW(menu, MF_STRING, VCS_PUSH, label("Push\tCtrl+Shift+K"));
+            AppendMenuW(menu, MF_STRING, VCS_PULL, label(&format!("Update\tCtrl+T · {}", if rebase { "Rebase" } else { "Merge" })));
+            AppendMenuW(menu, MF_STRING, VCS_COMMIT, label("Commit…\tCtrl+K"));
+            AppendMenuW(menu, MF_STRING, VCS_PUSH, label("Push…\tCtrl+Shift+K"));
             AppendMenuW(menu, MF_STRING, VCS_FETCH, label("Fetch"));
-            AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-            AppendMenuW(menu, MF_STRING, VCS_STASH_PUSH, label("Accantona le modifiche (stash)…"));
-            let stash_menu = CreatePopupMenu();
-            for (index, stash) in stashes.iter().enumerate() {
-                let entry = CreatePopupMenu();
-                AppendMenuW(entry, MF_STRING, VCS_STASH_POP + index, label("Applica e rimuovi (pop)"));
-                AppendMenuW(entry, MF_STRING, VCS_STASH_DROP + index, label("Elimina"));
-                AppendMenuW(stash_menu, MF_POPUP, entry as usize, label(&format!("{}: {}", stash.name, stash.message)));
+            if several {
+                AppendMenuW(menu, MF_STRING, VCS_FETCH_ALL, label("Fetch di tutti i repository"));
             }
-            AppendMenuW(menu, MF_POPUP | if stashes.is_empty() { MF_GRAYED } else { 0 }, stash_menu as usize, label(&format!("Stash ({})", stashes.len())));
+            if let Some(file) = &file {
+                AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+                AppendMenuW(menu, MF_STRING, VCS_HISTORY, label(&format!("History di {}", folder_name(Some(file)))));
+                if let Some((first, last)) = selection {
+                    AppendMenuW(menu, MF_STRING, VCS_HISTORY_SELECTION, label(&format!("History della selezione (righe {first}–{last})")));
+                }
+            }
             AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
             AppendMenuW(menu, MF_STRING, VCS_NEW_BRANCH, label("Nuovo branch…"));
-            let checkout = CreatePopupMenu();
-            let merge = CreatePopupMenu();
-            let rebase = CreatePopupMenu();
-            for (index, (name, remote, current)) in branches.iter().enumerate() {
-                let flags = if *current { MF_STRING | MF_CHECKED | MF_GRAYED } else { MF_STRING };
-                if *remote && index > 0 && !branches[index - 1].1 {
-                    AppendMenuW(checkout, MF_SEPARATOR, 0, std::ptr::null());
+            AppendMenuW(menu, MF_STRING, VCS_STASH_PUSH, label("Stash modifiche…"));
+            let stash_menu = CreatePopupMenu();
+            if stashes.is_empty() {
+                AppendMenuW(stash_menu, MF_STRING | MF_GRAYED, 0, label("Nessuno stash"));
+            }
+            for (index, stash) in stashes.iter().enumerate() {
+                if index > 0 {
+                    AppendMenuW(stash_menu, MF_SEPARATOR, 0, std::ptr::null());
                 }
-                AppendMenuW(checkout, flags, VCS_CHECKOUT + index, label(name));
-                if !current {
-                    AppendMenuW(merge, MF_STRING, VCS_MERGE + index, label(name));
-                    AppendMenuW(rebase, MF_STRING, VCS_REBASE + index, label(name));
+                AppendMenuW(stash_menu, MF_STRING | MF_GRAYED, 0, label(&format!("{}\t{}", stash.message, crate::panel::relative_time(stash.timestamp, now))));
+                AppendMenuW(stash_menu, MF_STRING, VCS_STASH_POP + index, label("Pop (applica e rimuovi)"));
+                AppendMenuW(stash_menu, MF_STRING, VCS_STASH_DROP + index, label("Elimina…"));
+            }
+            AppendMenuW(menu, MF_POPUP, stash_menu as usize, label(&format!("Stash salvati ({})", stashes.len())));
+            AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+            AppendMenuW(menu, MF_STRING, VCS_METHOD_MERGE, label(if rebase { "   Update con Merge" } else { "● Update con Merge" }));
+            AppendMenuW(menu, MF_STRING, VCS_METHOD_REBASE, label(if rebase { "● Update con Rebase" } else { "   Update con Rebase" }));
+            for (title, remote) in [("Branch locali", false), ("Branch remoti", true)] {
+                let entries: Vec<usize> = branches
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (name, is_remote, _))| *is_remote == remote && (!remote || !locals.iter().any(|local| name.split_once('/').is_some_and(|(_, rest)| rest == local))))
+                    .map(|(index, _)| index)
+                    .collect();
+                if entries.is_empty() {
+                    continue;
+                }
+                AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+                AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, label(title));
+                for index in entries {
+                    let (name, _, is_current) = &branches[index];
+                    if *is_current {
+                        AppendMenuW(menu, MF_STRING, 0, label(&format!("● {name}\tcorrente")));
+                        continue;
+                    }
+                    let submenu = CreatePopupMenu();
+                    AppendMenuW(submenu, MF_STRING | MF_GRAYED, 0, label(name));
+                    AppendMenuW(submenu, MF_STRING, VCS_CHECKOUT + index, label("Checkout"));
+                    AppendMenuW(submenu, MF_STRING, VCS_MERGE + index, label(&format!("Merge in {current}")));
+                    AppendMenuW(submenu, MF_STRING, VCS_REBASE + index, label(&format!("Rebase {current} su {name}")));
+                    AppendMenuW(submenu, MF_STRING, VCS_BRANCH_FROM + index, label("Nuovo branch da qui…"));
+                    AppendMenuW(menu, MF_POPUP, submenu as usize, label(name));
                 }
             }
-            AppendMenuW(menu, MF_POPUP, checkout as usize, label("Checkout"));
-            AppendMenuW(menu, MF_POPUP, merge as usize, label("Merge nel branch corrente"));
-            AppendMenuW(menu, MF_POPUP, rebase as usize, label("Rebase del branch corrente su"));
             let mut point = POINT { x: 0, y: 0 };
             GetCursorPos(&mut point);
             let command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_BOTTOMALIGN | TPM_LEFTALIGN, point.x, point.y, 0, self.hwnd, std::ptr::null());
@@ -2103,11 +2321,31 @@ impl App {
                     self.worker.run(&root, |git, root| git.abort_operation(root));
                 }
             }
-            VCS_PULL => self.pull(),
-            VCS_PUSH => self.push(),
+            VCS_PULL => self.worker.run(&root, move |git, root| git.pull(root, rebase)),
+            VCS_COMMIT => {
+                self.select_repo(root);
+                self.show_panel(Tab::Commit);
+            }
+            VCS_PUSH => self.worker.run(&root, |git, root| git.push(root)),
             VCS_FETCH => self.worker.run(&root, |git, root| git.fetch(root)),
+            VCS_FETCH_ALL => {
+                let roots: Vec<PathBuf> = self.repos.borrow().iter().map(|repo| repo.root.clone()).collect();
+                for root in roots {
+                    self.worker.run(&root, |git, root| git.fetch(root));
+                }
+            }
+            VCS_HISTORY => {
+                if let Some(file) = &file {
+                    self.show_file_history(file, None);
+                }
+            }
+            VCS_HISTORY_SELECTION => {
+                if let Some(file) = &file {
+                    self.show_file_history(file, selection);
+                }
+            }
             VCS_STASH_PUSH => {
-                if let Some(message) = prompt(self.hwnd, &self.palette, self.font.get(), "Stash", "Descrizione delle modifiche accantonate:", "WIP") {
+                if let Some(message) = prompt(self.hwnd, &self.palette, self.font.get(), "Stash modifiche", "Descrizione delle modifiche accantonate:", "WIP") {
                     self.worker.run(&root, move |git, root| git.stash_push(root, &message));
                 }
             }
@@ -2115,6 +2353,12 @@ impl App {
                 if let Some(name) = prompt(self.hwnd, &self.palette, self.font.get(), "Nuovo branch", "Nome del nuovo branch (parte da HEAD e diventa quello corrente):", "") {
                     self.worker.run(&root, move |git, root| git.create_branch(root, &name, true, None));
                 }
+            }
+            VCS_METHOD_MERGE | VCS_METHOD_REBASE => {
+                let mut settings = self.settings.borrow().clone();
+                settings.update_method = (if command == VCS_METHOD_REBASE { "rebase" } else { "merge" }).into();
+                settings.save();
+                *self.settings.borrow_mut() = settings;
             }
             id if (VCS_CHECKOUT..VCS_MERGE).contains(&id) => {
                 if let Some((name, remote)) = branch(VCS_CHECKOUT) {
@@ -2136,11 +2380,91 @@ impl App {
                     self.worker.run(&root, move |git, root| git.stash_pop(root, &name));
                 }
             }
-            id if id >= VCS_STASH_DROP => {
+            id if (VCS_STASH_DROP..VCS_BRANCH_FROM).contains(&id) => {
                 if let Some(name) = stash(VCS_STASH_DROP) {
                     if message_box(self.hwnd, &format!("Eliminare {name}? Le modifiche accantonate andranno perse."), MB_YESNO | MB_ICONWARNING) == IDYES {
                         self.worker.run(&root, move |git, root| git.stash_drop(root, &name));
                     }
+                }
+            }
+            id if id >= VCS_BRANCH_FROM => {
+                if let Some((name, _)) = branch(VCS_BRANCH_FROM) {
+                    if let Some(new) = prompt(self.hwnd, &self.palette, self.font.get(), "Nuovo branch", &format!("Nome del branch che parte da {name}:"), "") {
+                        self.worker.run(&root, move |git, root| git.create_branch(root, &new, true, Some(&name)));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Menu dell'editor come nella versione Tauri; sul margine solo le voci Git.
+    fn editor_menu(&self, screen: POINT, margin: bool) {
+        let mut point = screen;
+        // SAFETY: conversione nelle coordinate dell'editor.
+        unsafe { ScreenToClient(self.sci.hwnd, &mut point) };
+        let position = if screen.x == -1 && screen.y == -1 { self.sci.call(SCI_GETCURRENTPOS, 0, 0) } else { self.sci.call(SCI_POSITIONFROMPOINT, point.x as usize, point.y as isize) };
+        let (start, end) = (self.sci.call(SCI_GETSELECTIONSTART, 0, 0), self.sci.call(SCI_GETSELECTIONEND, 0, 0));
+        if !margin && (position < start || position > end) {
+            self.sci.call(SCI_GOTOPOS, position.max(0) as usize, 0);
+        }
+        let has_selection = self.sci.call(SCI_GETSELECTIONEND, 0, 0) > self.sci.call(SCI_GETSELECTIONSTART, 0, 0);
+        let caret = self.sci.call(SCI_GETCURRENTPOS, 0, 0) as usize;
+        let (word_start, word_end) = (self.sci.call(SCI_WORDSTARTPOSITION, caret, 1) as usize, self.sci.call(SCI_WORDENDPOSITION, caret, 1) as usize);
+        let word = self.sci.text().get(word_start..word_end).unwrap_or("").to_string();
+        let file = self.active_path().filter(|path| repo_of(&self.repos.borrow(), path).is_some());
+        let blame_on = self.docs.borrow().get(self.active.get()).is_some_and(|doc| !doc.blame.is_empty());
+        let selection = self.selected_lines();
+        let declaration = format!("Vai alla dichiarazione di {word}\tCtrl+B");
+        let history_selection = selection.map(|(first, last)| format!("Mostra history della selezione (righe {first}–{last})"));
+        let disabled = |enabled: bool, id: usize| if enabled { id } else { usize::MAX };
+        let mut entries: Vec<(usize, &str)> = Vec::new();
+        if !margin {
+            entries.push(if word.is_empty() { (usize::MAX, "Vai alla dichiarazione") } else { (EDIT_DECLARATION, declaration.as_str()) });
+            entries.extend([
+                (0, ""),
+                (disabled(has_selection, EDIT_CUT), "Taglia\tCtrl+X"),
+                (disabled(has_selection, EDIT_COPY), "Copia\tCtrl+C"),
+                (EDIT_PASTE, "Incolla\tCtrl+V"),
+                (EDIT_SELECT_ALL, "Seleziona tutto\tCtrl+A"),
+            ]);
+        }
+        if file.is_some() {
+            if !margin {
+                entries.push((0, ""));
+            }
+            entries.push((EDIT_BLAME, if blame_on { "Chiudi annotazioni" } else { "Annotate con Git Blame" }));
+            entries.push((EDIT_HISTORY, "Mostra history del file"));
+            entries.push(match &history_selection {
+                Some(label) => (EDIT_HISTORY_SELECTION, label.as_str()),
+                None => (usize::MAX, "Mostra history della selezione"),
+            });
+        }
+        if entries.is_empty() {
+            return;
+        }
+        match popup_menu(self.hwnd, &entries) {
+            EDIT_DECLARATION => self.go_to_declaration(),
+            EDIT_CUT => drop(self.sci.call(SCI_CUT, 0, 0)),
+            EDIT_COPY => drop(self.sci.call(SCI_COPY, 0, 0)),
+            EDIT_PASTE => drop(self.sci.call(SCI_PASTE, 0, 0)),
+            EDIT_SELECT_ALL => drop(self.sci.call(SCI_SELECTALL, 0, 0)),
+            EDIT_BLAME => {
+                let Some(path) = file else { return };
+                if blame_on {
+                    self.set_blame(&path, Vec::new());
+                } else if let Some(root) = repo_of(&self.repos.borrow(), &path).map(|repo| repo.root.clone()) {
+                    self.worker.blame(&root, &path);
+                }
+            }
+            EDIT_HISTORY => {
+                if let Some(path) = file {
+                    self.show_file_history(&path, None);
+                }
+            }
+            EDIT_HISTORY_SELECTION => {
+                if let Some(path) = file {
+                    self.show_file_history(&path, selection);
                 }
             }
             _ => {}
@@ -2757,8 +3081,8 @@ impl App {
         if let Some(index) = self.project_at(x, y) {
             return self.switch_project(index);
         }
-        if self.explorer_visible.get() && contains(&self.header_rect(), x, y) {
-            return self.header_menu();
+        if let Some(button) = self.header_button_at(x, y) {
+            return self.on_header_button(button);
         }
         if let Some(button) = self.top_button_at(x, y) {
             return self.on_top_button(button);
@@ -2798,35 +3122,6 @@ impl App {
                 unsafe { SetCapture(self.hwnd) };
             }
             None => {}
-        }
-    }
-
-    fn header_menu(&self) {
-        let folder = self.explorer.root();
-        let mut entries = vec![(MENU_OPEN_FOLDER, "Apri cartella…")];
-        if folder.is_some() {
-            entries.push((MENU_NEW_PROJECT, "Apri cartella in un nuovo progetto…"));
-        }
-        entries.push((MENU_CLONE, "Clona repository…"));
-        if folder.is_some() && self.repos.borrow().is_empty() {
-            entries.push((MENU_INIT, "Inizializza un repository Git qui"));
-        }
-        if folder.is_some() {
-            entries.push((MENU_CLOSE_FOLDER, "Chiudi cartella"));
-        }
-        if self.projects.borrow().len() > 1 {
-            entries.push((MENU_CLOSE_PROJECT, "Chiudi progetto"));
-        }
-        entries.extend([(0, ""), (MENU_SETTINGS, "Impostazioni…\tCtrl+Alt+S")]);
-        match popup_menu(self.hwnd, &entries) {
-            MENU_OPEN_FOLDER => self.open_folder(),
-            MENU_NEW_PROJECT => self.new_project(),
-            MENU_CLONE => self.clone_repository(),
-            MENU_INIT => self.init_repository(),
-            MENU_CLOSE_FOLDER => self.set_folder(None),
-            MENU_CLOSE_PROJECT => self.close_project(self.current.get()),
-            MENU_SETTINGS => self.open_settings(),
-            _ => {}
         }
     }
 
@@ -2931,7 +3226,7 @@ impl App {
 
     /// Effetti al passaggio del mouse: si ridisegnano le barre quando cambia l'elemento sotto il puntatore.
     fn track_pointer(&self, x: i32, y: i32) {
-        let target = |point: Option<(i32, i32)>| point.map(|(x, y)| (self.top_button_at(x, y).map(|button| button as usize), self.tab_at(x, y), self.project_at(x, y)));
+        let target = |point: Option<(i32, i32)>| point.map(|(x, y)| (self.top_button_at(x, y).map(|button| button as usize), self.tab_at(x, y), self.project_at(x, y), self.header_button_at(x, y).map(|button| button as usize)));
         let before = target(self.pointer.replace(Some((x, y))));
         if !self.tracking.replace(true) {
             let mut track = TRACKMOUSEEVENT { cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: self.hwnd, dwHoverTime: 0 };
@@ -3039,7 +3334,7 @@ impl App {
             ScreenToClient(self.hwnd, &mut point);
         }
         let over_splitter = self.splitter_rect().is_some_and(|splitter| contains(&splitter, point.x, point.y));
-        let clickable = contains(&self.eol_rect.get(), point.x, point.y) || contains(&self.minimap_rect.get(), point.x, point.y) || contains(&self.wrap_rect.get(), point.x, point.y) || self.vcs_rects.borrow().iter().any(|(rect, _)| contains(rect, point.x, point.y)) || self.project_at(point.x, point.y).is_some() || (self.explorer_visible.get() && contains(&self.header_rect(), point.x, point.y));
+        let clickable = contains(&self.eol_rect.get(), point.x, point.y) || contains(&self.minimap_rect.get(), point.x, point.y) || contains(&self.wrap_rect.get(), point.x, point.y) || self.vcs_rects.borrow().iter().any(|(rect, _)| contains(rect, point.x, point.y)) || self.project_at(point.x, point.y).is_some() || self.header_button_at(point.x, point.y).is_some() || self.top_button_at(point.x, point.y).is_some();
         let over_panel = self.over_panel_splitter(point.y) || self.dragging_panel.get();
         let cursor = match (over_splitter || self.dragging.get(), clickable) {
             _ if over_panel => IDC_SIZENS,
@@ -3149,7 +3444,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 };
             }
             if header.hwndFrom == app.explorer.hwnd() {
-                let (result, action) = app.explorer.on_notify(hwnd, header, lparam);
+                let (result, action) = {
+                    let repos = app.repos.borrow();
+                    let in_repo = |path: &Path| repo_of(&repos, path).is_some();
+                    app.explorer.on_notify(hwnd, header, lparam, &in_repo)
+                };
                 if let Some(action) = action {
                     app.on_explorer_action(action);
                 }
@@ -3176,6 +3475,24 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             SetTextColor(dc, app.palette.fg);
             SetBkColor(dc, app.palette.editor);
             app.edit_brush as LRESULT
+        }
+        WM_CONTEXTMENU if wparam as HWND == app.sci.hwnd => {
+            let point = POINT { x: (lparam & 0xFFFF) as i16 as i32, y: ((lparam >> 16) & 0xFFFF) as i16 as i32 };
+            app.editor_menu(point, false);
+            0
+        }
+        crate::compare::WM_COMPARE_OPEN => {
+            if let Some(path) = app.compare.take_open_request() {
+                app.open(&path);
+                // Apre alla prima modifica, come "Apri nell'editor" della versione Tauri.
+                app.update_markers();
+                let line = app.sci.call(SCI_MARKERNEXT, 0, 0b111);
+                if line >= 0 {
+                    app.sci.call(SCI_GOTOLINE, line as usize, 0);
+                    app.center_line(line as usize);
+                }
+            }
+            0
         }
         WM_DROPFILES => {
             app.on_drop(wparam as HDROP);

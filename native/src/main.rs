@@ -8,6 +8,7 @@ mod explorer;
 mod find;
 mod git;
 mod hunks;
+mod icons;
 mod lang;
 mod list;
 mod minimap;
