@@ -1,8 +1,13 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod dialogs;
+mod explorer;
+mod find;
 mod lang;
+mod paint;
 mod sci;
+mod session;
 mod theme;
 
 use std::path::PathBuf;
@@ -15,7 +20,17 @@ extern "C" {
     fn Scintilla_RegisterClasses(instance: *mut std::ffi::c_void) -> i32;
 }
 
+/// Senza console un panic sparirebbe senza traccia: lo si scrive in `%APPDATA%\it.overzoom.steroitor\native\crash.log`.
+fn log_panics() {
+    std::panic::set_hook(Box::new(|info| {
+        let Some(dir) = std::env::var_os("APPDATA").map(|dir| PathBuf::from(dir).join("it.overzoom.steroitor").join("native")) else { return };
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("crash.log"), format!("{info}\n\n{}", std::backtrace::Backtrace::force_capture()));
+    }));
+}
+
 fn main() {
+    log_panics();
     let files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     // SAFETY: inizializzazione Win32 sul thread principale, prima di creare finestre.
     unsafe {

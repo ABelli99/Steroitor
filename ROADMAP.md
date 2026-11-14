@@ -194,7 +194,7 @@ Note di implementazione:
 
 ---
 
-## Riscrittura nativa (branch `native`) — N1 implementata
+## Riscrittura nativa (branch `native`) — N1 e N2 implementate
 
 Obiettivo: la massima leggerezza. WebView2 da solo vale ~65 dei ~72 MB dell'app Tauri; un'app Win32 con l'editor di Notepad++ (Scintilla) ne usa una frazione. L'app Tauri resta su `master`, usabile, finché la nativa non arriva a parità.
 
@@ -207,12 +207,13 @@ Obiettivo: la massima leggerezza. WebView2 da solo vale ~65 dei ~72 MB dell'app 
 
 Fasi:
 - **N1** — finestra, editor con evidenziazione (16 lexer: C-like per JS/TS/Java/C/C#, Python, JSON, YAML, Markdown, HTML/XML, CSS, Rust, TOML, INI, Batch, PowerShell, SQL, Diff), tab (clic, clic centrale, ×, `Ctrl+Tab`), `Ctrl+N/O/S/Shift+S/W`, file da riga di comando, encoding e BOM preservati, fine riga rilevato, tema chiaro/scuro di sistema, DPI per monitor. **Misura: 2 MB di RAM privata** (19 MB di working set con le DLL di sistema condivise) contro ~72 MB; eseguibile 1,3 MB contro 7 MB
-- **N2** — File Explorer (TreeView), cartella di progetto, watcher, sessioni e impostazioni, ricerca nel file (`Ctrl+F`), cambio fine riga dalla status bar, drag & drop dei file
+- **N2** — File Explorer (TreeView di Windows, cartelle caricate all'apertura, menu: nuovo file/cartella, rinomina `F2`, cestino `Canc`, mostra in Esplora risorse, copia percorso), cartella di progetto (intestazione dell'explorer, argomento da riga di comando o trascinamento), `Alt+1` explorer e `Alt+Z` a capo come nella versione Tauri, explorer ridimensionabile, watcher (albero aggiornato; file aperti ricaricati se cambiati su disco e senza modifiche), sessione (cartella, tab, finestra) in `%APPDATA%it.overzoom.steroitor
+ative`, impostazioni Editor lette dallo stesso `settings.json` della versione Tauri, ricerca e sostituzione (`Ctrl+F`, `Ctrl+H`, `F3`, maiuscole/minuscole, tutte le occorrenze evidenziate), fine riga cliccabile nella status bar, menu scuri. Logica di explorer, watcher e ricerca dei repository spostata in `core/` (la usa anche l'app Tauri). Misura con una cartella aperta: 1,9 MB di RAM privata
 - **N3** — Git: colori dei file, marker nel gutter, Commit, log con grafo, branch, menu VCS
 - **N4** — Console dei comandi, terminale (ConPTY + emulatore)
 - **N5** — diff e merge a 3 vie, pagina impostazioni, plugin (completamento, jdtls riusando `lsp.rs`)
 
-Note N1: il trascinamento di file sull'editor non apre i file (Scintilla accetta solo testo trascinato); il cambio di tema di Windows vale dal riavvio.
+Note: il trascinamento di testo dentro l'editor non c'è (Scintilla lo fa via OLE, che non viene inizializzato, così i file trascinati arrivano alla finestra); il cambio di tema di Windows vale dal riavvio; interlinea delle impostazioni non applicata; la casella di rinomina dell'explorer resta chiara in tema scuro. Un panic viene scritto in `nativecrash.log`.
 
 ---
 

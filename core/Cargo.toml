@@ -7,3 +7,6 @@ description = "Logica condivisa tra l'app Tauri e quella nativa: niente UI"
 [dependencies]
 encoding_rs = "0.8"
 serde = { version = "1", features = ["derive"] }
+ignore = "0.4.33"
+notify-debouncer-mini = "0.7.0"
+trash = "5.2.9"

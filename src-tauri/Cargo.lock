@@ -3518,7 +3518,10 @@ name = "steroitor-core"
 version = "0.1.0"
 dependencies = [
  "encoding_rs",
+ "ignore",
+ "notify-debouncer-mini",
  "serde",
+ "trash",
 ]
 
 [[package]]
