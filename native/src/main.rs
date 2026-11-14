@@ -14,6 +14,7 @@ mod panel;
 mod prompt;
 mod sci;
 mod session;
+mod settings_page;
 mod terminal;
 mod theme;
 mod vt;

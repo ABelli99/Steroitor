@@ -34,6 +34,7 @@ use crate::panel::{self, ConsoleTarget, Panel, Tab};
 use crate::prompt::prompt;
 use crate::sci::*;
 use crate::session::{Session, Settings};
+use crate::settings_page;
 use crate::terminal::{Terminal, WM_TERMINAL_EXIT, WM_TERMINAL_OUTPUT};
 use crate::theme::{system_palette, Palette};
 
@@ -55,6 +56,7 @@ const EDITOR_MIN: i32 = 200;
 const WM_FILES_CHANGED: u32 = WM_APP + 1;
 const MENU_OPEN_FOLDER: usize = 1;
 const MENU_CLOSE_FOLDER: usize = 2;
+const MENU_SETTINGS: usize = 3;
 const MARKER_TIMER: usize = 1;
 const MARKER_DELAY_MS: u32 = 300;
 const GIT_MARGIN: usize = 1;
@@ -121,7 +123,7 @@ pub struct App {
     dragging_panel: Cell<bool>,
     find: FindBar,
     palette: Palette,
-    settings: Settings,
+    settings: RefCell<Settings>,
     worker: Worker,
     compare: &'static Compare,
     repos: RefCell<Vec<Repo>>,
@@ -256,7 +258,7 @@ impl App {
             find: FindBar::create(hwnd, instance),
             palette,
             compare: Compare::create(hwnd, instance, &palette, settings.editor.font_size_fraction(), worker.clone()),
-            settings,
+            settings: RefCell::new(settings),
             worker,
             repos: RefCell::new(Vec::new()),
             colors: RefCell::new(FileColors::default()),
@@ -371,8 +373,42 @@ impl App {
         sci.call(SCI_INDICSETUNDER, find::INDICATOR, 1);
     }
 
+    /// Stili e interlinea sono della vista: si riapplicano a ogni cambio di tab.
     fn apply_styles(&self, language: &Language) {
-        lang::apply_styles(&self.sci, language, &self.palette, self.settings.editor.font_size_fraction());
+        let style = self.settings.borrow().editor;
+        lang::apply_styles(&self.sci, language, &self.palette, style.font_size_fraction());
+        let (ascent, descent) = style.line_spacing(self.dpi());
+        self.sci.call(SCI_SETEXTRAASCENT, ascent as usize, 0);
+        self.sci.call(SCI_SETEXTRADESCENT, descent as usize, 0);
+    }
+
+    /// Tab e indentazione sono del documento attivo.
+    fn apply_indentation(&self) {
+        let style = self.settings.borrow().editor;
+        self.sci.call(SCI_SETTABWIDTH, style.tab_size, 0);
+        self.sci.call(SCI_SETINDENT, style.indent_size, 0);
+        self.sci.call(SCI_SETUSETABS, style.use_tabs.into(), 0);
+    }
+
+    /// Ctrl+Alt+S: pagina impostazioni; salvando si applicano subito a tutte le tab.
+    fn open_settings(&self) {
+        let current = self.settings.borrow().clone();
+        let Some(changed) = settings_page::edit(self.hwnd, &self.palette, self.font.get(), &current, steroitor_core::shells::detect()) else { return };
+        if changed == current {
+            return;
+        }
+        changed.save();
+        self.compare.set_font_fraction(changed.editor.font_size_fraction());
+        *self.settings.borrow_mut() = changed;
+        self.remember_view();
+        let pointers: Vec<isize> = self.docs.borrow().iter().map(|doc| doc.pointer).collect();
+        for pointer in pointers {
+            self.sci.call(SCI_SETDOCPOINTER, 0, pointer);
+            self.apply_indentation();
+        }
+        // Riattiva la tab corrente (forzando il cambio) per ridare documento, stili e posizione alla vista.
+        let active = self.active.replace(usize::MAX);
+        self.activate(active);
     }
 
     fn set_language(&self, language: &'static Language) {
@@ -397,9 +433,7 @@ impl App {
         self.active.set(index);
         self.sci.call(SCI_SETCODEPAGE, SC_CP_UTF8, 0);
         self.sci.call(SCI_SETEOLMODE, eol, 0);
-        self.sci.call(SCI_SETTABWIDTH, self.settings.editor.tab_size, 0);
-        self.sci.call(SCI_SETINDENT, self.settings.editor.indent_size, 0);
-        self.sci.call(SCI_SETUSETABS, self.settings.editor.use_tabs.into(), 0);
+        self.apply_indentation();
         self.set_language(language);
         self.apply_styles(language);
         self.sci.set_text(text.as_bytes());
@@ -772,6 +806,10 @@ impl App {
         }
         // SAFETY: lettura dello stato della tastiera del thread.
         let alt = unsafe { GetKeyState(VK_MENU as i32) < 0 };
+        if ctrl && alt && key == 0x53 {
+            self.open_settings();
+            return true;
+        }
         if ctrl && alt && key == 0x4B {
             self.commit(true);
             return true;
@@ -1299,7 +1337,7 @@ impl App {
         let branch = |offset: usize| branches.get(command - offset).cloned();
         match command {
             VCS_PULL => {
-                let rebase = self.settings.pull_rebase();
+                let rebase = self.settings.borrow().pull_rebase();
                 self.worker.run(&root, move |git, root| git.pull(root, rebase));
             }
             VCS_PUSH => self.push(),
@@ -1341,7 +1379,7 @@ impl App {
 
     /// Ctrl+T fuori dai pannelli Git: un nuovo terminale nella cartella del progetto, con il focus.
     fn new_terminal(&self) {
-        let shell = match steroitor_core::shells::resolve(Some(&self.settings.terminal_shell).filter(|id| !id.is_empty()).map(String::as_str)) {
+        let shell = match steroitor_core::shells::resolve(Some(self.settings.borrow().terminal_shell.clone()).filter(|id| !id.is_empty()).as_deref()) {
             Ok(shell) => shell,
             Err(error) => {
                 message_box(self.hwnd, &error, MB_ICONERROR);
@@ -1441,7 +1479,7 @@ impl App {
 
     fn pull(&self) {
         if let Some(root) = self.active_repo_root() {
-            let rebase = self.settings.pull_rebase();
+            let rebase = self.settings.borrow().pull_rebase();
             self.worker.run(&root, move |git, root| git.pull(root, rebase));
         }
     }
@@ -1641,9 +1679,10 @@ impl App {
         if self.explorer.root().is_none() {
             return self.open_folder();
         }
-        match popup_menu(self.hwnd, &[(MENU_OPEN_FOLDER, "Apri cartella…"), (MENU_CLOSE_FOLDER, "Chiudi cartella")]) {
+        match popup_menu(self.hwnd, &[(MENU_OPEN_FOLDER, "Apri cartella…"), (MENU_CLOSE_FOLDER, "Chiudi cartella"), (0, ""), (MENU_SETTINGS, "Impostazioni…\tCtrl+Alt+S")]) {
             MENU_OPEN_FOLDER => self.open_folder(),
             MENU_CLOSE_FOLDER => self.set_folder(None),
+            MENU_SETTINGS => self.open_settings(),
             _ => {}
         }
     }

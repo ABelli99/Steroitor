@@ -93,7 +93,7 @@ pub struct Compare {
     panes: [Sci; 3],
     palette: Palette,
     font: Cell<HFONT>,
-    font_fraction: isize,
+    font_fraction: Cell<isize>,
     worker: Worker,
     generation: Cell<u64>,
     state: RefCell<State>,
@@ -157,7 +157,7 @@ impl Compare {
             panes,
             palette: *palette,
             font: Cell::new(std::ptr::null_mut()),
-            font_fraction,
+            font_fraction: Cell::new(font_fraction),
             worker,
             generation: Cell::new(0),
             state: RefCell::new(State {
@@ -209,6 +209,10 @@ impl Compare {
             sci.call(SCI_MARKERDEFINE, marker, SC_MARK_BACKGROUND);
             sci.call(SCI_MARKERSETBACK, marker, blend(color, palette.editor, if marker == 3 { 40 } else { 22 }) as isize);
         }
+    }
+
+    pub fn set_font_fraction(&self, font_fraction: isize) {
+        self.font_fraction.set(font_fraction);
     }
 
     pub fn owns(&self, hwnd: HWND) -> bool {
@@ -345,7 +349,7 @@ impl Compare {
 
     fn set_text(&self, sci: &Sci, text: &str, language: &'static lang::Language) {
         lang::set_lexer(sci, language);
-        lang::apply_styles(sci, language, &self.palette, self.font_fraction);
+        lang::apply_styles(sci, language, &self.palette, self.font_fraction.get());
         sci.call(SCI_SETREADONLY, 0, 0);
         sci.call(SCI_MARGINTEXTCLEARALL, 0, 0);
         sci.call(SCI_MARKERDELETEALL, usize::MAX, 0);
