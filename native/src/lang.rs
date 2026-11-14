@@ -2,7 +2,7 @@
 use crate::sci::*;
 use crate::theme::Palette;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Role {
     Keyword,
     String,
@@ -57,7 +57,7 @@ const C_STYLES: &[(usize, Role)] = &[
     (9, Muted), (16, Type), (19, Type), (27, Keyword),
 ];
 
-const JS_KEYWORDS: &str = "abstract any as async await boolean break case catch class const constructor continue debugger declare default delete do else enum export extends false finally for from function get if implements import in infer instanceof interface is keyof let module namespace never new null number object of override package private protected public readonly return satisfies set static string super switch symbol this throw true try type typeof undefined unique unknown var void while with yield";
+pub const JS_KEYWORDS: &str = "abstract any as async await boolean break case catch class const constructor continue debugger declare default delete do else enum export extends false finally for from function get if implements import in infer instanceof interface is keyof let module namespace never new null number object of override package private protected public readonly return satisfies set static string super switch symbol this throw true try type typeof undefined unique unknown var void while with yield";
 const JAVA_KEYWORDS: &str = "abstract assert boolean break byte case catch char class const continue default do double else enum extends false final finally float for goto if implements import instanceof int interface long native new non-sealed null package permits private protected public record return sealed short static strictfp super switch synchronized this throw throws transient true try var void volatile while yield";
 const C_KEYWORDS: &str = "alignas alignof auto bool break case catch char char16_t char32_t char8_t class concept const consteval constexpr constinit const_cast continue co_await co_return co_yield decltype default delete do double dynamic_cast else enum explicit export extern false float for friend goto if inline int long mutable namespace new noexcept nullptr operator private protected public register reinterpret_cast requires return short signed sizeof static static_assert static_cast struct switch template this thread_local throw true try typedef typeid typename union unsigned using virtual void volatile wchar_t while";
 const CSHARP_KEYWORDS: &str = "abstract as async await base bool break byte case catch char checked class const continue decimal default delegate do double else enum event explicit extern false finally fixed float for foreach get goto if implicit in init int interface internal is lock long namespace new null object operator out override params partial private protected public readonly record ref return sbyte sealed set short sizeof stackalloc static string struct switch this throw true try typeof uint ulong unchecked unsafe ushort using var virtual void volatile when where while with yield";

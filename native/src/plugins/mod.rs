@@ -5,6 +5,7 @@ mod doc_popup;
 mod inline_html;
 mod process;
 mod protocol;
+mod script_names;
 mod servers;
 
 use std::cell::{Cell, RefCell};
@@ -17,6 +18,7 @@ use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::Graphics::Gdi::HFONT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{KillTimer, PostMessageW, SetTimer};
 
+use crate::lang::Role;
 use crate::sci::*;
 use crate::session::Settings;
 use crate::theme::Palette;
@@ -108,9 +110,12 @@ const HTML_INDICATORS: [(usize, inline_html::Role); 12] = [
     (18, inline_html::Role::AngleBracket),
     (19, inline_html::Role::Event),
     (20, inline_html::Role::Number),
-    (21, inline_html::Role::Function),
-    (22, inline_html::Role::Property),
+    (FUNCTION_INDICATOR, inline_html::Role::Function),
+    (PROPERTY_INDICATOR, inline_html::Role::Property),
 ];
+const FUNCTION_INDICATOR: usize = 21;
+const PROPERTY_INDICATOR: usize = 22;
+const TYPE_INDICATOR: usize = 23;
 const INDIC_TEXTFORE: isize = 17;
 
 fn plugin_for(path: &Path) -> Option<usize> {
@@ -295,6 +300,8 @@ impl Host {
             sci.call(SCI_INDICSETSTYLE, indicator, INDIC_TEXTFORE);
             sci.call(SCI_INDICSETFORE, indicator, color as isize);
         }
+        sci.call(SCI_INDICSETSTYLE, TYPE_INDICATOR, INDIC_TEXTFORE);
+        sci.call(SCI_INDICSETFORE, TYPE_INDICATOR, palette.kind as isize);
         for (indicator, color) in [(ERROR_INDICATOR, palette.danger), (WARNING_INDICATOR, palette.number)] {
             sci.call(SCI_INDICSETSTYLE, indicator, INDIC_SQUIGGLEPIXMAP);
             sci.call(SCI_INDICSETFORE, indicator, color as isize);
@@ -513,23 +520,42 @@ impl Host {
         });
     }
 
-    /// Colora come HTML il JSX e i template Angular del file, secondo le opzioni del plugin; altrimenti toglie i colori.
+    /// Nei file JavaScript/TypeScript colora funzioni, tipi e proprietà come la versione Tauri (sempre) e, secondo le
+    /// opzioni del plugin, il JSX e i template Angular come HTML.
     pub fn highlight(&self, sci: &Sci, settings: &Settings, path: Option<&Path>) {
         let length = sci.call(SCI_GETLENGTH, 0, 0);
-        for (indicator, _) in HTML_INDICATORS {
+        for indicator in HTML_INDICATORS.iter().map(|(indicator, _)| *indicator).chain([TYPE_INDICATOR]) {
             sci.call(SCI_SETINDICATORCURRENT, indicator, 0);
             sci.call(SCI_INDICATORCLEARRANGE, 0, length);
         }
-        let jsx = path.and_then(|path| path.extension()).is_some_and(|extension| ["jsx", "tsx", "js", "mjs", "cjs"].iter().any(|candidate| extension.eq_ignore_ascii_case(candidate)));
-        let react = jsx && option(settings, path, REACT).is_some();
-        let angular = option(settings, path, ANGULAR).is_some();
-        if !react && !angular {
+        let extension = path.and_then(|path| path.extension()).map(|extension| extension.to_string_lossy().to_lowercase()).unwrap_or_default();
+        if !PLUGINS[0].languages.iter().any(|(_, extensions)| extensions.contains(&extension.as_str())) {
             return;
         }
-        for (range, role) in inline_html::spans(&sci.text(), react, angular) {
-            let Some(&(indicator, _)) = HTML_INDICATORS.iter().find(|(_, candidate)| *candidate == role) else { continue };
+        let fill = |indicator: usize, range: &std::ops::Range<usize>| {
             sci.call(SCI_SETINDICATORCURRENT, indicator, 0);
             sci.call(SCI_INDICATORFILLRANGE, range.start, range.len() as isize);
+        };
+        let text = sci.text();
+        let react = ["jsx", "tsx", "js", "mjs", "cjs"].contains(&extension.as_str()) && option(settings, path, REACT).is_some();
+        let angular = option(settings, path, ANGULAR).is_some();
+        let html = if react || angular { inline_html::spans(&text, react, angular) } else { Vec::new() };
+        for (range, role) in &html {
+            let Some(&(indicator, _)) = HTML_INDICATORS.iter().find(|(_, candidate)| candidate == role) else { continue };
+            fill(indicator, range);
+        }
+        let taken = merged(html.into_iter().map(|(range, _)| range).collect());
+        for (range, role) in script_names::spans(&text) {
+            let at = taken.partition_point(|taken| taken.end <= range.start);
+            if taken.get(at).is_some_and(|taken| taken.start < range.end) {
+                continue;
+            }
+            let indicator = match role {
+                Role::Function => FUNCTION_INDICATOR,
+                Role::Property => PROPERTY_INDICATOR,
+                _ => TYPE_INDICATOR,
+            };
+            fill(indicator, &range);
         }
     }
 
@@ -657,6 +683,19 @@ impl Host {
             sci.call(SCI_INDICATORFILLRANGE, start, (end - start) as isize);
         }
     }
+}
+
+/// Intervalli ordinati e senza sovrapposizioni.
+fn merged(mut ranges: Vec<std::ops::Range<usize>>) -> Vec<std::ops::Range<usize>> {
+    ranges.sort_by_key(|range| range.start);
+    let mut out: Vec<std::ops::Range<usize>> = Vec::new();
+    for range in ranges {
+        match out.last_mut() {
+            Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+            _ => out.push(range),
+        }
+    }
+    out
 }
 
 /// Mostra i suggerimenti che iniziano con quanto scritto da `start` al cursore.

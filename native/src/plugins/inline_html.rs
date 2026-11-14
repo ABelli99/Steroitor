@@ -31,7 +31,7 @@ fn is_name(byte: u8) -> bool {
 }
 
 /// Salta una stringa o un commento JavaScript che inizia in `at`; None se lì non ne inizia uno.
-fn skip_js_literal(bytes: &[u8], at: usize) -> Option<usize> {
+pub(super) fn skip_js_literal(bytes: &[u8], at: usize) -> Option<usize> {
     match bytes[at] {
         quote @ (b'"' | b'\'' | b'`') => {
             let mut index = at + 1;
