@@ -986,7 +986,12 @@ impl Panel {
     }
 
     /// true se il punto (coordinate schermo) cade sulla casella di spunta della lista dei file.
+    /// Clic sinistro sulla colonna delle caselle; la selezione da tastiera o dal clic destro non conta.
     pub fn on_checkbox(&self, scale: impl Fn(i32) -> i32) -> bool {
+        // SAFETY: stato del tasto al momento del messaggio corrente.
+        if unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState(windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_LBUTTON as i32) } >= 0 {
+            return false;
+        }
         let mut point = POINT { x: 0, y: 0 };
         // SAFETY: conversione della posizione del cursore nelle coordinate della lista.
         unsafe {

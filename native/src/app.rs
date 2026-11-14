@@ -127,6 +127,7 @@ const LOG_SHOW_CHANGES: usize = 10;
 const LOG_REWORD: usize = 11;
 const FILE_DIFF: usize = 1;
 const FILE_OPEN: usize = 2;
+const FILE_ROLLBACK: usize = 3;
 const LIST_ROW_HEIGHT: i32 = 24;
 const VCS_PULL: usize = 1;
 const VCS_PUSH: usize = 2;
@@ -990,7 +991,9 @@ impl App {
         *self.repos.borrow_mut() = roots.iter().map(|root| Repo { root: root.clone(), status: None, branches: Vec::new() }).collect();
         *self.panel.repos.borrow_mut() = roots.iter().map(|root| RepoTab { root: root.clone(), name: folder_name(Some(root)), changes: 0 }).collect();
         self.panel.has_folder.set(folder.is_some());
-        *self.panel.root.borrow_mut() = None;
+        // Il primo repository della cartella: con il pannello già aperto le viste Git e Commit non restano vuote.
+        *self.panel.root.borrow_mut() = roots.first().cloned();
+        self.sync_panel();
         *self.colors.borrow_mut() = FileColors::default();
         self.heads.borrow_mut().clear();
         for root in &roots {
@@ -1495,6 +1498,12 @@ impl App {
         }
         if focus == self.panel.message && ctrl && key == VK_RETURN {
             self.commit(false);
+            return true;
+        }
+        if ctrl && alt && key == 0x5A && focus == self.panel.files.hwnd {
+            if let Some(index) = self.panel.files.selected() {
+                self.rollback_file(index);
+            }
             return true;
         }
         if ctrl && !shift && key == 0x44 && (focus == self.panel.log.hwnd || focus == self.panel.files.hwnd) {
@@ -3091,11 +3100,35 @@ impl App {
 
     fn file_menu(&self, index: usize) {
         let diff = if self.conflicted(index) { "Risolvi conflitti…" } else { "Mostra diff\tCtrl+D" };
-        match popup_menu(self.hwnd, &[(FILE_DIFF, diff), (FILE_OPEN, "Apri nell'editor")]) {
+        let mut items = vec![(FILE_DIFF, diff), (FILE_OPEN, "Apri nell'editor")];
+        if self.can_rollback(index) {
+            items.push((FILE_ROLLBACK, "Rollback…	Ctrl+Alt+Z"));
+        }
+        match popup_menu(self.hwnd, &items) {
             FILE_DIFF => self.show_file_diff(index),
             FILE_OPEN => self.open_change(index),
+            FILE_ROLLBACK => self.rollback_file(index),
             _ => {}
         }
+    }
+
+    /// I file non tracciati non hanno niente da ripristinare; quelli in conflitto si risolvono.
+    fn can_rollback(&self, index: usize) -> bool {
+        self.panel.changes.borrow().get(index).is_some_and(|file| !matches!(file.status, FileStatus::Untracked | FileStatus::Conflict))
+    }
+
+    /// Rollback di un file della tab Commit, come in IntelliJ: torna come in HEAD; uno solo aggiunto esce da Git e resta su disco.
+    fn rollback_file(&self, index: usize) {
+        if !self.can_rollback(index) {
+            return;
+        }
+        let Some(root) = self.panel.root.borrow().clone() else { return };
+        let Some((path, relative, added)) = self.panel.changes.borrow().get(index).map(|file| (file.path.clone(), file.relative.clone(), file.status == FileStatus::Added)) else { return };
+        let question = if added { format!("Togliere \"{relative}\" da Git? Il file resta su disco, non tracciato.") } else { format!("Annullare tutte le modifiche a \"{relative}\", anche quelle in stage? Non si possono recuperare.") };
+        if message_box(self.hwnd, &question, MB_YESNO | MB_ICONWARNING) != IDYES {
+            return;
+        }
+        self.worker.run(&root, move |git, root| git.rollback(root, &[path]));
     }
 
     fn panel_height(&self) -> i32 {
@@ -3312,7 +3345,7 @@ impl App {
         if self.dragging_panel.get() {
             let height = self.status_rect().top - y;
             self.panel.height.set(height * 96 / self.dpi().max(1));
-            return self.layout();
+            return self.layout_now();
         }
         if self.tab_drag.get().is_some() {
             return self.drag_tab(x);
@@ -3325,7 +3358,15 @@ impl App {
         let max = (client.right - self.bar_width() - self.scale(EDITOR_MIN)).max(self.scale(EXPLORER_MIN));
         let width = (x - self.bar_width()).clamp(self.scale(EXPLORER_MIN), max);
         self.explorer_width.set(width * 96 / self.dpi().max(1));
+        self.layout_now();
+    }
+
+    /// Durante il trascinamento di un divisore: la finestra e i controlli si ridisegnano subito, non quando la coda dei
+    /// messaggi si svuota, altrimenti restano pezzi della posizione precedente finché non si rilascia.
+    fn layout_now(&self) {
         self.layout();
+        // SAFETY: finestra valida.
+        unsafe { RedrawWindow(self.hwnd, std::ptr::null(), std::ptr::null_mut(), RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW) };
     }
 
     /// Effetti al passaggio del mouse: si ridisegnano le barre quando cambia l'elemento sotto il puntatore.

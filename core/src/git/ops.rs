@@ -50,6 +50,27 @@ impl Git {
         self.text(Path::new(root), &args, false).map(drop)
     }
 
+    /// Rollback come in IntelliJ: i file presenti in HEAD tornano come in HEAD, nell'index e su disco; quelli solo
+    /// aggiunti escono dall'index e restano su disco, non tracciati.
+    pub fn rollback(&self, root: &str, paths: &[String]) -> Result<(), String> {
+        let relative = relative_paths(root, paths)?;
+        let dir = Path::new(root);
+        let has_head = self.run(dir, &["rev-parse", "--verify", "--quiet", "HEAD"], true)?.success;
+        let in_head = |path: &String| has_head && self.run(dir, &["cat-file", "-e", &format!("HEAD:{path}")], true).is_ok_and(|output| output.success);
+        let (tracked, added): (Vec<&String>, Vec<&String>) = relative.iter().partition(|path| in_head(path));
+        if !tracked.is_empty() {
+            let mut args = vec!["restore", "--source=HEAD", "--staged", "--worktree", "--"];
+            args.extend(tracked.iter().map(|path| path.as_str()));
+            self.text(dir, &args, false)?;
+        }
+        if !added.is_empty() {
+            let mut args = vec!["rm", "--cached", "--quiet", "--ignore-unmatch", "--"];
+            args.extend(added.iter().map(|path| path.as_str()));
+            self.text(dir, &args, false)?;
+        }
+        Ok(())
+    }
+
     pub fn commit(&self, root: &str, message: &str) -> Result<(), String> {
         if message.trim().is_empty() {
             return Err("Il messaggio di commit è vuoto".into());
@@ -161,6 +182,36 @@ mod tests {
         assert_eq!(status_of(&git, &root, &file), Some((FileStatus::Modified, false, true)), "unstage con HEAD");
 
         assert!(git.commit(&root, "   ").is_err());
+    }
+
+    #[test]
+    fn rolls_back_modified_deleted_and_added_files() {
+        let sandbox = Sandbox::new("rollback");
+        let root = sandbox.repo("repo");
+        let git = git();
+        let changed = write(&root, "a.txt", "uno
+");
+        let gone = write(&root, "b.txt", "due
+");
+        git.stage(&root, &[changed.clone(), gone.clone()]).unwrap();
+        git.commit(&root, "init").unwrap();
+
+        write(&root, "a.txt", "UNO
+");
+        git.stage(&root, &[changed.clone()]).unwrap();
+        write(&root, "a.txt", "UNO di nuovo
+");
+        fs::remove_file(&gone).unwrap();
+        let added = write(&root, "c.txt", "tre
+");
+        git.stage(&root, &[added.clone()]).unwrap();
+
+        git.rollback(&root, &[changed.clone(), gone.clone(), added.clone()]).unwrap();
+        assert_eq!(fs::read_to_string(&changed).unwrap(), "uno
+");
+        assert_eq!(status_of(&git, &root, &changed), None);
+        assert_eq!(status_of(&git, &root, &gone), None);
+        assert_eq!(status_of(&git, &root, &added), Some((FileStatus::Untracked, false, true)), "l'aggiunto resta su disco");
     }
 
     #[test]

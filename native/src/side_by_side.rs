@@ -25,6 +25,11 @@ pub fn blend(color: u32, background: u32, amount: u32) -> u32 {
 /// Colori, margini e marker di una vista del confronto.
 pub fn configure(sci: &Sci, palette: &Palette) {
     let opaque = |color: u32| (color | 0xFF00_0000) as isize;
+    // Colori del tema già prima del primo testo: senza, l'anteprima vuota resta bianca.
+    sci.call(SCI_STYLESETBACK, STYLE_DEFAULT, palette.editor as isize);
+    sci.call(SCI_STYLESETFORE, STYLE_DEFAULT, palette.fg as isize);
+    sci.call(SCI_STYLECLEARALL, 0, 0);
+    sci.call(SCI_STYLESETBACK, STYLE_LINENUMBER, palette.editor as isize);
     sci.call(SCI_SETCODEPAGE, SC_CP_UTF8, 0);
     sci.call(SCI_SETSCROLLWIDTH, 1, 0);
     sci.call(SCI_SETSCROLLWIDTHTRACKING, 1, 0);
