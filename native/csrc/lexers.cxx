@@ -14,11 +14,11 @@
 
 using namespace Lexilla;
 
-extern const LexerModule lmBatch, lmCPP, lmCss, lmDiff, lmHTML, lmXML, lmJSON, lmMarkdown, lmNull, lmPowerShell, lmProps,
+extern const LexerModule lmBatch, lmCOBOL, lmCPP, lmCss, lmDiff, lmHTML, lmXML, lmJSON, lmMarkdown, lmNull, lmPowerShell, lmProps,
     lmPython, lmRust, lmSQL, lmTOML, lmYAML;
 
 static const LexerModule *const modules[] = {
-    &lmBatch, &lmCPP, &lmCss, &lmDiff, &lmHTML, &lmXML, &lmJSON, &lmMarkdown, &lmNull, &lmPowerShell, &lmProps,
+    &lmBatch, &lmCOBOL, &lmCPP, &lmCss, &lmDiff, &lmHTML, &lmXML, &lmJSON, &lmMarkdown, &lmNull, &lmPowerShell, &lmProps,
     &lmPython, &lmRust, &lmSQL, &lmTOML, &lmYAML,
 };
 

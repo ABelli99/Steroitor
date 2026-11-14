@@ -717,10 +717,20 @@ impl App {
             0 => sci.call(SCI_GETTABWIDTH, 0, 0),
             unit => unit,
         } as usize;
-        let previous_columns = sci.call(SCI_GETLINEINDENTATION, line - 1, 0).max(0) as usize;
-        let next = indent::after_enter(&sci.line(line - 1), previous_columns, &sci.line(line), unit);
+        let path = self.active_path();
+        let plugin_column = plugins::new_line_column(sci, &self.settings.borrow(), path.as_deref(), line, unit);
+        let next = plugin_column.map_or_else(
+            || indent::after_enter(&sci.line(line - 1), sci.call(SCI_GETLINEINDENTATION, line - 1, 0).max(0) as usize, &sci.line(line), unit),
+            |columns| indent::NewLine { columns, closer: None },
+        );
+        let tabs = sci.call(SCI_GETUSETABS, 0, 0) as usize;
+        if plugin_column.is_some() {
+            // COBOL va a colonne: solo spazi.
+            sci.call(SCI_SETUSETABS, 0, 0);
+        }
         sci.call(SCI_BEGINUNDOACTION, 0, 0);
         sci.call(SCI_SETLINEINDENTATION, line, next.columns as isize);
+        sci.call(SCI_SETUSETABS, tabs, 0);
         if let Some(columns) = next.closer {
             let eol = match mode {
                 SC_EOL_CRLF => "\r\n",

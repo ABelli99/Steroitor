@@ -1,6 +1,8 @@
 //! Plugin dei linguaggi: completamento, type-check e documentazione inline da un server esterno (tsserver per
 //! JavaScript/TypeScript, jdtls per Java). Ogni plugin e ogni opzione si accendono dalla pagina impostazioni e
-//! valgono subito; il server parte al primo file che lo richiede e si chiude quando non serve più.
+//! valgono subito; il server parte al primo file che lo richiede e si chiude quando non serve più. COBOL non ha server:
+//! controllo e indentazione sono in `cobol`.
+mod cobol;
 mod doc_popup;
 mod inline_html;
 mod navigation;
@@ -51,11 +53,12 @@ pub struct Plugin {
     pub languages: &'static [(&'static str, &'static [&'static str])],
     /// Id dell'opzione in `pluginOptions`, etichetta e descrizione, nell'ordine della pagina impostazioni.
     pub options: &'static [(&'static str, &'static str, &'static str)],
-    protocol: Protocol,
+    /// None: il plugin lavora senza server.
+    protocol: Option<Protocol>,
     language_id: &'static str,
 }
 
-pub static PLUGINS: [Plugin; 2] = [
+pub static PLUGINS: [Plugin; 3] = [
     Plugin {
         id: "javascript",
         name: "JavaScript / TypeScript",
@@ -64,7 +67,7 @@ pub static PLUGINS: [Plugin; 2] = [
         description: "Completamento, errori di tipo, documentazione e Vai alla dichiarazione con tsserver; HTML inline di React e Angular colorato.",
         languages: &[("JavaScript", &["js", "mjs", "cjs"]), ("JavaScript JSX", &["jsx"]), ("TypeScript", &["ts", "mts", "cts"]), ("TypeScript JSX", &["tsx"])],
         options: &SCRIPT_OPTIONS,
-        protocol: Protocol::TsServer,
+        protocol: Some(Protocol::TsServer),
         language_id: "typescript",
     },
     Plugin {
@@ -75,8 +78,19 @@ pub static PLUGINS: [Plugin; 2] = [
         description: "Completamento, errori, documentazione e Vai alla dichiarazione con jdtls. Disattivato, resta l'evidenziazione.",
         languages: &[("Java", &["java"])],
         options: &SERVER_OPTIONS,
-        protocol: Protocol::Lsp,
+        protocol: Some(Protocol::Lsp),
         language_id: "java",
+    },
+    Plugin {
+        id: "cobol",
+        name: "COBOL",
+        requires: "nessun programma esterno: il controllo è interno, non è un compilatore",
+        version: "1.0.0",
+        description: "Controllo del sorgente e indentazione per aree A e B. Formato fisso; libero con >>SOURCE FORMAT FREE.",
+        languages: &[("COBOL", &["cbl", "cob", "cpy"])],
+        options: &COBOL_OPTIONS,
+        protocol: None,
+        language_id: "cobol",
     },
 ];
 
@@ -94,6 +108,11 @@ const SCRIPT_OPTIONS: [(&str, &str, &str); 5] = [
     (REACT, "HTML inline React (JSX)", "Colora i tag JSX nei file .jsx e .tsx; senza server."),
     (ANGULAR, "HTML inline Angular (template)", "Colora l'HTML nei template inline dei componenti Angular; senza server."),
 ];
+const COBOL_OPTIONS: [(&str, &str, &str); 2] = [
+    (TYPE_CHECK, "Controllo del sorgente", "Colonne del formato fisso, ordine delle DIVISION, IF/EVALUATE/SEARCH/PERFORM chiusi, stringhe chiuse, paragrafi e dati non dichiarati (salvo con COPY)."),
+    (INDENT, "Indentazione COBOL", "Invio va nell'area A o B giusta, un livello in più dopo IF, ELSE, EVALUATE, WHEN e PERFORM in linea; sempre spazi."),
+];
+const INDENT: &str = "indent";
 const COMPLETION: &str = SERVER_OPTIONS[0].0;
 const TYPE_CHECK: &str = SERVER_OPTIONS[1].0;
 const DOCS: &str = SERVER_OPTIONS[2].0;
@@ -127,13 +146,19 @@ fn plugin_for(path: &Path) -> Option<usize> {
 
 fn wants_server(settings: &Settings, plugin: usize) -> bool {
     let id = PLUGINS[plugin].id;
-    settings.plugin_enabled(id) && SERVER_OPTIONS.iter().any(|(option, _, _)| settings.plugin_option(id, option))
+    PLUGINS[plugin].protocol.is_some() && settings.plugin_enabled(id) && SERVER_OPTIONS.iter().any(|(option, _, _)| settings.plugin_option(id, option))
 }
 
 fn option(settings: &Settings, path: Option<&Path>, option: &str) -> Option<usize> {
     let plugin = plugin_for(path?)?;
     let id = PLUGINS[plugin].id;
     (settings.plugin_enabled(id) && settings.plugin_option(id, option)).then_some(plugin)
+}
+
+/// Colonna della riga nuova dopo Invio quando la decide il plugin (COBOL); None per l'indentazione normale.
+pub fn new_line_column(sci: &Sci, settings: &Settings, path: Option<&Path>, line: usize, unit: usize) -> Option<usize> {
+    option(settings, path, INDENT)?;
+    Some(cobol::new_line_column(&sci.text(), line, unit))
 }
 
 pub use navigation::Jump;
@@ -353,7 +378,8 @@ impl Host {
     /// Il server del plugin per il progetto del file: lo avvia se manca. None se non parte.
     fn server_for(&self, plugin: usize, path: &Path) -> Option<u32> {
         let definition = &PLUGINS[plugin];
-        let root = if definition.protocol == Protocol::Lsp { servers::java_root(path) } else { servers::script_root(path) };
+        let protocol = definition.protocol?;
+        let root = if protocol == Protocol::Lsp { servers::java_root(path) } else { servers::script_root(path) };
         let server_key = format!("{}:{}", definition.id, key(&root));
         if let Some((id, _)) = self.servers.borrow().iter().find(|(_, running)| running.key == server_key) {
             return Some(*id);
@@ -361,8 +387,8 @@ impl Host {
         if self.failed.borrow().contains(&server_key) {
             return None;
         }
-        let name = if definition.protocol == Protocol::Lsp { "jdtls" } else { "tsserver" };
-        let command = match definition.protocol {
+        let name = if protocol == Protocol::Lsp { "jdtls" } else { "tsserver" };
+        let command = match protocol {
             Protocol::Lsp => self.data_dir.as_deref().ok_or_else(|| "APPDATA non impostata".to_string()).and_then(|dir| servers::jdtls(&root, dir)),
             Protocol::TsServer => servers::tsserver(&root),
         };
@@ -371,7 +397,7 @@ impl Host {
         match process {
             Ok(process) => {
                 self.next_server.set(id + 1);
-                let server = Server::new(definition.protocol, process, &root, definition.language_id);
+                let server = Server::new(protocol, process, &root, definition.language_id);
                 self.servers.borrow_mut().insert(id, Running { key: server_key, plugin, server });
                 Some(id)
             }
@@ -535,6 +561,10 @@ impl Host {
         // SAFETY: timer della finestra principale.
         unsafe { KillTimer(self.hwnd, CHECK_TIMER) };
         let (Some(plugin), Some(path)) = (option(settings, path, TYPE_CHECK), path) else { return };
+        if PLUGINS[plugin].protocol.is_none() {
+            self.diagnostics.borrow_mut().insert(key(path), [cobol::check(&sci.text()), Vec::new()]);
+            return self.apply_diagnostics(sci, settings, Some(path));
+        }
         let Some(server) = self.server_for(plugin, path) else { return };
         let text = sci.text();
         self.with_server(server, |server| {
@@ -767,6 +797,7 @@ mod tests {
     fn finds_the_plugin_by_extension() {
         assert_eq!(plugin_for(Path::new("a/B.TSX")).map(|index| PLUGINS[index].id), Some("javascript"));
         assert_eq!(plugin_for(Path::new("Main.java")).map(|index| PLUGINS[index].id), Some("java"));
+        assert_eq!(plugin_for(Path::new("PAYROLL.CBL")).map(|index| PLUGINS[index].id), Some("cobol"));
         assert!(plugin_for(Path::new("x.rs")).is_none());
     }
 
@@ -788,20 +819,20 @@ mod tests {
         let path = dir.join(file);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, source).unwrap();
-        if PLUGINS[plugin].protocol == Protocol::Lsp {
+        if PLUGINS[plugin].protocol == Some(Protocol::Lsp) {
             let pom = "<project xmlns=\"http://maven.apache.org/POM/4.0.0\"><modelVersion>4.0.0</modelVersion><groupId>x</groupId><artifactId>x</artifactId><version>1</version>\
                 <properties><maven.compiler.release>17</maven.compiler.release></properties></project>";
             std::fs::write(dir.join("pom.xml"), pom).unwrap();
         }
-        let root = if PLUGINS[plugin].protocol == Protocol::Lsp { servers::java_root(&path) } else { servers::script_root(&path) };
-        let command = match PLUGINS[plugin].protocol {
+        let root = if PLUGINS[plugin].protocol == Some(Protocol::Lsp) { servers::java_root(&path) } else { servers::script_root(&path) };
+        let command = match PLUGINS[plugin].protocol.unwrap() {
             Protocol::Lsp => servers::jdtls(&root, &dir.with_extension("data")),
             Protocol::TsServer => servers::tsserver(&root),
         }
         .unwrap();
         let queue: Queue = Arc::default();
         let process = Process::spawn(command, 1, Arc::clone(&queue), std::ptr::null_mut()).unwrap();
-        let mut server = Server::new(PLUGINS[plugin].protocol, process, &root, PLUGINS[plugin].language_id);
+        let mut server = Server::new(PLUGINS[plugin].protocol.unwrap(), process, &root, PLUGINS[plugin].language_id);
         server.sync(&path, source);
         server.check(&path);
         let origin = Origin { path: path.clone(), position: position_of(source, source.find(caret).unwrap() + caret.len()) };
