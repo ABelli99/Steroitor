@@ -92,6 +92,32 @@ pub const SC_MARK_LEFTRECT: isize = 27;
 pub const SC_MOD_INSERTTEXT: isize = 0x1;
 pub const SC_MOD_DELETETEXT: isize = 0x2;
 pub const SCN_MODIFIED: u32 = 2008;
+pub const SCI_GETDOCPOINTER: u32 = 2357;
+pub const SCI_AUTOCSHOW: u32 = 2100;
+pub const SCI_AUTOCCANCEL: u32 = 2101;
+pub const SCI_AUTOCACTIVE: u32 = 2102;
+pub const SCI_AUTOCSETSEPARATOR: u32 = 2106;
+pub const SCI_AUTOCSETIGNORECASE: u32 = 2115;
+pub const SCI_AUTOCSETMAXHEIGHT: u32 = 2210;
+pub const SCI_AUTOCSETORDER: u32 = 2660;
+pub const SC_ORDER_CUSTOM: usize = 2;
+pub const SCI_CALLTIPSHOW: u32 = 2200;
+pub const SCI_CALLTIPCANCEL: u32 = 2201;
+pub const SCI_CALLTIPSETBACK: u32 = 2205;
+pub const SCI_CALLTIPSETFORE: u32 = 2206;
+pub const SCI_SETMOUSEDWELLTIME: u32 = 2264;
+pub const SCI_WORDSTARTPOSITION: u32 = 2266;
+pub const INDIC_SQUIGGLEPIXMAP: isize = 13;
+pub const SC_ELEMENT_LIST: usize = 0;
+pub const SC_ELEMENT_LIST_BACK: usize = 1;
+pub const SC_ELEMENT_LIST_SELECTED: usize = 2;
+pub const SC_ELEMENT_LIST_SELECTED_BACK: usize = 3;
+pub const SCN_CHARADDED: u32 = 2001;
+pub const SCN_DWELLSTART: u32 = 2016;
+pub const SCN_DWELLEND: u32 = 2017;
+pub const SCN_AUTOCCANCELLED: u32 = 2025;
+pub const SCN_AUTOCCOMPLETED: u32 = 2030;
+pub const SCN_AUTOCSELECTIONCHANGE: u32 = 2032;
 
 pub const SCN_SAVEPOINTREACHED: u32 = 2002;
 pub const SCN_SAVEPOINTLEFT: u32 = 2003;
@@ -119,13 +145,28 @@ pub const SC_ELEMENT_CARET_LINE_BACK: usize = 50;
 const SCI_GETDIRECTFUNCTION: u32 = 2184;
 const SCI_GETDIRECTPOINTER: u32 = 2185;
 
-/// Struttura delle notifiche WM_NOTIFY di Scintilla; servono solo l'intestazione e la posizione.
+/// Inizio della struttura delle notifiche WM_NOTIFY di Scintilla (SCNotification), fino ai campi usati.
 #[repr(C)]
 pub struct Notification {
     pub hwnd_from: HWND,
     pub id_from: usize,
     pub code: u32,
     pub position: isize,
+    pub ch: i32,
+    pub modifiers: i32,
+    pub modification_type: i32,
+    pub text: *const std::ffi::c_char,
+}
+
+impl Notification {
+    /// Il testo della notifica (es. la voce scelta nella lista), se c'è.
+    pub fn text(&self) -> String {
+        if self.text.is_null() {
+            return String::new();
+        }
+        // SAFETY: per le notifiche che lo valorizzano, Scintilla passa una stringa C valida per la durata della notifica.
+        unsafe { std::ffi::CStr::from_ptr(self.text) }.to_string_lossy().into_owned()
+    }
 }
 
 type DirectFunction = unsafe extern "C" fn(isize, u32, usize, isize) -> isize;

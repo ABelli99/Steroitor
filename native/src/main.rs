@@ -11,6 +11,7 @@ mod lang;
 mod list;
 mod paint;
 mod panel;
+mod plugins;
 mod prompt;
 mod sci;
 mod session;

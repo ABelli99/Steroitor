@@ -1,8 +1,9 @@
 //! Sessione (cartella, tab aperte, layout) e impostazioni dell'editor, in `%APPDATA%\it.overzoom.steroitor`.
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
-fn data_dir() -> Option<PathBuf> {
+pub fn data_dir() -> Option<PathBuf> {
     std::env::var_os("APPDATA").map(|dir| PathBuf::from(dir).join("it.overzoom.steroitor"))
 }
 
@@ -77,6 +78,10 @@ pub struct Settings {
     pub update_method: String,
     /// Id della shell scelta (`pwsh`, `cmd`, `git-bash`, …); vuoto per la prima trovata.
     pub terminal_shell: String,
+    /// Id dei plugin spenti, come nella versione Tauri.
+    pub disabled_plugins: Vec<String>,
+    /// Id plugin → id opzione → attiva; un'opzione mai toccata è spenta.
+    pub plugin_options: HashMap<String, HashMap<String, bool>>,
 }
 
 impl Settings {
@@ -113,7 +118,29 @@ impl Settings {
         editor["useTabs"] = style.use_tabs.into();
         saved["updateMethod"] = (if self.pull_rebase() { "rebase" } else { "merge" }).into();
         saved["terminalShell"] = self.terminal_shell.clone().into();
+        saved["disabledPlugins"] = self.disabled_plugins.clone().into();
+        // Opzione per opzione: restano quelle che conosce solo la versione Tauri (es. `jdtls`).
+        let options = &mut saved["pluginOptions"];
+        if !options.is_object() {
+            *options = serde_json::json!({});
+        }
+        for (plugin, values) in &self.plugin_options {
+            if !options[plugin].is_object() {
+                options[plugin] = serde_json::json!({});
+            }
+            for (option, enabled) in values {
+                options[plugin][option] = (*enabled).into();
+            }
+        }
         saved
+    }
+
+    pub fn plugin_enabled(&self, id: &str) -> bool {
+        !self.disabled_plugins.iter().any(|disabled| disabled == id)
+    }
+
+    pub fn plugin_option(&self, id: &str, option: &str) -> bool {
+        self.plugin_options.get(id).and_then(|options| options.get(option)).copied().unwrap_or(false)
     }
 
     pub fn pull_rebase(&self) -> bool {
@@ -150,15 +177,20 @@ mod tests {
 
     #[test]
     fn saving_keeps_the_keys_of_the_tauri_version() {
-        let saved = serde_json::json!({"editor": {"fontSize": 12, "other": 1}, "disabledPlugins": ["java"], "skippedVersion": "1.2.0"});
-        let settings = Settings { editor: EditorStyle { font_size: 16.0, use_tabs: true, ..EditorStyle::default() }, update_method: "rebase".into(), terminal_shell: "cmd".into() };
+        let saved = serde_json::json!({"editor": {"fontSize": 12, "other": 1}, "disabledPlugins": ["java"], "pluginOptions": {"java": {"jdtls": true}}, "skippedVersion": "1.2.0"});
+        let plugin_options = HashMap::from([("java".to_string(), HashMap::from([("typeCheck".to_string(), true)]))]);
+        let settings = Settings { editor: EditorStyle { font_size: 16.0, use_tabs: true, ..EditorStyle::default() }, update_method: "rebase".into(), terminal_shell: "cmd".into(), disabled_plugins: vec!["javascript".into()], plugin_options };
         let merged = settings.merge_into(saved);
-        assert_eq!(merged["disabledPlugins"][0], "java");
+        assert_eq!(merged["disabledPlugins"][0], "javascript");
+        assert_eq!(merged["pluginOptions"]["java"]["jdtls"], true);
+        assert!(settings.plugin_option("java", "typeCheck") && !settings.plugin_option("java", "docs"));
+        assert!(settings.plugin_enabled("java") && !settings.plugin_enabled("javascript"));
         assert_eq!(merged["skippedVersion"], "1.2.0");
         assert_eq!(merged["editor"]["other"], 1);
         assert_eq!(merged["editor"]["fontSize"], 16.0);
         assert_eq!(merged["updateMethod"], "rebase");
-        let reloaded: Settings = serde_json::from_value(merged).unwrap();
+        let mut reloaded: Settings = serde_json::from_value(merged).unwrap();
+        assert_eq!(reloaded.plugin_options.get_mut("java").and_then(|options| options.remove("jdtls")), Some(true));
         assert_eq!(reloaded, settings);
     }
 

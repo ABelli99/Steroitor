@@ -14,12 +14,13 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use crate::dialogs::wide;
 use crate::find::window_text;
 use crate::paint::{fill, frame, text, text_width};
+use crate::plugins::{OPTIONS, PLUGINS};
 use crate::session::{EditorStyle, Settings};
 use crate::theme::Palette;
 
 const CLASS_NAME: &str = "SteroitorSettings";
 const WIDTH: i32 = 480;
-const HEIGHT: i32 = 430;
+const HEIGHT: i32 = 680;
 const FIELD_LEFT: i32 = 260;
 const ROW: i32 = 34;
 
@@ -31,6 +32,8 @@ enum Hit {
     UseTabs,
     Rebase(bool),
     Shell(usize),
+    Plugin(usize),
+    PluginOption(usize, usize),
     Save,
     Cancel,
 }
@@ -42,6 +45,8 @@ struct Page {
     rebase: bool,
     shells: Vec<Shell>,
     shell: usize,
+    /// Per ogni plugin di PLUGINS: attivo e le sue opzioni, nell'ordine di OPTIONS.
+    plugins: Vec<(bool, [bool; 3])>,
     hits: Vec<(RECT, Hit)>,
     done: Option<bool>,
 }
@@ -64,6 +69,20 @@ fn format_field(value: f64) -> String {
     if value.fract() == 0.0 { format!("{value:.0}") } else { format!("{value}") }
 }
 
+/// Casella di spunta con etichetta a partire da `left`, centrata nella riga; restituisce l'area cliccabile.
+unsafe fn checkbox(dc: HDC, palette: &Palette, left: i32, row: &RECT, label: &str, on: bool, color: u32) -> RECT {
+    let size = (row.bottom - row.top) * 14 / 26;
+    let middle = (row.top + row.bottom) / 2;
+    let box_rect = RECT { left, top: middle - size / 2, right: left + size, bottom: middle + size / 2 };
+    frame(dc, &box_rect, palette.muted);
+    if on {
+        fill(dc, &RECT { left: box_rect.left + 3, top: box_rect.top + 3, right: box_rect.right - 3, bottom: box_rect.bottom - 3 }, palette.accent);
+    }
+    let label_left = box_rect.right + size / 2;
+    text(dc, label, &RECT { left: label_left, ..*row }, color, DT_LEFT);
+    RECT { left, right: label_left + text_width(dc, label), ..*row }
+}
+
 unsafe fn paint(hwnd: HWND, page: &mut Page) {
     let mut paint: PAINTSTRUCT = std::mem::zeroed();
     let dc = BeginPaint(hwnd, &mut paint);
@@ -83,16 +102,7 @@ unsafe fn paint(hwnd: HWND, page: &mut Page) {
         text(dc, label, &RECT { right: s(FIELD_LEFT - 8), ..row(44 + index as i32 * ROW) }, palette.fg, DT_LEFT);
     }
     let check_row = row(44 + 4 * ROW);
-    let size = s(14);
-    let middle = (check_row.top + check_row.bottom) / 2;
-    let checkbox = RECT { left: check_row.left, top: middle - size / 2, right: check_row.left + size, bottom: middle + size / 2 };
-    frame(dc, &checkbox, palette.muted);
-    if page.use_tabs {
-        fill(dc, &RECT { left: checkbox.left + 3, top: checkbox.top + 3, right: checkbox.right - 3, bottom: checkbox.bottom - 3 }, palette.accent);
-    }
-    let label = "Indenta con il carattere tab";
-    text(dc, label, &RECT { left: checkbox.right + s(8), ..check_row }, palette.fg, DT_LEFT);
-    hits.push((RECT { right: checkbox.right + s(8) + text_width(dc, label), ..check_row }, Hit::UseTabs));
+    hits.push((checkbox(dc, &palette, check_row.left, &check_row, "Indenta con il carattere tab", page.use_tabs, palette.fg), Hit::UseTabs));
 
     let git_top = 44 + 5 * ROW + 12;
     text(dc, "Git e terminale", &row(git_top), palette.accent, DT_LEFT);
@@ -119,6 +129,24 @@ unsafe fn paint(hwnd: HWND, page: &mut Page) {
             top += 32;
         }
         left = pill(dc, left, top, &shell.name, index == page.shell, Hit::Shell(index), &mut hits);
+    }
+
+    let mut top = top + 44;
+    text(dc, "Plugin", &row(top), palette.accent, DT_LEFT);
+    top += 30;
+    for (index, plugin) in PLUGINS.iter().enumerate() {
+        let (enabled, options) = page.plugins[index];
+        let name_row = row(top);
+        hits.push((checkbox(dc, &palette, name_row.left, &name_row, plugin.name, enabled, palette.fg), Hit::Plugin(index)));
+        text(dc, plugin.requires, &RECT { left: s(40), ..row(top + 22) }, palette.muted, DT_LEFT | DT_END_ELLIPSIS);
+        let option_row = row(top + 46);
+        let mut left = s(40);
+        for (option, (_, label)) in OPTIONS.iter().enumerate() {
+            let area = checkbox(dc, &palette, left, &option_row, label, options[option], if enabled { palette.fg } else { palette.muted });
+            hits.push((area, Hit::PluginOption(index, option)));
+            left = area.right + s(18);
+        }
+        top += 82;
     }
 
     let buttons = RECT { top: client.bottom - s(44), bottom: client.bottom - s(14), ..client };
@@ -162,6 +190,8 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wparam: WPARAM, lp
                     Some(Hit::UseTabs) => page.use_tabs = !page.use_tabs,
                     Some(Hit::Rebase(rebase)) => page.rebase = rebase,
                     Some(Hit::Shell(index)) => page.shell = index,
+                    Some(Hit::Plugin(index)) => page.plugins[index].0 = !page.plugins[index].0,
+                    Some(Hit::PluginOption(index, option)) => page.plugins[index].1[option] = !page.plugins[index].1[option],
                     Some(Hit::Save) => page.done = Some(true),
                     Some(Hit::Cancel) => page.done = Some(false),
                     None => return Some(0),
@@ -219,6 +249,7 @@ pub fn edit(owner: HWND, palette: &Palette, font: HFONT, current: &Settings, she
                 rebase: current.pull_rebase(),
                 shells,
                 shell,
+                plugins: PLUGINS.iter().map(|plugin| (current.plugin_enabled(plugin.id), OPTIONS.map(|(option, _)| current.plugin_option(plugin.id, option)))).collect(),
                 hits: Vec::new(),
                 done: None,
             })
@@ -269,7 +300,18 @@ pub fn edit(owner: HWND, palette: &Palette, font: HFONT, current: &Settings, she
         let fields: Vec<f64> = (0..4).map(|index| parse_field(&raw[index], index, initial[index])).collect();
         let editor = EditorStyle { font_size: fields[0], line_height: fields[1], tab_size: fields[2] as usize, indent_size: fields[3] as usize, use_tabs: page.use_tabs };
         let terminal_shell = page.shells.get(page.shell).map_or_else(String::new, |shell| shell.id.clone());
-        Some(Settings { editor, update_method: (if page.rebase { "rebase" } else { "merge" }).into(), terminal_shell })
+        let mut disabled_plugins: Vec<String> = current.disabled_plugins.iter().filter(|id| !PLUGINS.iter().any(|plugin| plugin.id == id.as_str())).cloned().collect();
+        let mut plugin_options = current.plugin_options.clone();
+        for (plugin, (enabled, options)) in PLUGINS.iter().zip(&page.plugins) {
+            if !enabled {
+                disabled_plugins.push(plugin.id.into());
+            }
+            let saved = plugin_options.entry(plugin.id.into()).or_default();
+            for ((option, _), on) in OPTIONS.iter().zip(options) {
+                saved.insert((*option).into(), *on);
+            }
+        }
+        Some(Settings { editor, update_method: (if page.rebase { "rebase" } else { "merge" }).into(), terminal_shell, disabled_plugins, plugin_options })
     }
 }
 

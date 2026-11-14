@@ -31,6 +31,7 @@ use crate::lang::{self, Language};
 use crate::list::{decode_event, ListEvent, RowPaint, WM_LIST_EVENT, WM_LIST_PAINT};
 use crate::paint::{fill, text, text_width};
 use crate::panel::{self, ConsoleTarget, Panel, Tab};
+use crate::plugins::{self, Host};
 use crate::prompt::prompt;
 use crate::sci::*;
 use crate::session::{Session, Settings};
@@ -126,6 +127,7 @@ pub struct App {
     settings: RefCell<Settings>,
     worker: Worker,
     compare: &'static Compare,
+    plugins: Host,
     repos: RefCell<Vec<Repo>>,
     colors: RefCell<FileColors>,
     /// Contenuto in HEAD dei file aperti (None = non tracciato), per i marker nel gutter.
@@ -260,6 +262,7 @@ impl App {
             compare: Compare::create(hwnd, instance, &palette, settings.editor.font_size_fraction(), worker.clone()),
             settings: RefCell::new(settings),
             worker,
+            plugins: Host::new(hwnd, crate::session::data_dir(), palette),
             repos: RefCell::new(Vec::new()),
             colors: RefCell::new(FileColors::default()),
             heads: RefCell::new(HashMap::new()),
@@ -325,6 +328,7 @@ impl App {
                 SendMessageW(control, WM_SETFONT, font as usize, 1);
             }
             self.explorer.set_font(font, self.scale(TREE_ITEM_HEIGHT));
+            self.plugins.set_font(font);
             SendMessageW(self.panel.message, WM_SETFONT, font as usize, 1);
             self.panel.log.set_row_height(self.scale(LIST_ROW_HEIGHT));
             self.panel.files.set_row_height(self.scale(LIST_ROW_HEIGHT));
@@ -371,6 +375,13 @@ impl App {
         sci.call(SCI_INDICSETALPHA, find::INDICATOR, 60);
         sci.call(SCI_INDICSETOUTLINEALPHA, find::INDICATOR, 160);
         sci.call(SCI_INDICSETUNDER, find::INDICATOR, 1);
+        Host::configure(sci, palette);
+    }
+
+    /// Le funzioni dei plugin vogliono editor, impostazioni e percorso della tab attiva.
+    fn with_plugins(&self, action: impl FnOnce(&Host, &Sci, &Settings, Option<&Path>)) {
+        let path = self.active_path();
+        action(&self.plugins, &self.sci, &self.settings.borrow(), path.as_deref());
     }
 
     /// Stili e interlinea sono della vista: si riapplicano a ogni cambio di tab.
@@ -400,6 +411,7 @@ impl App {
         changed.save();
         self.compare.set_font_fraction(changed.editor.font_size_fraction());
         *self.settings.borrow_mut() = changed;
+        self.with_plugins(|plugins, _, settings, _| plugins.apply_settings(settings));
         self.remember_view();
         let pointers: Vec<isize> = self.docs.borrow().iter().map(|doc| doc.pointer).collect();
         for pointer in pointers {
@@ -439,6 +451,7 @@ impl App {
         self.sci.set_text(text.as_bytes());
         self.refresh();
         self.update_markers();
+        self.with_plugins(|plugins, sci, settings, path| plugins.on_activate(sci, settings, path));
     }
 
     pub fn new_document(&self) {
@@ -488,6 +501,7 @@ impl App {
         self.sci.call(SCI_SETSEL, anchor.min(length) as usize, caret.min(length));
         self.sci.call(SCI_SETFIRSTVISIBLELINE, first_line as usize, 0);
         self.refresh();
+        self.with_plugins(|plugins, sci, settings, path| plugins.on_activate(sci, settings, path));
     }
 
     fn remember_view(&self) {
@@ -522,6 +536,9 @@ impl App {
             self.find.highlight(&self.sci);
         }
         self.update_markers();
+        if !stale {
+            self.with_plugins(|plugins, sci, settings, path| plugins.on_activate(sci, settings, path));
+        }
         self.refresh();
         self.focus_editor();
     }
@@ -535,7 +552,11 @@ impl App {
             let next = if index + 1 < self.docs.borrow().len() { index + 1 } else { index - 1 };
             self.activate(next);
         }
-        let pointer = self.docs.borrow_mut().remove(index).pointer;
+        let removed = self.docs.borrow_mut().remove(index);
+        if let Some(path) = &removed.path {
+            self.plugins.close(path);
+        }
+        let pointer = removed.pointer;
         self.sci.call(SCI_RELEASEDOCUMENT, 0, pointer);
         if self.active.get() > index {
             self.active.set(self.active.get() - 1);
@@ -865,6 +886,10 @@ impl App {
         if !ctrl {
             return false;
         }
+        if key == VK_SPACE && !shift && focus == self.sci.hwnd {
+            self.with_plugins(|plugins, sci, settings, path| plugins.complete(sci, settings, path, true));
+            return true;
+        }
         match (key, shift) {
             (0x4E, false) => self.new_document(),
             (0x4F, false) => open_files(self.hwnd).iter().for_each(|path| self.open(path)),
@@ -969,7 +994,13 @@ impl App {
             SCN_MODIFIED => {
                 // SAFETY: timer della finestra principale; se esiste già viene solo riavviato.
                 unsafe { SetTimer(self.hwnd, MARKER_TIMER, MARKER_DELAY_MS, None) };
+                self.with_plugins(|plugins, _, settings, path| plugins.on_modified(settings, path));
             }
+            SCN_CHARADDED => self.with_plugins(|plugins, sci, settings, path| plugins.on_char(sci, settings, path, notification.ch)),
+            SCN_AUTOCSELECTIONCHANGE => self.with_plugins(|plugins, _, settings, path| plugins.on_selection(settings, path, &notification.text())),
+            SCN_AUTOCCANCELLED | SCN_AUTOCCOMPLETED => self.plugins.on_list_closed(&self.sci),
+            SCN_DWELLSTART => self.with_plugins(|plugins, sci, settings, path| plugins.on_dwell(sci, settings, path, notification.position)),
+            SCN_DWELLEND => self.plugins.on_dwell_end(&self.sci),
             SCN_UPDATEUI => {
                 self.match_braces();
                 // SAFETY: finestra valida.
@@ -1906,6 +1937,20 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             app.update_markers();
             0
         }
+        WM_TIMER if wparam == plugins::COMPLETION_TIMER => {
+            app.with_plugins(|plugins, sci, settings, path| plugins.complete(sci, settings, path, false));
+            0
+        }
+        WM_TIMER if wparam == plugins::CHECK_TIMER => {
+            app.with_plugins(|plugins, sci, settings, path| plugins.check(sci, settings, path));
+            0
+        }
+        plugins::WM_PLUGIN_EVENT => {
+            let mut problems = Vec::new();
+            app.with_plugins(|plugins, sci, settings, path| problems = plugins.on_event(sci, settings, path));
+            app.panel.append_console(&problems);
+            0
+        }
         WM_FILES_CHANGED => {
             app.on_files_changed();
             0
@@ -1926,6 +1971,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
         }
         WM_DESTROY => {
             app.panel.terminals.borrow_mut().drain(..).for_each(|terminal| terminal.close());
+            app.plugins.shutdown();
             PostQuitMessage(0);
             0
         }
