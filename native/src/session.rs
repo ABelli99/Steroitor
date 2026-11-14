@@ -22,11 +22,26 @@ fn write_atomic(file: &std::path::Path, text: &str) {
     }
 }
 
+/// Un progetto della finestra: cartella, file aperti e tab attiva.
+#[derive(Serialize, Deserialize, Default, Clone, PartialEq, Debug)]
+#[serde(default)]
+pub struct ProjectSession {
+    pub folder: Option<PathBuf>,
+    pub files: Vec<PathBuf>,
+    pub active: usize,
+}
+
 #[derive(Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Session {
+    pub projects: Vec<ProjectSession>,
+    pub active_project: usize,
+    /// Sessione di prima dei progetti multipli: un progetto solo, letto e non più scritto.
+    #[serde(skip_serializing)]
     pub folder: Option<PathBuf>,
+    #[serde(skip_serializing)]
     pub files: Vec<PathBuf>,
+    #[serde(skip_serializing)]
     pub active: usize,
     pub explorer_width: Option<i32>,
     pub explorer_visible: Option<bool>,
@@ -41,6 +56,14 @@ fn session_file() -> Option<PathBuf> {
 }
 
 impl Session {
+    /// I progetti salvati, con quello di una sessione vecchia; almeno uno.
+    pub fn project_list(&self) -> Vec<ProjectSession> {
+        if !self.projects.is_empty() {
+            return self.projects.clone();
+        }
+        vec![ProjectSession { folder: self.folder.clone(), files: self.files.clone(), active: self.active }]
+    }
+
     pub fn load() -> Session {
         session_file().and_then(|file| std::fs::read_to_string(file).ok()).and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
     }
@@ -204,7 +227,9 @@ mod tests {
     #[test]
     fn tolerates_an_old_or_partial_session() {
         let session: Session = serde_json::from_str(r#"{"files":["C:\\a.txt"]}"#).unwrap();
-        assert_eq!(session.files, vec![PathBuf::from("C:\\a.txt")]);
-        assert!(session.folder.is_none());
+        assert_eq!(session.project_list(), vec![ProjectSession { folder: None, files: vec![PathBuf::from("C:\\a.txt")], active: 0 }]);
+        let session: Session = serde_json::from_str(r#"{"folder":"C:\\vecchia","projects":[{"folder":"C:\\a"},{"folder":"C:\\b"}],"active_project":1}"#).unwrap();
+        assert_eq!(session.project_list().len(), 2);
+        assert!(!serde_json::to_string(&session).unwrap().contains("vecchia"));
     }
 }

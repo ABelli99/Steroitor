@@ -1,5 +1,5 @@
 //! File Explorer: TreeView di Windows, cartelle caricate quando si aprono, aggiornate dal watcher.
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 
 use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, POINT};
@@ -27,7 +27,7 @@ struct Node {
 }
 
 pub struct Explorer {
-    pub hwnd: HWND,
+    hwnd: Cell<HWND>,
     root: RefCell<Option<PathBuf>>,
     nodes: RefCell<Vec<Node>>,
 }
@@ -62,12 +62,23 @@ impl Explorer {
         send(hwnd, TVM_SETEXTENDEDSTYLE, TVS_EX_DOUBLEBUFFER as usize, TVS_EX_DOUBLEBUFFER as isize);
         send(hwnd, TVM_SETBKCOLOR, 0, palette.panel as isize);
         send(hwnd, TVM_SETTEXTCOLOR, 0, palette.fg as isize);
-        Explorer { hwnd, root: RefCell::new(None), nodes: RefCell::new(Vec::new()) }
+        Explorer { hwnd: Cell::new(hwnd), root: RefCell::new(None), nodes: RefCell::new(Vec::new()) }
+    }
+
+    pub fn hwnd(&self) -> HWND {
+        self.hwnd.get()
+    }
+
+    /// Scambia controllo e contenuto con un altro explorer: così cambia il progetto mostrato.
+    pub fn swap(&self, other: &Explorer) {
+        self.hwnd.swap(&other.hwnd);
+        self.root.swap(&other.root);
+        self.nodes.swap(&other.nodes);
     }
 
     pub fn set_font(&self, font: HFONT, item_height: i32) {
-        send(self.hwnd, WM_SETFONT, font as usize, 1);
-        send(self.hwnd, TVM_SETITEMHEIGHT, item_height as usize, 0);
+        send(self.hwnd(), WM_SETFONT, font as usize, 1);
+        send(self.hwnd(), TVM_SETITEMHEIGHT, item_height as usize, 0);
     }
 
     pub fn root(&self) -> Option<PathBuf> {
@@ -75,7 +86,7 @@ impl Explorer {
     }
 
     pub fn set_root(&self, root: Option<&Path>) {
-        send(self.hwnd, TVM_DELETEITEM, 0, TVI_ROOT as isize);
+        send(self.hwnd(), TVM_DELETEITEM, 0, TVI_ROOT as isize);
         self.nodes.borrow_mut().clear();
         *self.root.borrow_mut() = root.map(Path::to_path_buf);
         if let Some(root) = root {
@@ -95,7 +106,7 @@ impl Explorer {
             insert.Anonymous.itemex.pszText = text.as_mut_ptr();
             insert.Anonymous.itemex.lParam = index as LPARAM;
             insert.Anonymous.itemex.cChildren = i32::from(entry.is_dir);
-            send(self.hwnd, TVM_INSERTITEMW, 0, &insert as *const _ as isize) as HTREEITEM
+            send(self.hwnd(), TVM_INSERTITEMW, 0, &insert as *const _ as isize) as HTREEITEM
         };
         self.nodes.borrow_mut().push(Node { path: PathBuf::from(&entry.path), is_dir: entry.is_dir, item, loaded: false });
         item
@@ -117,7 +128,7 @@ impl Explorer {
             let mut data: TVITEMEXW = std::mem::zeroed();
             data.mask = TVIF_PARAM;
             data.hItem = item;
-            send(self.hwnd, TVM_GETITEMW, 0, &mut data as *mut _ as isize);
+            send(self.hwnd(), TVM_GETITEMW, 0, &mut data as *mut _ as isize);
             data.lParam as usize
         };
         (index < self.nodes.borrow().len()).then_some(index)
@@ -142,10 +153,10 @@ impl Explorer {
 
     fn children(&self, parent: HTREEITEM) -> Vec<HTREEITEM> {
         let mut items = Vec::new();
-        let mut item = send(self.hwnd, TVM_GETNEXTITEM, TVGN_CHILD as usize, parent as isize) as HTREEITEM;
+        let mut item = send(self.hwnd(), TVM_GETNEXTITEM, TVGN_CHILD as usize, parent as isize) as HTREEITEM;
         while item != 0 {
             items.push(item);
-            item = send(self.hwnd, TVM_GETNEXTITEM, TVGN_NEXT as usize, item as isize) as HTREEITEM;
+            item = send(self.hwnd(), TVM_GETNEXTITEM, TVGN_NEXT as usize, item as isize) as HTREEITEM;
         }
         items
     }
@@ -169,7 +180,7 @@ impl Explorer {
             .collect();
         for (item, path) in &existing {
             if !entries.iter().any(|entry| Path::new(&entry.path) == path) {
-                send(self.hwnd, TVM_DELETEITEM, 0, *item as isize);
+                send(self.hwnd(), TVM_DELETEITEM, 0, *item as isize);
                 if let Some(node) = self.nodes.borrow_mut().iter_mut().find(|node| node.item == *item) {
                     node.item = 0;
                 }
@@ -189,15 +200,15 @@ impl Explorer {
         unsafe {
             let mut point = POINT { x: 0, y: 0 };
             GetCursorPos(&mut point);
-            ScreenToClient(self.hwnd, &mut point);
+            ScreenToClient(self.hwnd(), &mut point);
             let mut hit: TVHITTESTINFO = std::mem::zeroed();
             hit.pt = point;
-            send(self.hwnd, TVM_HITTEST, 0, &mut hit as *mut _ as isize) as HTREEITEM
+            send(self.hwnd(), TVM_HITTEST, 0, &mut hit as *mut _ as isize) as HTREEITEM
         }
     }
 
     fn selected(&self) -> Option<usize> {
-        self.node_of(send(self.hwnd, TVM_GETNEXTITEM, TVGN_CARET as usize, 0) as HTREEITEM)
+        self.node_of(send(self.hwnd(), TVM_GETNEXTITEM, TVGN_CARET as usize, 0) as HTREEITEM)
     }
 
     /// Gestisce le notifiche della TreeView; il valore restituito va al chiamante di WM_NOTIFY.
@@ -221,7 +232,7 @@ impl Explorer {
             NM_RCLICK => {
                 let item = self.item_at_cursor();
                 if item != 0 {
-                    send(self.hwnd, TVM_SELECTITEM, TVGN_CARET as usize, item as isize);
+                    send(self.hwnd(), TVM_SELECTITEM, TVGN_CARET as usize, item as isize);
                 }
                 (1, self.context_menu(owner, self.node_of(item)))
             }
@@ -290,7 +301,7 @@ impl Explorer {
             MENU_NEW_FILE | MENU_NEW_FOLDER => self.create_entry(owner, node, command == MENU_NEW_FOLDER),
             MENU_RENAME => {
                 let item = self.nodes.borrow()[node?].item;
-                send(self.hwnd, TVM_EDITLABELW, 0, item as isize);
+                send(self.hwnd(), TVM_EDITLABELW, 0, item as isize);
                 None
             }
             MENU_DELETE => self.delete(owner, &path),
@@ -313,7 +324,7 @@ impl Explorer {
 
     pub fn rename_selected(&self) {
         if let Some(index) = self.selected() {
-            send(self.hwnd, TVM_EDITLABELW, 0, self.nodes.borrow()[index].item as isize);
+            send(self.hwnd(), TVM_EDITLABELW, 0, self.nodes.borrow()[index].item as isize);
         }
     }
 
@@ -335,7 +346,7 @@ impl Explorer {
         let dir = self.target_dir(node)?;
         if let Some(index) = node.filter(|&index| self.nodes.borrow()[index].is_dir) {
             self.load(index);
-            send(self.hwnd, TVM_EXPAND, TVE_EXPAND as usize, self.nodes.borrow()[index].item as isize);
+            send(self.hwnd(), TVM_EXPAND, TVE_EXPAND as usize, self.nodes.borrow()[index].item as isize);
         }
         let base = if folder { "nuova-cartella" } else { "nuovo-file.txt" };
         let name = (1..).map(|n| numbered(base, n)).find(|name| !dir.join(name).exists())?;
@@ -350,8 +361,8 @@ impl Explorer {
         self.refresh_dir(&dir);
         let item = self.nodes.borrow().iter().find(|node| node.path == path && node.item != 0).map(|node| node.item);
         if let Some(item) = item {
-            send(self.hwnd, TVM_SELECTITEM, TVGN_CARET as usize, item as isize);
-            send(self.hwnd, TVM_EDITLABELW, 0, item as isize);
+            send(self.hwnd(), TVM_SELECTITEM, TVGN_CARET as usize, item as isize);
+            send(self.hwnd(), TVM_EDITLABELW, 0, item as isize);
         }
         (!folder).then_some(Action::Open(path))
     }

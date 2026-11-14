@@ -13,6 +13,7 @@ pub const SCI_GOTOPOS: u32 = 2025;
 pub const SCI_CREATEDOCUMENT: u32 = 2375;
 pub const SCI_SETDOCPOINTER: u32 = 2358;
 pub const SCI_RELEASEDOCUMENT: u32 = 2377;
+pub const SCI_ADDREFDOCUMENT: u32 = 2376;
 pub const SCI_SETEOLMODE: u32 = 2031;
 pub const SCI_SETILEXER: u32 = 4033;
 pub const SCI_SETKEYWORDS: u32 = 4005;

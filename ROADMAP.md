@@ -194,7 +194,7 @@ Note di implementazione:
 
 ---
 
-## Riscrittura nativa (branch `native`) — N1–N6 implementate
+## Riscrittura nativa (branch `native`) — N1–N7 implementate
 
 Obiettivo: la massima leggerezza. WebView2 da solo vale ~65 dei ~72 MB dell'app Tauri; un'app Win32 con l'editor di Notepad++ (Scintilla) ne usa una frazione. L'app Tauri resta su `master`, usabile, finché la nativa non arriva a parità.
 
@@ -217,7 +217,7 @@ Fasi:
 
 Parità con la versione Tauri (cosa manca dopo N5; il backend Git per tutte le voci è già in `core/`, manca l'interfaccia):
 - **N6** (fatta) — pannello inferiore sempre raggiungibile: da chiuso resta la striscia Console | Git | Commit, un clic la apre, un clic sulla tab attiva la richiude; pulsante impostazioni nella barra delle tab; scelta del repository di log e commit quando la cartella ne contiene più d'uno
-- **N7** — più progetti nella stessa finestra, come tab nella barra laterale, ognuno con explorer, watcher, stato Git e terminali propri; un progetto ripristinato si carica quando lo apri
+- **N7** (fatta) — più progetti nella stessa finestra: barra a sinistra con l’iniziale di ogni progetto (nome nel tooltip), `+` per aprire una cartella in un progetto nuovo, clic centrale per chiudere; ognuno con explorer, tab, repository, watcher, Console e terminali propri. Il progetto attivo vive nei campi di `App`, gli altri sono parcheggiati e si scambiano al cambio; un progetto ripristinato si carica quando lo apri, e le modifiche viste dal watcher di un progetto non attivo si applicano quando torna attivo. Una cartella da riga di comando o trascinata va nel progetto che la ha già, in quello attivo se è vuoto, altrimenti in uno nuovo. Non ci sono il riordino trascinando e lo stacco in una finestra propria
 - **N8** — Git: lista dei branch nella tab Git e filtri del log (branch, autore, path, testo); merge e rebase dal widget VCS con stato di conflitto e Continua/Annulla; amend; stash (push/pop/elenco); annotate/blame; modifica del messaggio di commit non pushati; commit parziale e azioni dal gutter (rollback, stage del hunk); clone e `git init`; avvisi su CRLF e HEAD staccato; push senza upstream; comandi in background nascosti nella Console
 - **N9** — editor e app: Quick Open (`Ctrl+P`), istanza singola e "Apri con", contenuto non salvato conservato nella sessione, riordino delle tab, minimap, Vai alla dichiarazione
 

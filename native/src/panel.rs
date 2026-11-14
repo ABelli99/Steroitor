@@ -59,6 +59,20 @@ pub struct ChangedFile {
     pub checked: bool,
 }
 
+/// Ciò che il pannello mostra per un progetto: si scambia con quello del pannello quando cambia il progetto attivo.
+#[derive(Default)]
+pub struct ProjectState {
+    root: Option<PathBuf>,
+    repo_count: usize,
+    commits: Vec<Commit>,
+    graph: Vec<GraphRow>,
+    changes: Vec<ChangedFile>,
+    pub terminals: Vec<Terminal>,
+    view: Option<u32>,
+    /// Documento Scintilla con il log dei comandi git del progetto.
+    console_doc: isize,
+}
+
 pub struct Panel {
     pub visible: Cell<bool>,
     pub tab: Cell<Tab>,
@@ -152,6 +166,44 @@ impl Panel {
             console_tabs: RefCell::new(Vec::new()),
             buttons: RefCell::new(Vec::new()),
         }
+    }
+
+    /// Stato vuoto per un progetto nuovo, con il suo documento per la Console.
+    pub fn new_state(&self) -> ProjectState {
+        ProjectState { console_doc: self.console.call(SCI_CREATEDOCUMENT, 0, 0), ..ProjectState::default() }
+    }
+
+    pub fn swap_state(&self, state: &mut ProjectState) {
+        for terminal in self.terminals.borrow().iter() {
+            // SAFETY: controllo valido creato dal terminale.
+            unsafe { ShowWindow(terminal.sci.hwnd, SW_HIDE) };
+        }
+        std::mem::swap(&mut *self.root.borrow_mut(), &mut state.root);
+        state.repo_count = self.repo_count.replace(state.repo_count);
+        std::mem::swap(&mut *self.commits.borrow_mut(), &mut state.commits);
+        std::mem::swap(&mut *self.graph.borrow_mut(), &mut state.graph);
+        std::mem::swap(&mut *self.changes.borrow_mut(), &mut state.changes);
+        std::mem::swap(&mut *self.terminals.borrow_mut(), &mut state.terminals);
+        state.view = self.view.replace(state.view);
+        // La vista tiene un riferimento al documento mostrato: quello uscente va tenuto vivo, quello entrante passa alla vista.
+        let current = self.console.call(SCI_GETDOCPOINTER, 0, 0);
+        self.console.call(SCI_ADDREFDOCUMENT, 0, current);
+        self.console.call(SCI_SETDOCPOINTER, 0, state.console_doc);
+        self.console.call(SCI_RELEASEDOCUMENT, 0, state.console_doc);
+        state.console_doc = current;
+        self.console.call(SCI_SETCODEPAGE, SC_CP_UTF8, 0);
+        self.console.call(SCI_SETUNDOCOLLECTION, 0, 0);
+        self.console.call(SCI_SETREADONLY, 1, 0);
+        self.log.set_rows(self.commits.borrow().len());
+        self.files.set_rows(self.changes.borrow().len());
+    }
+
+    /// Progetto chiuso: terminali e documento della Console.
+    pub fn discard_state(&self, state: ProjectState) {
+        for terminal in state.terminals {
+            terminal.close();
+        }
+        self.console.call(SCI_RELEASEDOCUMENT, 0, state.console_doc);
     }
 
     pub fn attach(&'static self) {

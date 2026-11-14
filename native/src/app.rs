@@ -11,8 +11,8 @@ use notify_debouncer_mini::Debouncer;
 use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
 use windows_sys::Win32::Graphics::Gdi::*;
-use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
-use windows_sys::Win32::UI::Controls::{SetWindowTheme, CDDS_ITEMPREPAINT, CDDS_PREPAINT, CDRF_DODEFAULT, CDRF_NOTIFYITEMDRAW, NMHDR, NMTVCUSTOMDRAW, NM_CUSTOMDRAW};
+use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
+use windows_sys::Win32::UI::Controls::{SetWindowTheme, TTTOOLINFOW, TTF_SUBCLASS, TTM_ADDTOOLW, TTM_NEWTOOLRECTW, TTM_POP, TTM_UPDATETIPTEXTW, TTS_ALWAYSTIP, TTS_NOPREFIX, CDDS_ITEMPREPAINT, CDDS_PREPAINT, CDRF_DODEFAULT, CDRF_NOTIFYITEMDRAW, NMHDR, NMTVCUSTOMDRAW, NM_CUSTOMDRAW};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
@@ -29,12 +29,12 @@ use crate::find::{self, window_text, FindBar};
 use crate::git::{line_changes, repo_of, Event, FileColors, Repo, Worker, WM_COMMAND_LOGGED, WM_GIT_EVENT};
 use crate::lang::{self, Language};
 use crate::list::{decode_event, ListEvent, RowPaint, WM_LIST_EVENT, WM_LIST_PAINT};
-use crate::paint::{fill, text, text_width};
+use crate::paint::{fill, frame, text, text_width};
 use crate::panel::{self, ConsoleTarget, Panel, Tab};
 use crate::plugins::{self, Host};
 use crate::prompt::prompt;
 use crate::sci::*;
-use crate::session::{Session, Settings};
+use crate::session::{ProjectSession, Session, Settings};
 use crate::settings_page;
 use crate::terminal::{Terminal, WM_TERMINAL_EXIT, WM_TERMINAL_OUTPUT};
 use crate::theme::{system_palette, Palette};
@@ -53,11 +53,15 @@ const TREE_ITEM_HEIGHT: i32 = 22;
 const EXPLORER_WIDTH: i32 = 240;
 const EXPLORER_MIN: i32 = 120;
 const EDITOR_MIN: i32 = 200;
+const PROJECT_BAR: i32 = 36;
+const PROJECT_BUTTON: i32 = 28;
 /// Il watcher (altro thread) avvisa la finestra con questo messaggio; le cartelle cambiate aspettano in `changes`.
 const WM_FILES_CHANGED: u32 = WM_APP + 1;
 const MENU_OPEN_FOLDER: usize = 1;
 const MENU_CLOSE_FOLDER: usize = 2;
 const MENU_SETTINGS: usize = 3;
+const MENU_NEW_PROJECT: usize = 4;
+const MENU_CLOSE_PROJECT: usize = 5;
 const MARKER_TIMER: usize = 1;
 const MARKER_DELAY_MS: u32 = 300;
 const GIT_MARGIN: usize = 1;
@@ -149,7 +153,78 @@ pub struct App {
     wrap: Cell<bool>,
     watcher: RefCell<Option<Debouncer<RecommendedWatcher>>>,
     /// Dal watcher: cartelle cambiate e repository con metadati Git cambiati.
-    changes: Arc<Mutex<(Vec<String>, Vec<PathBuf>)>>,
+    changes: RefCell<Changes>,
+    /// I progetti della finestra, nell'ordine della barra: quello attivo vive nei campi qui sopra e ha il posto vuoto.
+    projects: RefCell<Vec<Option<Parked>>>,
+    current: Cell<usize>,
+    /// Pulsanti della barra dei progetti; l'ultimo è il `+`.
+    project_rects: RefCell<Vec<RECT>>,
+    tooltip: HWND,
+    hovered: Cell<Option<usize>>,
+}
+
+type Changes = Arc<Mutex<(Vec<String>, Vec<PathBuf>)>>;
+
+/// Un progetto non attivo: gli stessi campi che `App` ha per quello attivo, scambiati al cambio di progetto.
+struct Parked {
+    explorer: Explorer,
+    docs: Vec<Doc>,
+    active: usize,
+    repos: Vec<Repo>,
+    colors: FileColors,
+    heads: HashMap<String, Option<String>>,
+    watcher: Option<Debouncer<RecommendedWatcher>>,
+    /// Le modifiche viste dal watcher mentre il progetto non è attivo aspettano qui.
+    changes: Changes,
+    panel: panel::ProjectState,
+    /// Ripristinato e mai aperto: cosa caricare alla prima attivazione.
+    pending: Option<ProjectSession>,
+}
+
+impl Parked {
+    fn folder(&self) -> Option<PathBuf> {
+        self.pending.as_ref().map_or_else(|| self.explorer.root(), |pending| pending.folder.clone())
+    }
+
+    fn session(&self) -> ProjectSession {
+        if let Some(pending) = &self.pending {
+            return pending.clone();
+        }
+        session_of(self.explorer.root(), &self.docs, self.active)
+    }
+}
+
+/// Cartella, file salvati e tab attiva (contata tra i file salvati).
+fn session_of(folder: Option<PathBuf>, docs: &[Doc], active: usize) -> ProjectSession {
+    let saved: Vec<(usize, PathBuf)> = docs.iter().enumerate().filter_map(|(index, doc)| doc.path.clone().map(|path| (index, path))).collect();
+    let active = saved.iter().position(|(index, _)| *index == active).unwrap_or(0);
+    ProjectSession { folder, files: saved.into_iter().map(|(_, path)| path).collect(), active }
+}
+
+fn folder_name(folder: Option<&Path>) -> String {
+    folder.map_or_else(|| "Senza cartella".into(), |folder| folder.file_name().map_or_else(|| folder.display().to_string(), |name| name.to_string_lossy().into_owned()))
+}
+
+/// Iniziale mostrata nella barra dei progetti.
+fn folder_initial(folder: Option<&Path>) -> String {
+    folder.and_then(|folder| folder.file_name()).and_then(|name| name.to_string_lossy().chars().find(|ch| ch.is_alphanumeric())).map_or_else(|| "·".into(), |ch| ch.to_uppercase().collect())
+}
+
+/// Tooltip con il nome del progetto sotto il mouse, sulla barra dei progetti.
+fn create_tooltip(owner: HWND) -> HWND {
+    let class = wide("tooltips_class32");
+    // SAFETY: finestra di tooltip posseduta dalla finestra principale; la struttura vive per la chiamata.
+    unsafe {
+        let tooltip = CreateWindowExW(WS_EX_TOPMOST, class.as_ptr(), std::ptr::null(), WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP, 0, 0, 0, 0, owner, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
+        let mut empty = [0u16];
+        let mut tool: TTTOOLINFOW = std::mem::zeroed();
+        tool.cbSize = std::mem::size_of::<TTTOOLINFOW>() as u32;
+        tool.uFlags = TTF_SUBCLASS;
+        tool.hwnd = owner;
+        tool.lpszText = empty.as_mut_ptr();
+        SendMessageW(tooltip, TTM_ADDTOOLW, 0, &tool as *const _ as isize);
+        tooltip
+    }
 }
 
 thread_local! {
@@ -284,25 +359,35 @@ impl App {
             dragging: Cell::new(false),
             wrap: Cell::new(session.wrap),
             watcher: RefCell::new(None),
-            changes: Arc::default(),
+            changes: RefCell::default(),
+            projects: RefCell::new(Vec::new()),
+            current: Cell::new(0),
+            project_rects: RefCell::new(Vec::new()),
+            tooltip: create_tooltip(hwnd),
+            hovered: Cell::new(None),
         }));
         APP.with(|cell| cell.set(app).ok());
         app.panel.attach();
         app.configure_editor();
         app.update_font();
 
-        let (folders, files): (Vec<PathBuf>, Vec<PathBuf>) = arguments.into_iter().partition(|path| path.is_dir());
-        let restore = folders.is_empty() && files.is_empty();
-        let folder = if restore { session.folder.clone().filter(|folder| folder.is_dir()) } else { folders.into_iter().next() };
-        app.set_folder(folder);
-        let to_open = if restore { session.files.clone() } else { files };
-        for file in to_open.iter().filter(|file| file.is_file()) {
-            app.open(file);
+        // Il progetto attivo si carica subito, gli altri quando li si apre.
+        let saved = session.project_list();
+        let active = session.active_project.min(saved.len() - 1);
+        for (index, project) in saved.iter().enumerate() {
+            let parked = (index != active).then(|| app.park(Some(project.clone())));
+            app.projects.borrow_mut().push(parked);
         }
-        if app.docs.borrow().is_empty() {
-            app.new_document();
-        } else if restore {
-            app.activate(session.active.min(app.docs.borrow().len() - 1));
+        app.current.set(active);
+        app.load_project(saved[active].clone());
+
+        // Da riga di comando: una cartella apre (o porta in primo piano) il suo progetto, i file vanno in quello attivo.
+        let (folders, files): (Vec<PathBuf>, Vec<PathBuf>) = arguments.into_iter().partition(|path| path.is_dir());
+        if let Some(folder) = folders.into_iter().next() {
+            app.open_project(folder);
+        }
+        for file in files.iter().filter(|file| file.is_file()) {
+            app.open(file);
         }
         app.layout();
         // SAFETY: finestra appena creata da questo thread.
@@ -331,6 +416,9 @@ impl App {
                 SendMessageW(control, WM_SETFONT, font as usize, 1);
             }
             self.explorer.set_font(font, self.scale(TREE_ITEM_HEIGHT));
+            for parked in self.projects.borrow().iter().flatten() {
+                parked.explorer.set_font(font, self.scale(TREE_ITEM_HEIGHT));
+            }
             self.plugins.set_font(font);
             SendMessageW(self.panel.message, WM_SETFONT, font as usize, 1);
             self.panel.log.set_row_height(self.scale(LIST_ROW_HEIGHT));
@@ -416,14 +504,19 @@ impl App {
         *self.settings.borrow_mut() = changed;
         self.with_plugins(|plugins, _, settings, _| plugins.apply_settings(settings));
         self.remember_view();
+        self.apply_indentation_all();
+        // Riattiva la tab corrente (forzando il cambio) per ridare documento, stili e posizione alla vista.
+        let active = self.active.replace(usize::MAX);
+        self.activate(active);
+    }
+
+    /// Tab e indentazione su ogni documento del progetto attivo; poi va riattivata la tab corrente.
+    fn apply_indentation_all(&self) {
         let pointers: Vec<isize> = self.docs.borrow().iter().map(|doc| doc.pointer).collect();
         for pointer in pointers {
             self.sci.call(SCI_SETDOCPOINTER, 0, pointer);
             self.apply_indentation();
         }
-        // Riattiva la tab corrente (forzando il cambio) per ridare documento, stili e posizione alla vista.
-        let active = self.active.replace(usize::MAX);
-        self.activate(active);
     }
 
     fn set_language(&self, language: &'static Language) {
@@ -592,8 +685,30 @@ impl App {
         }
     }
 
+    /// Chiede per le tab modificate del progetto attivo; true se si può procedere.
+    fn confirm_project(&self) -> bool {
+        let count = self.docs.borrow().len();
+        (0..count).all(|index| self.confirm_discard(index))
+    }
+
+    /// Chiede per le tab modificate di tutti i progetti, portando in primo piano quello che ne ha.
     fn confirm_quit(&self) -> bool {
-        (0..self.docs.borrow().len()).all(|index| self.confirm_discard(index))
+        let count = self.projects.borrow().len();
+        for index in 0..count {
+            let dirty = if index == self.current.get() {
+                self.docs.borrow().iter().any(|doc| doc.dirty)
+            } else {
+                self.projects.borrow()[index].as_ref().is_some_and(|parked| parked.docs.iter().any(|doc| doc.dirty))
+            };
+            if !dirty {
+                continue;
+            }
+            self.switch_project(index);
+            if !self.confirm_project() {
+                return false;
+            }
+        }
+        true
     }
 
     /// Salva la tab attiva; con `ask` (o se non ha un percorso) chiede dove.
@@ -660,7 +775,7 @@ impl App {
             self.worker.refresh(root);
         }
         if let Some(folder) = &folder {
-            let changes = Arc::clone(&self.changes);
+            let changes = Arc::clone(&self.changes.borrow());
             let target = self.hwnd as usize;
             let watcher = steroitor_core::watch::watch(folder, move |repos, dirs| {
                 if let Ok(mut pending) = changes.lock() {
@@ -683,8 +798,136 @@ impl App {
         }
     }
 
+    /// Un progetto parcheggiato nuovo, con explorer (nascosto) e Console suoi; con `pending` si carica alla prima apertura.
+    fn park(&self, pending: Option<ProjectSession>) -> Parked {
+        // SAFETY: modulo dell'eseguibile; l'explorer nasce nascosto finché il progetto non diventa attivo.
+        let explorer = unsafe { Explorer::create(self.hwnd, GetModuleHandleW(std::ptr::null()), &self.palette) };
+        explorer.set_font(self.font.get(), self.scale(TREE_ITEM_HEIGHT));
+        // SAFETY: controllo appena creato.
+        unsafe { ShowWindow(explorer.hwnd(), SW_HIDE) };
+        Parked { explorer, docs: Vec::new(), active: 0, repos: Vec::new(), colors: FileColors::default(), heads: HashMap::new(), watcher: None, changes: Changes::default(), panel: self.panel.new_state(), pending }
+    }
+
+    /// Carica nel progetto attivo, vuoto, cartella e file salvati.
+    fn load_project(&self, project: ProjectSession) {
+        self.set_folder(project.folder.filter(|folder| folder.is_dir()));
+        for file in project.files.iter().filter(|file| file.is_file()) {
+            self.open(file);
+        }
+        let count = self.docs.borrow().len();
+        if count == 0 {
+            self.new_document();
+        } else {
+            self.activate(project.active.min(count - 1));
+        }
+    }
+
+    fn is_empty_project(&self) -> bool {
+        self.explorer.root().is_none() && self.docs.borrow().iter().all(|doc| doc.path.is_none() && !doc.dirty)
+    }
+
+    /// La cartella va nel progetto che la ha già, in quello attivo se è vuoto, altrimenti in uno nuovo.
+    fn open_project(&self, folder: PathBuf) {
+        let key = crate::git::key(&folder);
+        let same = |candidate: Option<PathBuf>| candidate.is_some_and(|candidate| crate::git::key(&candidate) == key);
+        if same(self.explorer.root()) {
+            return;
+        }
+        let existing = self.projects.borrow().iter().position(|parked| parked.as_ref().is_some_and(|parked| same(parked.folder())));
+        if let Some(index) = existing {
+            return self.switch_project(index);
+        }
+        if self.is_empty_project() {
+            return self.set_folder(Some(folder));
+        }
+        let parked = self.park(Some(ProjectSession { folder: Some(folder), ..ProjectSession::default() }));
+        let index = {
+            let mut projects = self.projects.borrow_mut();
+            projects.push(Some(parked));
+            projects.len() - 1
+        };
+        self.switch_project(index);
+    }
+
+    /// Scambia i campi del progetto attivo con quelli del progetto `index`, che diventa attivo.
+    fn switch_project(&self, index: usize) {
+        if index == self.current.get() {
+            return;
+        }
+        self.remember_view();
+        let Some(mut parked) = self.projects.borrow_mut().get_mut(index).and_then(Option::take) else { return };
+        self.explorer.swap(&parked.explorer);
+        std::mem::swap(&mut *self.docs.borrow_mut(), &mut parked.docs);
+        parked.active = self.active.replace(parked.active);
+        std::mem::swap(&mut *self.repos.borrow_mut(), &mut parked.repos);
+        std::mem::swap(&mut *self.colors.borrow_mut(), &mut parked.colors);
+        std::mem::swap(&mut *self.heads.borrow_mut(), &mut parked.heads);
+        std::mem::swap(&mut *self.watcher.borrow_mut(), &mut parked.watcher);
+        std::mem::swap(&mut *self.changes.borrow_mut(), &mut parked.changes);
+        self.panel.swap_state(&mut parked.panel);
+        self.head_requests.borrow_mut().clear();
+        let pending = parked.pending.take();
+        // SAFETY: explorer del progetto uscente, ora parcheggiato.
+        unsafe { ShowWindow(parked.explorer.hwnd(), SW_HIDE) };
+        let previous = self.current.replace(index);
+        self.projects.borrow_mut()[previous] = Some(parked);
+        match pending {
+            Some(project) => self.load_project(project),
+            None => self.resume_project(),
+        }
+        self.layout();
+        self.refresh();
+    }
+
+    /// Ritorno a un progetto già caricato: impostazioni dell'editor, tab attiva, stato Git e file cambiati nel frattempo.
+    fn resume_project(&self) {
+        self.apply_indentation_all();
+        let active = self.active.replace(usize::MAX);
+        self.activate(active);
+        let roots: Vec<PathBuf> = self.repos.borrow().iter().map(|repo| repo.root.clone()).collect();
+        for root in &roots {
+            self.worker.refresh(root);
+        }
+        self.on_files_changed();
+        self.sync_panel();
+    }
+
+    /// Chiude il progetto dopo aver chiesto per le tab modificate; l'ultimo progetto resta.
+    fn close_project(&self, index: usize) {
+        let count = self.projects.borrow().len();
+        if count < 2 || index >= count {
+            return;
+        }
+        self.switch_project(index);
+        if !self.confirm_project() {
+            return;
+        }
+        self.switch_project(if index + 1 < count { index + 1 } else { index - 1 });
+        let Some(closed) = self.projects.borrow_mut().remove(index) else { return };
+        if self.current.get() > index {
+            self.current.set(self.current.get() - 1);
+        }
+        for doc in &closed.docs {
+            if let Some(path) = &doc.path {
+                self.plugins.close(path);
+            }
+            self.sci.call(SCI_RELEASEDOCUMENT, 0, doc.pointer);
+        }
+        self.panel.discard_state(closed.panel);
+        // SAFETY: explorer del progetto chiuso, non più usato.
+        unsafe { DestroyWindow(closed.explorer.hwnd()) };
+        self.invalidate();
+    }
+
+    /// Il `+` della barra: sceglie una cartella e la apre in un progetto nuovo.
+    fn new_project(&self) {
+        if let Some(folder) = pick_folder(self.hwnd) {
+            self.open_project(folder);
+        }
+    }
+
     fn on_files_changed(&self) {
-        let (dirs, git_dirs) = self.changes.lock().map(|mut pending| std::mem::take(&mut *pending)).unwrap_or_default();
+        let (dirs, git_dirs) = self.changes.borrow().lock().map(|mut pending| std::mem::take(&mut *pending)).unwrap_or_default();
         let touched: Vec<PathBuf> = {
             let repos = self.repos.borrow();
             let changed = dirs.iter().map(PathBuf::from).chain(git_dirs);
@@ -764,7 +1007,7 @@ impl App {
         self.layout();
         if self.explorer_visible.get() {
             // SAFETY: controllo valido.
-            unsafe { SetFocus(self.explorer.hwnd) };
+            unsafe { SetFocus(self.explorer.hwnd()) };
         } else {
             self.focus_editor();
         }
@@ -871,7 +1114,7 @@ impl App {
             self.invalidate();
             return true;
         }
-        if focus == self.explorer.hwnd && !ctrl {
+        if focus == self.explorer.hwnd() && !ctrl {
             match key {
                 VK_F2 => self.explorer.rename_selected(),
                 VK_DELETE => {
@@ -936,20 +1179,29 @@ impl App {
     }
 
     /// Bordo destro dell'explorer in pixel reali (0 se nascosto); la larghezza è salvata in pixel a 96 DPI.
+    fn bar_width(&self) -> i32 {
+        self.scale(PROJECT_BAR)
+    }
+
+    /// Barra dei progetti, a sinistra dell'explorer, fino al pannello inferiore.
+    fn bar_rect(&self) -> RECT {
+        RECT { left: 0, top: 0, right: self.bar_width(), bottom: self.panel_rect().top }
+    }
+
+    /// Bordo destro dell'explorer in pixel reali; con l'explorer nascosto, quello della barra dei progetti.
     fn explorer_edge(&self) -> i32 {
         if self.explorer_visible.get() {
-            self.scale(self.explorer_width.get().max(EXPLORER_MIN))
+            self.bar_width() + self.scale(self.explorer_width.get().max(EXPLORER_MIN))
         } else {
-            0
+            self.bar_width()
         }
     }
 
     fn editor_left(&self) -> i32 {
-        let edge = self.explorer_edge();
-        if edge == 0 {
-            0
+        if self.explorer_visible.get() {
+            self.explorer_edge() + self.scale(SPLITTER)
         } else {
-            edge + self.scale(SPLITTER)
+            self.bar_width()
         }
     }
 
@@ -962,13 +1214,19 @@ impl App {
         let find_height = self.scale(self.find.height());
         // SAFETY: finestre valide create da questo thread.
         unsafe {
-            ShowWindow(self.explorer.hwnd, if self.explorer_visible.get() { SW_SHOW } else { SW_HIDE });
-            MoveWindow(self.explorer.hwnd, 0, tab, self.explorer_edge(), (bottom - tab).max(0), 1);
+            ShowWindow(self.explorer.hwnd(), if self.explorer_visible.get() { SW_SHOW } else { SW_HIDE });
+            MoveWindow(self.explorer.hwnd(), self.bar_width(), tab, self.explorer_edge() - self.bar_width(), (bottom - tab).max(0), 1);
             MoveWindow(self.sci.hwnd, left, tab + find_height, (client.right - left).max(0), (bottom - tab - find_height).max(0), 1);
             InvalidateRect(self.hwnd, std::ptr::null(), 0);
         }
         self.find.layout(RECT { left, top: tab, right: client.right, bottom: tab + find_height }, |value| self.scale(value));
         self.panel.layout(panel, |value| self.scale(value));
+        let mut tool: TTTOOLINFOW = unsafe { std::mem::zeroed() };
+        tool.cbSize = std::mem::size_of::<TTTOOLINFOW>() as u32;
+        tool.hwnd = self.hwnd;
+        tool.rect = self.bar_rect();
+        // SAFETY: struttura locale valida per la chiamata.
+        unsafe { SendMessageW(self.tooltip, TTM_NEWTOOLRECTW, 0, &tool as *const _ as isize) };
     }
 
     fn invalidate(&self) {
@@ -1045,11 +1303,11 @@ impl App {
 
     fn splitter_rect(&self) -> Option<RECT> {
         let edge = self.explorer_edge();
-        (edge > 0).then(|| RECT { left: edge, top: 0, right: edge + self.scale(SPLITTER), bottom: self.panel_rect().top })
+        self.explorer_visible.get().then(|| RECT { left: edge, top: 0, right: edge + self.scale(SPLITTER), bottom: self.panel_rect().top })
     }
 
     fn header_rect(&self) -> RECT {
-        RECT { left: 0, top: 0, right: self.explorer_edge(), bottom: self.scale(TAB_HEIGHT) }
+        RECT { left: self.bar_width(), top: 0, right: self.explorer_edge(), bottom: self.scale(TAB_HEIGHT) }
     }
 
     fn find_rect(&self) -> RECT {
@@ -1069,6 +1327,7 @@ impl App {
             let previous_font = SelectObject(dc, self.font.get());
             SetBkMode(dc, TRANSPARENT as i32);
             fill(dc, &client, self.palette.panel);
+            self.paint_projects(dc);
             if self.explorer_visible.get() {
                 self.paint_header(dc);
             }
@@ -1254,7 +1513,7 @@ impl App {
                         self.update_markers();
                     }
                     // SAFETY: controllo valido; ridisegno per i nuovi colori.
-                    unsafe { InvalidateRect(self.explorer.hwnd, std::ptr::null(), 0) };
+                    unsafe { InvalidateRect(self.explorer.hwnd(), std::ptr::null(), 0) };
                 }
                 Event::Status(_, Err(_)) => {}
                 Event::Log(root, Ok(commits)) => {
@@ -1468,13 +1727,16 @@ impl App {
         }
     }
 
+    /// Anche i terminali dei progetti non attivi ricevono output e uscita.
     fn with_terminal(&self, id: u32, action: impl FnOnce(&Terminal)) {
-        if let Some(terminal) = self.panel.terminals.borrow().iter().find(|terminal| terminal.id == id) {
+        let current = self.panel.terminals.borrow();
+        let projects = self.projects.borrow();
+        let parked = projects.iter().flatten().flat_map(|parked| parked.panel.terminals.iter());
+        if let Some(terminal) = current.iter().chain(parked).find(|terminal| terminal.id == id) {
             action(terminal);
         }
     }
 
-    /// Alt+9 e simili: apre la tab, o chiude il pannello se è già quella mostrata.
     /// Repository di log e commit, scelto dall'intestazione del pannello quando la cartella ne ha più d'uno.
     fn choose_repo(&self) {
         let folder = self.explorer.root();
@@ -1490,6 +1752,7 @@ impl App {
         self.invalidate();
     }
 
+    /// Alt+9 e simili: apre la tab, o chiude il pannello se è già quella mostrata.
     fn toggle_panel(&self, tab: Tab) {
         if self.panel.visible.get() && self.panel.tab.get() == tab {
             self.panel.visible.set(false);
@@ -1714,6 +1977,9 @@ impl App {
             unsafe { SetCapture(self.hwnd) };
             return;
         }
+        if let Some(index) = self.project_at(x, y) {
+            return if index == self.projects.borrow().len() { self.new_project() } else { self.switch_project(index) };
+        }
         if self.explorer_visible.get() && contains(&self.header_rect(), x, y) {
             return self.header_menu();
         }
@@ -1743,12 +2009,59 @@ impl App {
         if self.explorer.root().is_none() {
             return self.open_folder();
         }
-        match popup_menu(self.hwnd, &[(MENU_OPEN_FOLDER, "Apri cartella…"), (MENU_CLOSE_FOLDER, "Chiudi cartella"), (0, ""), (MENU_SETTINGS, "Impostazioni…\tCtrl+Alt+S")]) {
+        let mut entries = vec![(MENU_OPEN_FOLDER, "Apri cartella…"), (MENU_NEW_PROJECT, "Apri cartella in un nuovo progetto…"), (MENU_CLOSE_FOLDER, "Chiudi cartella")];
+        if self.projects.borrow().len() > 1 {
+            entries.push((MENU_CLOSE_PROJECT, "Chiudi progetto"));
+        }
+        entries.extend([(0, ""), (MENU_SETTINGS, "Impostazioni…\tCtrl+Alt+S")]);
+        match popup_menu(self.hwnd, &entries) {
             MENU_OPEN_FOLDER => self.open_folder(),
+            MENU_NEW_PROJECT => self.new_project(),
             MENU_CLOSE_FOLDER => self.set_folder(None),
+            MENU_CLOSE_PROJECT => self.close_project(self.current.get()),
             MENU_SETTINGS => self.open_settings(),
             _ => {}
         }
+    }
+
+    /// Barra dei progetti: un quadrato con l'iniziale per progetto, quello attivo pieno, poi il `+`.
+    unsafe fn paint_projects(&self, dc: HDC) {
+        let palette = &self.palette;
+        let bar = self.bar_rect();
+        fill(dc, &bar, palette.panel);
+        fill(dc, &RECT { left: bar.right - 1, ..bar }, palette.border);
+        let size = self.scale(PROJECT_BUTTON);
+        let left = (bar.right - size) / 2;
+        let current = self.current.get();
+        let folders: Vec<Option<PathBuf>> = self
+            .projects
+            .borrow()
+            .iter()
+            .enumerate()
+            .map(|(index, parked)| if index == current { self.explorer.root() } else { parked.as_ref().and_then(Parked::folder) })
+            .collect();
+        let mut rects = Vec::with_capacity(folders.len() + 1);
+        for index in 0..=folders.len() {
+            let top = self.scale(4) + index as i32 * (size + self.scale(6));
+            let rect = RECT { left, top, right: left + size, bottom: top + size };
+            match folders.get(index) {
+                Some(folder) if index == current => {
+                    fill(dc, &rect, palette.accent);
+                    text(dc, &folder_initial(folder.as_deref()), &rect, palette.editor, DT_CENTER);
+                }
+                Some(folder) => {
+                    frame(dc, &rect, palette.border);
+                    text(dc, &folder_initial(folder.as_deref()), &rect, palette.fg, DT_CENTER);
+                }
+                None => text(dc, "+", &rect, palette.muted, DT_CENTER),
+            }
+            rects.push(rect);
+        }
+        *self.project_rects.borrow_mut() = rects;
+    }
+
+    fn project_at(&self, x: i32, y: i32) -> Option<usize> {
+        self.project_rects.borrow().iter().position(|rect| contains(rect, x, y))
     }
 
     fn on_mouse_move(&self, x: i32, y: i32) {
@@ -1758,13 +2071,39 @@ impl App {
             return self.layout();
         }
         if !self.dragging.get() {
-            return;
+            return self.hover_project(x, y);
         }
         let client = self.client_rect();
-        let max = (client.right - self.scale(EDITOR_MIN)).max(self.scale(EXPLORER_MIN));
-        let width = x.clamp(self.scale(EXPLORER_MIN), max);
+        let max = (client.right - self.bar_width() - self.scale(EDITOR_MIN)).max(self.scale(EXPLORER_MIN));
+        let width = (x - self.bar_width()).clamp(self.scale(EXPLORER_MIN), max);
         self.explorer_width.set(width * 96 / self.dpi().max(1));
         self.layout();
+    }
+
+    /// Il tooltip della barra mostra il nome del progetto (o del `+`) sotto il mouse.
+    fn hover_project(&self, x: i32, y: i32) {
+        let hovered = self.project_rects.borrow().iter().position(|rect| contains(rect, x, y));
+        if hovered == self.hovered.replace(hovered) {
+            return;
+        }
+        let label = match hovered {
+            None => String::new(),
+            Some(index) if index == self.projects.borrow().len() => "Apri una cartella in un nuovo progetto".into(),
+            Some(index) => {
+                let folder = if index == self.current.get() { self.explorer.root() } else { self.projects.borrow()[index].as_ref().and_then(Parked::folder) };
+                folder.map_or_else(|| folder_name(None), |folder| folder.display().to_string())
+            }
+        };
+        let mut text = wide(&label);
+        // SAFETY: struttura e testo locali, validi per la chiamata.
+        unsafe {
+            let mut tool: TTTOOLINFOW = std::mem::zeroed();
+            tool.cbSize = std::mem::size_of::<TTTOOLINFOW>() as u32;
+            tool.hwnd = self.hwnd;
+            tool.lpszText = text.as_mut_ptr();
+            SendMessageW(self.tooltip, TTM_POP, 0, 0);
+            SendMessageW(self.tooltip, TTM_UPDATETIPTEXTW, 0, &tool as *const _ as isize);
+        }
     }
 
     fn on_drop(&self, drop: HDROP) {
@@ -1784,7 +2123,7 @@ impl App {
         };
         for path in paths {
             if path.is_dir() {
-                self.set_folder(Some(path));
+                self.open_project(path);
             } else {
                 self.open(&path);
             }
@@ -1792,9 +2131,15 @@ impl App {
     }
 
     fn save_session(&self) {
-        let docs = self.docs.borrow();
-        let saved: Vec<(usize, PathBuf)> = docs.iter().enumerate().filter_map(|(index, doc)| doc.path.clone().map(|path| (index, path))).collect();
-        let active = saved.iter().position(|(index, _)| *index == self.active.get()).unwrap_or(0);
+        let projects: Vec<ProjectSession> = self
+            .projects
+            .borrow()
+            .iter()
+            .map(|parked| match parked {
+                Some(parked) => parked.session(),
+                None => session_of(self.explorer.root(), &self.docs.borrow(), self.active.get()),
+            })
+            .collect();
         // SAFETY: lettura della posizione della finestra.
         let (window, maximized) = unsafe {
             let mut placement: WINDOWPLACEMENT = std::mem::zeroed();
@@ -1804,14 +2149,14 @@ impl App {
             (Some([normal.left, normal.top, normal.right, normal.bottom]), IsZoomed(self.hwnd) != 0)
         };
         Session {
-            folder: self.explorer.root(),
-            files: saved.into_iter().map(|(_, path)| path).collect(),
-            active,
+            projects,
+            active_project: self.current.get(),
             explorer_width: Some(self.explorer_width.get()),
             explorer_visible: Some(self.explorer_visible.get()),
             window,
             maximized,
             wrap: self.wrap.get(),
+            ..Session::default()
         }
         .save();
     }
@@ -1824,7 +2169,7 @@ impl App {
             ScreenToClient(self.hwnd, &mut point);
         }
         let over_splitter = self.splitter_rect().is_some_and(|splitter| contains(&splitter, point.x, point.y));
-        let clickable = contains(&self.eol_rect.get(), point.x, point.y) || contains(&self.vcs_rect.get(), point.x, point.y) || contains(&self.settings_rect.get(), point.x, point.y) || (self.explorer_visible.get() && contains(&self.header_rect(), point.x, point.y));
+        let clickable = contains(&self.eol_rect.get(), point.x, point.y) || contains(&self.vcs_rect.get(), point.x, point.y) || contains(&self.settings_rect.get(), point.x, point.y) || self.project_at(point.x, point.y).is_some() || (self.explorer_visible.get() && contains(&self.header_rect(), point.x, point.y));
         let over_panel = self.over_panel_splitter(point.y) || self.dragging_panel.get();
         let cursor = match (over_splitter || self.dragging.get(), clickable) {
             _ if over_panel => IDC_SIZENS,
@@ -1883,7 +2228,9 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
         }
         WM_MBUTTONUP => {
             let (x, y) = point(lparam);
-            if let Some((index, _)) = app.tab_at(x, y) {
+            if let Some(index) = app.project_at(x, y) {
+                app.close_project(index);
+            } else if let Some((index, _)) = app.tab_at(x, y) {
                 app.close(index);
             }
             0
@@ -1894,7 +2241,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 app.on_notify(&*(lparam as *const Notification));
                 return 0;
             }
-            if header.hwndFrom == app.explorer.hwnd && header.code == NM_CUSTOMDRAW {
+            if header.hwndFrom == app.explorer.hwnd() && header.code == NM_CUSTOMDRAW {
                 let draw = &mut *(lparam as *mut NMTVCUSTOMDRAW);
                 return match draw.nmcd.dwDrawStage {
                     CDDS_PREPAINT => CDRF_NOTIFYITEMDRAW as LRESULT,
@@ -1907,7 +2254,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                     _ => CDRF_DODEFAULT as LRESULT,
                 };
             }
-            if header.hwndFrom == app.explorer.hwnd {
+            if header.hwndFrom == app.explorer.hwnd() {
                 let (result, action) = app.explorer.on_notify(hwnd, header, lparam);
                 if let Some(action) = action {
                     app.on_explorer_action(action);
@@ -2004,6 +2351,9 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
         }
         WM_DESTROY => {
             app.panel.terminals.borrow_mut().drain(..).for_each(|terminal| terminal.close());
+            for parked in app.projects.borrow_mut().iter_mut().flatten() {
+                parked.panel.terminals.drain(..).for_each(|terminal| terminal.close());
+            }
             app.plugins.shutdown();
             PostQuitMessage(0);
             0
