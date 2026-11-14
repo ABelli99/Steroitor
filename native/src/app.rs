@@ -12,7 +12,7 @@ use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RE
 use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
-use windows_sys::Win32::UI::Controls::{SetWindowTheme, TTTOOLINFOW, TTF_SUBCLASS, TTM_ADDTOOLW, TTM_NEWTOOLRECTW, TTM_POP, TTM_UPDATETIPTEXTW, TTS_ALWAYSTIP, TTS_NOPREFIX, CDDS_ITEMPREPAINT, CDDS_PREPAINT, CDRF_DODEFAULT, CDRF_NOTIFYITEMDRAW, NMHDR, NMTVCUSTOMDRAW, NM_CUSTOMDRAW};
+use windows_sys::Win32::UI::Controls::{SetWindowTheme, WM_MOUSELEAVE, TTTOOLINFOW, TTF_SUBCLASS, TTM_ADDTOOLW, TTM_NEWTOOLRECTW, TTM_POP, TTM_UPDATETIPTEXTW, TTS_ALWAYSTIP, TTS_NOPREFIX, CDDS_ITEMPREPAINT, CDDS_PREPAINT, CDRF_DODEFAULT, CDRF_NOTIFYITEMDRAW, NMHDR, NMTVCUSTOMDRAW, NM_CUSTOMDRAW};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
@@ -32,7 +32,7 @@ use crate::git::{line_changes, repo_name, repo_of, CommitRequest, Event, FileCol
 use crate::lang::{self, Language};
 use crate::minimap::{self, Minimap, WM_MINIMAP_LINE};
 use crate::list::{decode_event, ListEvent, RowPaint, WM_LIST_EVENT, WM_LIST_PAINT};
-use crate::paint::{fill, frame, text, text_width};
+use crate::paint::{fill, text, text_width};
 use crate::panel::{self, BranchEntry, BranchRow, ConsoleTarget, DetailRow, Panel, RepoTab, Tab};
 use crate::plugins::{self, Host};
 use crate::prompt::{prompt, prompt_text};
@@ -45,11 +45,14 @@ use crate::theme::{system_palette, Palette};
 
 
 const CLASS_NAME: &str = "SteroitorMain";
-const TAB_HEIGHT: i32 = 32;
+const TAB_HEIGHT: i32 = 34;
+/// Barra in alto (Nuovo, Apri, …) e intestazione dell'explorer, come nella versione Tauri.
+const TOP_BAR: i32 = 32;
+const EXPLORER_HEADER: i32 = 30;
+const BADGE_FONT_PX: i32 = 10;
 const STATUS_HEIGHT: i32 = 24;
 const SPLITTER: i32 = 4;
 const TAB_PADDING: i32 = 12;
-const TAB_MIN_WIDTH: i32 = 80;
 const TAB_MAX_WIDTH: i32 = 220;
 const CLOSE_SIZE: i32 = 16;
 const UI_FONT_PX: i32 = 13;
@@ -157,6 +160,25 @@ fn blame_label(entry: &BlameLine) -> String {
     format!(" {} {} {}", entry.hash.get(..7).unwrap_or(&entry.hash), date.get(..10).unwrap_or(&date), entry.author)
 }
 
+/// Pulsanti della barra in alto, nell'ordine della versione Tauri.
+#[derive(Clone, Copy, PartialEq)]
+enum TopButton {
+    New,
+    Open,
+    OpenFolder,
+    Clone,
+    NewProject,
+    Settings,
+    Explorer,
+    Panel,
+}
+
+/// Icona da un PNG (CreateIconFromResourceEx accetta il formato PNG delle icone).
+fn png_icon(png: &[u8], size: i32) -> HICON {
+    // SAFETY: dati del PNG validi per la chiamata; l'icona creata vive quanto l'app.
+    unsafe { CreateIconFromResourceEx(png.as_ptr(), png.len() as u32, 1, 0x0003_0000, size, size, LR_DEFAULTCOLOR) }
+}
+
 fn operation_name(operation: &Operation) -> &'static str {
     match operation {
         Operation::Merge => "merge",
@@ -195,7 +217,6 @@ pub struct App {
     colors: RefCell<FileColors>,
     /// Contenuto in HEAD dei file aperti (None = non tracciato), per i marker nel gutter.
     heads: RefCell<HashMap<String, Option<String>>>,
-    vcs_rect: Cell<RECT>,
     head_requests: RefCell<std::collections::HashSet<String>>,
     docs: RefCell<Vec<Doc>>,
     active: Cell<usize>,
@@ -203,8 +224,15 @@ pub struct App {
     font: Cell<HFONT>,
     edit_brush: HBRUSH,
     tabs: RefCell<Vec<(RECT, RECT)>>,
-    /// Pulsante delle impostazioni, in fondo alla barra delle tab.
-    settings_rect: Cell<RECT>,
+    top_buttons: RefCell<Vec<(RECT, TopButton)>>,
+    /// Ultima posizione del mouse nella finestra, per gli effetti al passaggio; None quando esce.
+    pointer: Cell<Option<(i32, i32)>>,
+    tracking: Cell<bool>,
+    /// Elementi della status bar cliccabili: un branch per repository, l'interruttore dell'a capo.
+    vcs_rects: RefCell<Vec<(RECT, PathBuf)>>,
+    wrap_rect: Cell<RECT>,
+    app_icon: HICON,
+    badge_font: Cell<HFONT>,
     eol_rect: Cell<RECT>,
     explorer_width: Cell<i32>,
     explorer_visible: Cell<bool>,
@@ -295,7 +323,7 @@ fn folder_name(folder: Option<&Path>) -> String {
 
 /// Iniziale mostrata nella barra dei progetti.
 fn folder_initial(folder: Option<&Path>) -> String {
-    folder.and_then(|folder| folder.file_name()).and_then(|name| name.to_string_lossy().chars().find(|ch| ch.is_alphanumeric())).map_or_else(|| "·".into(), |ch| ch.to_uppercase().collect())
+    folder.and_then(|folder| folder.file_name()).and_then(|name| name.to_string_lossy().chars().find(|ch| ch.is_alphanumeric())).map_or_else(|| "?".into(), |ch| ch.to_uppercase().collect())
 }
 
 /// Tooltip con il nome del progetto sotto il mouse, sulla barra dei progetti.
@@ -383,6 +411,7 @@ impl App {
                 hInstance: instance,
                 hCursor: LoadCursorW(std::ptr::null_mut(), IDC_ARROW),
                 lpszClassName: class_name.as_ptr(),
+                style: CS_DBLCLKS,
                 ..std::mem::zeroed()
             };
             RegisterClassExW(&class);
@@ -438,7 +467,6 @@ impl App {
             repos: RefCell::new(Vec::new()),
             colors: RefCell::new(FileColors::default()),
             heads: RefCell::new(HashMap::new()),
-            vcs_rect: Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }),
             head_requests: RefCell::default(),
             docs: RefCell::new(Vec::new()),
             active: Cell::new(0),
@@ -447,7 +475,13 @@ impl App {
             // SAFETY: pennello creato una volta e usato per tutta la vita dell'app.
             edit_brush: unsafe { CreateSolidBrush(palette.editor) },
             tabs: RefCell::new(Vec::new()),
-            settings_rect: Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }),
+            top_buttons: RefCell::new(Vec::new()),
+            pointer: Cell::new(None),
+            tracking: Cell::new(false),
+            vcs_rects: RefCell::new(Vec::new()),
+            wrap_rect: Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }),
+            app_icon: png_icon(include_bytes!("../../src-tauri/icons/32x32.png"), 32),
+            badge_font: Cell::new(std::ptr::null_mut()),
             eol_rect: Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }),
             explorer_width: Cell::new(session.explorer_width.unwrap_or(EXPLORER_WIDTH)),
             explorer_visible: Cell::new(session.explorer_visible.unwrap_or(true)),
@@ -462,6 +496,18 @@ impl App {
             hovered: Cell::new(None),
         }));
         APP.with(|cell| cell.set(app).ok());
+        // SAFETY: icone della finestra create qui e tenute per tutta la vita dell'app.
+        unsafe {
+            SendMessageW(hwnd, WM_SETICON, ICON_SMALL as usize, app.app_icon as isize);
+            SendMessageW(hwnd, WM_SETICON, ICON_BIG as usize, png_icon(include_bytes!("../../src-tauri/icons/128x128.png"), 128) as isize);
+        }
+        app.panel.visible.set(session.panel_visible.unwrap_or(true));
+        app.panel.height.set(session.panel_height.unwrap_or(200));
+        app.panel.tab.set(match session.panel_tab.as_deref() {
+            Some("git") => Tab::Git,
+            Some("commit") => Tab::Commit,
+            _ => Tab::Console,
+        });
         app.panel.attach();
         app.configure_editor();
         app.update_font();
@@ -520,6 +566,11 @@ impl App {
             }
             for list in [&self.panel.branches, &self.panel.log, &self.panel.details, &self.panel.files] {
                 list.set_row_height(self.scale(LIST_ROW_HEIGHT));
+            }
+            let badge = CreateFontW(-self.scale(BADGE_FONT_PX), 0, 0, 0, 600, 0, 0, 0, DEFAULT_CHARSET as u32, 0, 0, CLEARTYPE_QUALITY as u32, 0, face.as_ptr());
+            let old_badge = self.badge_font.replace(badge);
+            if !old_badge.is_null() {
+                DeleteObject(old_badge);
             }
             let old = self.font.replace(font);
             if !old.is_null() {
@@ -1221,7 +1272,7 @@ impl App {
 
     fn ruler_rect(&self) -> RECT {
         let client = self.client_rect();
-        let top = self.scale(TAB_HEIGHT) + self.scale(self.find.height());
+        let top = self.tabs_bottom() + self.scale(self.find.height());
         let right = client.right - if self.minimap_on.get() { self.scale(minimap::WIDTH) } else { 0 };
         RECT { left: right - self.scale(RULER), top, right, bottom: self.panel_rect().top }
     }
@@ -1408,14 +1459,31 @@ impl App {
         Some(true)
     }
 
-    /// Bordo destro dell'explorer in pixel reali (0 se nascosto); la larghezza è salvata in pixel a 96 DPI.
+    /// Barra dei progetti: c'è solo con due o più progetti, come nella versione Tauri.
     fn bar_width(&self) -> i32 {
-        self.scale(PROJECT_BAR)
+        if self.projects.borrow().len() >= 2 {
+            self.scale(PROJECT_BAR)
+        } else {
+            0
+        }
     }
 
-    /// Barra dei progetti, a sinistra dell'explorer, fino al pannello inferiore.
+    /// Barra dei progetti, a sinistra di tutto, per l'intera altezza.
     fn bar_rect(&self) -> RECT {
-        RECT { left: 0, top: 0, right: self.bar_width(), bottom: self.panel_rect().top }
+        RECT { left: 0, top: 0, right: self.bar_width(), bottom: self.client_rect().bottom }
+    }
+
+    fn main_top(&self) -> i32 {
+        self.scale(TOP_BAR)
+    }
+
+    fn top_bar_rect(&self) -> RECT {
+        RECT { left: self.bar_width(), top: 0, right: self.client_rect().right, bottom: self.main_top() }
+    }
+
+    /// Fondo della barra delle tab, dove inizia l'editor (o la barra di ricerca).
+    fn tabs_bottom(&self) -> i32 {
+        self.main_top() + self.scale(TAB_HEIGHT)
     }
 
     /// Bordo destro dell'explorer in pixel reali; con l'explorer nascosto, quello della barra dei progetti.
@@ -1437,15 +1505,16 @@ impl App {
 
     fn layout(&self) {
         let client = self.client_rect();
-        let tab = self.scale(TAB_HEIGHT);
+        let tab = self.tabs_bottom();
         let panel = self.panel_rect();
         let bottom = panel.top;
         let left = self.editor_left();
         let find_height = self.scale(self.find.height());
+        let tree_top = self.main_top() + self.scale(EXPLORER_HEADER);
         // SAFETY: finestre valide create da questo thread.
         unsafe {
             ShowWindow(self.explorer.hwnd(), if self.explorer_visible.get() { SW_SHOW } else { SW_HIDE });
-            MoveWindow(self.explorer.hwnd(), self.bar_width(), tab, self.explorer_edge() - self.bar_width(), (bottom - tab).max(0), 1);
+            MoveWindow(self.explorer.hwnd(), self.bar_width(), tree_top, self.explorer_edge() - self.bar_width(), (bottom - tree_top).max(0), 1);
             MoveWindow(self.sci.hwnd, left, tab + find_height, (client.right - left - self.right_strip()).max(0), (bottom - tab - find_height).max(0), 1);
             let minimap_width = self.scale(minimap::WIDTH);
             ShowWindow(self.minimap.sci.hwnd, if self.minimap_on.get() { SW_SHOW } else { SW_HIDE });
@@ -1470,8 +1539,7 @@ impl App {
     fn refresh(&self) {
         let title = {
             let docs = self.docs.borrow();
-            let folder = self.explorer.root().and_then(|root| root.file_name().map(|name| format!(" — {}", name.to_string_lossy()))).unwrap_or_default();
-            docs.get(self.active.get()).map_or_else(String::new, |doc| format!("{}{}{folder} — Steroitor", if doc.dirty { "● " } else { "" }, doc.name()))
+            docs.get(self.active.get()).map_or_else(|| "Steroitor".to_string(), |doc| format!("{}{} — Steroitor", if doc.dirty { "● " } else { "" }, doc.name()))
         };
         let title = wide(&title);
         // SAFETY: finestra valida, stringa terminata da zero.
@@ -1542,20 +1610,20 @@ impl App {
 
     fn status_rect(&self) -> RECT {
         let client = self.client_rect();
-        RECT { top: client.bottom - self.scale(STATUS_HEIGHT), ..client }
+        RECT { left: self.bar_width(), top: client.bottom - self.scale(STATUS_HEIGHT), ..client }
     }
 
     fn splitter_rect(&self) -> Option<RECT> {
         let edge = self.explorer_edge();
-        self.explorer_visible.get().then(|| RECT { left: edge, top: 0, right: edge + self.scale(SPLITTER), bottom: self.panel_rect().top })
+        self.explorer_visible.get().then(|| RECT { left: edge, top: self.main_top(), right: edge + self.scale(SPLITTER), bottom: self.panel_rect().top })
     }
 
     fn header_rect(&self) -> RECT {
-        RECT { left: self.bar_width(), top: 0, right: self.explorer_edge(), bottom: self.scale(TAB_HEIGHT) }
+        RECT { left: self.bar_width(), top: self.main_top(), right: self.explorer_edge(), bottom: self.main_top() + self.scale(EXPLORER_HEADER) }
     }
 
     fn find_rect(&self) -> RECT {
-        let top = self.scale(TAB_HEIGHT);
+        let top = self.tabs_bottom();
         RECT { left: self.editor_left(), top, right: self.client_rect().right, bottom: top + self.scale(self.find.height()) }
     }
 
@@ -1572,6 +1640,7 @@ impl App {
             SetBkMode(dc, TRANSPARENT as i32);
             fill(dc, &client, self.palette.panel);
             self.paint_projects(dc);
+            self.paint_top_bar(dc);
             if self.explorer_visible.get() {
                 self.paint_header(dc);
             }
@@ -1583,7 +1652,9 @@ impl App {
             if self.find.is_open() {
                 self.find.paint(dc, self.find_rect(), &self.palette, |value| self.scale(value));
             }
-            self.panel.paint(dc, self.panel_rect(), &self.palette, |value| self.scale(value));
+            if self.panel.visible.get() {
+                self.panel.paint(dc, self.panel_rect(), &self.palette, |value| self.scale(value));
+            }
             self.paint_ruler(dc);
             self.paint_status(dc);
             BitBlt(target, 0, 0, client.right, client.bottom, dc, 0, 0, SRCCOPY);
@@ -1593,6 +1664,61 @@ impl App {
             DeleteDC(dc);
             EndPaint(self.hwnd, &paint);
         }
+    }
+
+    /// Barra in alto: Nuovo, Apri, Apri cartella, Clona, Nuovo progetto … Impostazioni, Explorer, Pannello.
+    unsafe fn paint_top_bar(&self, dc: HDC) {
+        let palette = &self.palette;
+        let rect = self.top_bar_rect();
+        Self::strip(dc, rect, palette);
+        let pointer = self.pointer.get();
+        let mut buttons = Vec::new();
+        let mut place = |dc: HDC, left: i32, label: &str, button: TopButton, on: bool| -> RECT {
+            let area = RECT { left, top: rect.top + self.scale(4), right: left + text_width(dc, label) + self.scale(16), bottom: rect.bottom - self.scale(4) };
+            if pointer.is_some_and(|(x, y)| contains(&area, x, y)) {
+                fill(dc, &area, palette.hover);
+            }
+            text(dc, label, &area, if on { palette.accent } else { palette.fg }, DT_CENTER);
+            buttons.push((area, button));
+            area
+        };
+        let mut left = rect.left + self.scale(6);
+        for (label, button) in [("Nuovo", TopButton::New), ("Apri", TopButton::Open), ("Apri cartella", TopButton::OpenFolder), ("Clona", TopButton::Clone), ("Nuovo progetto", TopButton::NewProject)] {
+            left = place(dc, left, label, button, false).right + self.scale(2);
+        }
+        let entries = [("Impostazioni", TopButton::Settings, false), ("Explorer", TopButton::Explorer, self.explorer_visible.get()), ("Pannello", TopButton::Panel, self.panel.visible.get())];
+        let width: i32 = entries.iter().map(|(label, _, _)| text_width(dc, label) + self.scale(18)).sum();
+        let mut left = rect.right - self.scale(6) - width;
+        for (label, button, on) in entries {
+            left = place(dc, left, label, button, on).right + self.scale(2);
+        }
+        *self.top_buttons.borrow_mut() = buttons;
+    }
+
+    fn top_button_at(&self, x: i32, y: i32) -> Option<TopButton> {
+        self.top_buttons.borrow().iter().find(|(rect, _)| contains(rect, x, y)).map(|(_, button)| *button)
+    }
+
+    fn on_top_button(&self, button: TopButton) {
+        match button {
+            TopButton::New => self.new_document(),
+            TopButton::Open => open_files(self.hwnd).iter().for_each(|path| self.open(path)),
+            TopButton::OpenFolder => self.open_folder(),
+            TopButton::Clone => self.clone_repository(),
+            TopButton::NewProject => self.new_project(),
+            TopButton::Settings => self.open_settings(),
+            TopButton::Explorer => self.toggle_explorer(),
+            TopButton::Panel => {
+                if self.panel.visible.get() {
+                    self.panel.visible.set(false);
+                    self.layout();
+                    self.focus_editor();
+                } else {
+                    self.show_panel(self.panel.tab.get());
+                }
+            }
+        }
+        self.invalidate();
     }
 
     unsafe fn paint_header(&self, dc: HDC) {
@@ -1610,36 +1736,43 @@ impl App {
 
     unsafe fn paint_tabs(&self, dc: HDC, client: &RECT) {
         let palette = &self.palette;
-        let height = self.scale(TAB_HEIGHT);
+        let top = self.main_top();
+        let bottom = self.tabs_bottom();
         let start = self.editor_left();
-        Self::strip(dc, RECT { left: start, bottom: height, ..*client }, palette);
+        Self::strip(dc, RECT { left: start, top, bottom, ..*client }, palette);
         let docs = self.docs.borrow();
         let mut rects = Vec::with_capacity(docs.len());
-        let (padding, close) = (self.scale(TAB_PADDING), self.scale(CLOSE_SIZE));
+        let close = self.scale(CLOSE_SIZE);
+        let pointer = self.pointer.get();
         let mut left = start;
         for (index, doc) in docs.iter().enumerate() {
             let name = doc.name();
-            let width = (text_width(dc, &name) + padding * 3 + close).clamp(self.scale(TAB_MIN_WIDTH), self.scale(TAB_MAX_WIDTH));
-            let tab = RECT { left, top: 0, right: left + width, bottom: height };
+            // Padding 0 6px 0 12px, 6px tra nome e ×, come nella versione Tauri.
+            let width = (self.scale(12) + text_width(dc, &name) + self.scale(6) + close + self.scale(6)).min(self.scale(TAB_MAX_WIDTH));
+            let tab = RECT { left, top, right: left + width, bottom };
             let active = index == self.active.get();
+            let hovered = pointer.is_some_and(|(x, y)| contains(&tab, x, y));
             if active {
                 fill(dc, &tab, palette.editor);
-                fill(dc, &RECT { bottom: self.scale(2), ..tab }, palette.accent);
+                fill(dc, &RECT { top: bottom - self.scale(2), ..tab }, palette.accent);
             }
-            fill(dc, &RECT { left: tab.right - 1, top: 0, right: tab.right, bottom: height - 1 }, palette.border);
-            let label = RECT { left: tab.left + padding, right: tab.right - padding - close, ..tab };
+            fill(dc, &RECT { left: tab.right - 1, top, right: tab.right, bottom: bottom - 1 }, palette.border);
+            let close_rect = RECT { left: tab.right - self.scale(6) - close, top: (top + bottom - close) / 2, right: tab.right - self.scale(6), bottom: (top + bottom + close) / 2 };
+            let label = RECT { left: tab.left + self.scale(12), right: close_rect.left - self.scale(6), ..tab };
             text(dc, &name, &label, if active { palette.fg } else { palette.muted }, DT_LEFT | DT_END_ELLIPSIS);
-            let close_rect = RECT { left: tab.right - padding - close, top: (height - close) / 2, right: tab.right - padding, bottom: (height + close) / 2 };
-            text(dc, if doc.dirty { "●" } else { "×" }, &close_rect, palette.muted, DT_CENTER);
+            let over_close = pointer.is_some_and(|(x, y)| contains(&close_rect, x, y));
+            if over_close {
+                fill(dc, &close_rect, palette.hover);
+            }
+            if doc.dirty && !over_close {
+                text(dc, "●", &close_rect, palette.muted, DT_CENTER);
+            } else if hovered || active || doc.dirty {
+                text(dc, "×", &close_rect, palette.muted, DT_CENTER);
+            }
             rects.push((tab, close_rect));
             left += width;
         }
         *self.tabs.borrow_mut() = rects;
-        let gear = RECT { left: client.right - self.scale(36), top: 0, right: client.right, bottom: height - 1 };
-        fill(dc, &gear, palette.panel);
-        fill(dc, &RECT { right: gear.left + 1, ..gear }, palette.border);
-        text(dc, "⚙", &gear, palette.muted, DT_CENTER);
-        self.settings_rect.set(gear);
     }
 
     unsafe fn strip(dc: HDC, rect: RECT, palette: &Palette) {
@@ -1652,54 +1785,73 @@ impl App {
         let rect = self.status_rect();
         fill(dc, &rect, palette.panel);
         fill(dc, &RECT { bottom: rect.top + 1, ..rect }, palette.border);
-        let docs = self.docs.borrow();
-        let Some(doc) = docs.get(self.active.get()) else { return };
-        let caret = self.sci.call(SCI_GETCURRENTPOS, 0, 0);
-        let line = self.sci.call(SCI_LINEFROMPOSITION, caret as usize, 0) + 1;
-        let column = self.sci.call(SCI_GETCOLUMN, caret as usize, 0) + 1;
-        let padding = self.scale(TAB_PADDING);
-        // Da destra a sinistra: minimap (cliccabile), linguaggio, encoding, fine riga (cliccabile), posizione.
-        let segments = ["Minimap".to_string(), doc.language.name.to_string(), format!("{}{}", doc.encoding, if doc.bom { " BOM" } else { "" }), eol_label(doc.eol).to_string(), format!("Ln {line}, Col {column}")];
-        let mut right = rect.right - padding;
-        for (index, segment) in segments.iter().enumerate() {
-            let width = text_width(dc, segment);
-            let area = RECT { left: right - width, right, ..rect };
-            let on = index == 0 && self.minimap_on.get();
-            text(dc, segment, &area, if on { palette.accent } else { palette.muted }, DT_LEFT);
-            if index == 0 {
-                self.minimap_rect.set(RECT { left: area.left - padding / 2, right: area.right + padding / 2, ..area });
-            }
-            if index == 3 {
-                self.eol_rect.set(RECT { left: area.left - padding / 2, right: area.right + padding / 2, ..area });
-            }
-            right -= width + padding * 2;
-        }
-        let mut left_edge = rect.left + padding;
-        let branch = {
+        let padding = self.scale(8);
+        // A sinistra, come nella versione Tauri: un branch per repository (col nome se sono più d'uno), poi l'operazione in corso.
+        let mut vcs = Vec::new();
+        let mut left = rect.left + self.scale(8);
+        {
             let repos = self.repos.borrow();
-            let repo = doc.path.as_deref().and_then(|path| repo_of(&repos, path)).or_else(|| repos.first());
-            repo.and_then(|repo| repo.status.as_ref()).map(|status| {
+            let selected = self.panel.root.borrow().clone().or_else(|| self.active_repo_root());
+            let several = repos.len() > 1;
+            for repo in repos.iter() {
+                let Some(status) = repo.status.as_ref() else { continue };
                 let branch = &status.branch;
                 let name = branch.head.clone().unwrap_or_else(|| format!("HEAD staccato ({})", branch.oid.as_deref().and_then(|oid| oid.get(..7)).unwrap_or("?")));
                 let ahead = if branch.ahead > 0 { format!(" ↑{}", branch.ahead) } else { String::new() };
                 let behind = if branch.behind > 0 { format!(" ↓{}", branch.behind) } else { String::new() };
-                let operation = status.operation.as_ref().map_or_else(String::new, |operation| format!("   ⚠ {} in corso", operation_name(operation)));
-                format!("⎇ {name}{ahead}{behind}{operation}")
-            })
-        };
-        match branch {
-            Some(label) => {
-                let width = text_width(dc, &label);
-                let area = RECT { left: left_edge, right: left_edge + width, ..rect };
-                text(dc, &label, &area, palette.fg, DT_LEFT);
-                self.vcs_rect.set(RECT { left: area.left - padding / 2, right: area.right + padding / 2, ..area });
-                left_edge = area.right + padding * 2;
+                let label = format!("⎇ {name}{ahead}{behind}");
+                let prefix = if several { format!("{} ", folder_name(Some(&repo.root))) } else { String::new() };
+                let width = text_width(dc, &prefix) + text_width(dc, &label);
+                let area = RECT { left, right: left + width + padding * 2, ..rect };
+                text(dc, &prefix, &RECT { left: area.left + padding, ..area }, palette.muted, DT_LEFT);
+                text(dc, &label, &RECT { left: area.left + padding + text_width(dc, &prefix), ..area }, palette.fg, DT_LEFT);
+                if several && selected.as_deref() == Some(repo.root.as_path()) {
+                    fill(dc, &RECT { top: area.bottom - self.scale(2), ..area }, palette.accent);
+                }
+                vcs.push((area, repo.root.clone()));
+                left = area.right + self.scale(4);
             }
-            None => self.vcs_rect.set(RECT { left: 0, top: 0, right: 0, bottom: 0 }),
+            let operation = selected.as_deref().and_then(|root| repos.iter().find(|repo| repo.root == root)).and_then(|repo| repo.status.as_ref()).and_then(|status| {
+                let conflicts = status.files.iter().filter(|file| file.status == FileStatus::Conflict).count();
+                status.operation.as_ref().map(|operation| format!("{}{}", operation_name(operation).to_uppercase(), if conflicts > 0 { format!(" · {conflicts} conflitti") } else { String::new() }))
+            });
+            if let Some(operation) = operation {
+                text(dc, &operation, &RECT { left: left + padding, ..rect }, palette.danger, DT_LEFT);
+            }
         }
-        let path = doc.path.as_ref().map_or_else(String::new, |path| path.display().to_string());
-        let left = RECT { left: left_edge, right, ..rect };
-        text(dc, &path, &left, palette.muted, DT_LEFT | DT_PATH_ELLIPSIS);
+        *self.vcs_rects.borrow_mut() = vcs;
+        // A destra: posizione, fine riga, encoding, linguaggio (con una tab aperta), Minimap, A capo.
+        let docs = self.docs.borrow();
+        let mut segments: Vec<(String, u32, u8)> = Vec::new();
+        if let Some(doc) = docs.get(self.active.get()) {
+            let caret = self.sci.call(SCI_GETCURRENTPOS, 0, 0);
+            let line = self.sci.call(SCI_LINEFROMPOSITION, caret as usize, 0) + 1;
+            let column = self.sci.call(SCI_GETCOLUMN, caret as usize, 0) + 1;
+            let selected = (self.sci.call(SCI_GETSELECTIONEND, 0, 0) - self.sci.call(SCI_GETSELECTIONSTART, 0, 0)).max(0);
+            let position = if selected > 0 { format!("Ln {line}, Col {column} ({selected} selezionati)") } else { format!("Ln {line}, Col {column}") };
+            segments.push((position, palette.muted, 0));
+            segments.push((eol_label(doc.eol).to_string(), palette.muted, 1));
+            segments.push((format!("{}{}", doc.encoding, if doc.bom { " BOM" } else { "" }), palette.muted, 0));
+            segments.push((doc.language.name.to_string(), palette.muted, 0));
+        }
+        segments.push(("Minimap".into(), if self.minimap_on.get() { palette.accent } else { palette.muted }, 2));
+        segments.push(("A capo".into(), if self.wrap.get() { palette.accent } else { palette.muted }, 3));
+        let mut right = rect.right - self.scale(8);
+        for (label, color, kind) in segments.iter().rev() {
+            let width = text_width(dc, label) + padding * 2;
+            let area = RECT { left: right - width, right, ..rect };
+            text(dc, label, &area, *color, DT_CENTER);
+            match kind {
+                1 => self.eol_rect.set(area),
+                2 => self.minimap_rect.set(area),
+                3 => self.wrap_rect.set(area),
+                _ => {}
+            }
+            right = area.left - self.scale(4);
+        }
+        if docs.get(self.active.get()).is_none() {
+            self.eol_rect.set(RECT { left: 0, top: 0, right: 0, bottom: 0 });
+        }
     }
 
     fn active_path(&self) -> Option<PathBuf> {
@@ -1876,7 +2028,12 @@ impl App {
 
     /// Menu VCS (clic sul branch nella status bar o Alt+`): operazione in corso, pull, push, fetch, stash, branch, checkout, merge, rebase.
     fn vcs_menu(&self) {
-        let Some(root) = self.active_repo_root() else { return };
+        if let Some(root) = self.active_repo_root() {
+            self.vcs_menu_for(root);
+        }
+    }
+
+    fn vcs_menu_for(&self, root: PathBuf) {
         let (branches, operation): (Vec<(String, bool, bool)>, Option<&'static str>) = {
             let repos = self.repos.borrow();
             let repo = repos.iter().find(|repo| repo.root == root);
@@ -1886,7 +2043,6 @@ impl App {
         };
         let path = root.to_string_lossy().into_owned();
         let stashes = self.worker.now(|git| git.stashes(&path)).unwrap_or_default();
-        let anchor = self.vcs_rect.get();
         // SAFETY: menu creato, mostrato e distrutto qui (DestroyMenu distrugge anche i sottomenu); le stringhe vivono per tutta la chiamata.
         let command = unsafe {
             let mut strings: Vec<Vec<u16>> = Vec::new();
@@ -1932,8 +2088,8 @@ impl App {
             AppendMenuW(menu, MF_POPUP, checkout as usize, label("Checkout"));
             AppendMenuW(menu, MF_POPUP, merge as usize, label("Merge nel branch corrente"));
             AppendMenuW(menu, MF_POPUP, rebase as usize, label("Rebase del branch corrente su"));
-            let mut point = POINT { x: anchor.left, y: anchor.top };
-            ClientToScreen(self.hwnd, &mut point);
+            let mut point = POINT { x: 0, y: 0 };
+            GetCursorPos(&mut point);
             let command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_BOTTOMALIGN | TPM_LEFTALIGN, point.x, point.y, 0, self.hwnd, std::ptr::null());
             DestroyMenu(menu);
             command as usize
@@ -2523,9 +2679,9 @@ impl App {
 
     fn panel_height(&self) -> i32 {
         if !self.panel.visible.get() {
-            return self.scale(panel::HEADER);
+            return 0;
         }
-        let available = self.status_rect().top - self.scale(TAB_HEIGHT) - self.scale(EDITOR_MIN);
+        let available = self.status_rect().top - self.tabs_bottom() - self.scale(EDITOR_MIN);
         self.scale(self.panel.height.get()).clamp(self.scale(panel::HEADER + 60), available.max(self.scale(panel::HEADER + 60)))
     }
 
@@ -2540,9 +2696,6 @@ impl App {
 
     fn tab_at(&self, x: i32, y: i32) -> Option<(usize, bool)> {
         let tabs = self.tabs.borrow();
-        if contains(&self.settings_rect.get(), x, y) {
-            return None;
-        }
         let index = tabs.iter().position(|(tab, _)| contains(tab, x, y))?;
         Some((index, contains(&tabs[index].1, x, y)))
     }
@@ -2556,7 +2709,7 @@ impl App {
         }
         if contains(&self.panel_rect(), x, y) {
             if let Some(tab) = self.panel.tab_at(x, y) {
-                return self.toggle_panel(tab);
+                return self.show_panel(tab);
             }
             if let Some(root) = self.panel.repo_at(x, y) {
                 return self.select_repo(root);
@@ -2602,13 +2755,17 @@ impl App {
             return;
         }
         if let Some(index) = self.project_at(x, y) {
-            return if index == self.projects.borrow().len() { self.new_project() } else { self.switch_project(index) };
+            return self.switch_project(index);
         }
         if self.explorer_visible.get() && contains(&self.header_rect(), x, y) {
             return self.header_menu();
         }
-        if contains(&self.settings_rect.get(), x, y) {
-            return self.open_settings();
+        if let Some(button) = self.top_button_at(x, y) {
+            return self.on_top_button(button);
+        }
+        if contains(&self.wrap_rect.get(), x, y) {
+            self.toggle_wrap();
+            return self.invalidate();
         }
         if self.find.is_open() && contains(&self.find_rect(), x, y) {
             if let Some(button) = self.find.button_at(x, y) {
@@ -2628,8 +2785,9 @@ impl App {
             let line = (y - ruler.top) as isize * total / (ruler.bottom - ruler.top).max(1) as isize;
             return self.center_line(line.clamp(0, total - 1) as usize);
         }
-        if contains(&self.vcs_rect.get(), x, y) {
-            return self.vcs_menu();
+        let vcs = self.vcs_rects.borrow().iter().find(|(rect, _)| contains(rect, x, y)).map(|(_, root)| root.clone());
+        if let Some(root) = vcs {
+            return self.vcs_menu_for(root);
         }
         match self.tab_at(x, y) {
             Some((index, true)) => self.close(index),
@@ -2706,6 +2864,10 @@ impl App {
     unsafe fn paint_projects(&self, dc: HDC) {
         let palette = &self.palette;
         let bar = self.bar_rect();
+        if bar.right == 0 {
+            self.project_rects.borrow_mut().clear();
+            return;
+        }
         fill(dc, &bar, palette.panel);
         fill(dc, &RECT { left: bar.right - 1, ..bar }, palette.border);
         let size = self.scale(PROJECT_BUTTON);
@@ -2718,21 +2880,26 @@ impl App {
             .enumerate()
             .map(|(index, parked)| if index == current { self.explorer.root() } else { parked.as_ref().and_then(Parked::folder) })
             .collect();
-        let mut rects = Vec::with_capacity(folders.len() + 1);
-        for index in 0..=folders.len() {
-            let top = self.scale(4) + index as i32 * (size + self.scale(6));
+        let mut rects = Vec::with_capacity(folders.len());
+        let pointer = self.pointer.get();
+        for (index, folder) in folders.iter().enumerate() {
+            let top = self.scale(6) + index as i32 * (size + self.scale(4));
             let rect = RECT { left, top, right: left + size, bottom: top + size };
-            match folders.get(index) {
-                Some(folder) if index == current => {
-                    fill(dc, &rect, palette.accent);
-                    text(dc, &folder_initial(folder.as_deref()), &rect, palette.editor, DT_CENTER);
-                }
-                Some(folder) => {
-                    frame(dc, &rect, palette.border);
-                    text(dc, &folder_initial(folder.as_deref()), &rect, palette.fg, DT_CENTER);
-                }
-                None => text(dc, "+", &rect, palette.muted, DT_CENTER),
+            if index == current || pointer.is_some_and(|(x, y)| contains(&rect, x, y)) {
+                fill(dc, &rect, palette.hover);
             }
+            if index == current {
+                fill(dc, &RECT { left: rect.left, right: rect.left + self.scale(2), ..rect }, palette.accent);
+            }
+            let icon = self.scale(20);
+            DrawIconEx(dc, rect.left + (size - icon) / 2, rect.top + (size - icon) / 2, self.app_icon, icon, icon, 0, std::ptr::null_mut(), DI_NORMAL);
+            let initial = folder_initial(folder.as_deref());
+            let previous = SelectObject(dc, self.badge_font.get());
+            let badge_width = (text_width(dc, &initial) + self.scale(4)).max(self.scale(13));
+            let badge = RECT { left: rect.right - badge_width, top: rect.bottom - self.scale(13), right: rect.right, bottom: rect.bottom };
+            fill(dc, &badge, palette.accent);
+            text(dc, &initial, &badge, 0xFFFFFF, DT_CENTER);
+            SelectObject(dc, previous);
             rects.push(rect);
         }
         *self.project_rects.borrow_mut() = rects;
@@ -2752,6 +2919,7 @@ impl App {
             return self.drag_tab(x);
         }
         if !self.dragging.get() {
+            self.track_pointer(x, y);
             return self.hover_project(x, y);
         }
         let client = self.client_rect();
@@ -2761,7 +2929,21 @@ impl App {
         self.layout();
     }
 
-    /// Il tooltip della barra mostra il nome del progetto (o del `+`) sotto il mouse.
+    /// Effetti al passaggio del mouse: si ridisegnano le barre quando cambia l'elemento sotto il puntatore.
+    fn track_pointer(&self, x: i32, y: i32) {
+        let target = |point: Option<(i32, i32)>| point.map(|(x, y)| (self.top_button_at(x, y).map(|button| button as usize), self.tab_at(x, y), self.project_at(x, y)));
+        let before = target(self.pointer.replace(Some((x, y))));
+        if !self.tracking.replace(true) {
+            let mut track = TRACKMOUSEEVENT { cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: self.hwnd, dwHoverTime: 0 };
+            // SAFETY: struttura locale valida per la chiamata.
+            unsafe { TrackMouseEvent(&mut track) };
+        }
+        if before != target(Some((x, y))) {
+            self.invalidate();
+        }
+    }
+
+    /// Il tooltip della barra mostra il nome del progetto sotto il mouse.
     fn hover_project(&self, x: i32, y: i32) {
         let hovered = self.project_rects.borrow().iter().position(|rect| contains(rect, x, y));
         if hovered == self.hovered.replace(hovered) {
@@ -2769,7 +2951,6 @@ impl App {
         }
         let label = match hovered {
             None => String::new(),
-            Some(index) if index == self.projects.borrow().len() => "Apri una cartella in un nuovo progetto".into(),
             Some(index) => {
                 let folder = if index == self.current.get() { self.explorer.root() } else { self.projects.borrow()[index].as_ref().and_then(Parked::folder) };
                 folder.map_or_else(|| folder_name(None), |folder| folder.display().to_string())
@@ -2834,6 +3015,13 @@ impl App {
             active_project: self.current.get(),
             explorer_width: Some(self.explorer_width.get()),
             explorer_visible: Some(self.explorer_visible.get()),
+            panel_visible: Some(self.panel.visible.get()),
+            panel_height: Some(self.panel.height.get()),
+            panel_tab: Some(match self.panel.tab.get() {
+                Tab::Console => "console",
+                Tab::Git => "git",
+                Tab::Commit => "commit",
+            }.into()),
             window,
             maximized,
             wrap: self.wrap.get(),
@@ -2851,7 +3039,7 @@ impl App {
             ScreenToClient(self.hwnd, &mut point);
         }
         let over_splitter = self.splitter_rect().is_some_and(|splitter| contains(&splitter, point.x, point.y));
-        let clickable = contains(&self.eol_rect.get(), point.x, point.y) || contains(&self.minimap_rect.get(), point.x, point.y) || contains(&self.vcs_rect.get(), point.x, point.y) || contains(&self.settings_rect.get(), point.x, point.y) || self.project_at(point.x, point.y).is_some() || (self.explorer_visible.get() && contains(&self.header_rect(), point.x, point.y));
+        let clickable = contains(&self.eol_rect.get(), point.x, point.y) || contains(&self.minimap_rect.get(), point.x, point.y) || contains(&self.wrap_rect.get(), point.x, point.y) || self.vcs_rects.borrow().iter().any(|(rect, _)| contains(rect, point.x, point.y)) || self.project_at(point.x, point.y).is_some() || (self.explorer_visible.get() && contains(&self.header_rect(), point.x, point.y));
         let over_panel = self.over_panel_splitter(point.y) || self.dragging_panel.get();
         let cursor = match (over_splitter || self.dragging.get(), clickable) {
             _ if over_panel => IDC_SIZENS,
@@ -2900,6 +3088,24 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
         WM_MOUSEMOVE => {
             let (x, y) = point(lparam);
             app.on_mouse_move(x, y);
+            0
+        }
+        WM_MOUSELEAVE => {
+            app.tracking.set(false);
+            if app.pointer.take().is_some() {
+                app.invalidate();
+            }
+            0
+        }
+        WM_LBUTTONDBLCLK => {
+            // Doppio clic sullo spazio vuoto della barra delle tab: un file nuovo, come nella versione Tauri.
+            let (x, y) = point(lparam);
+            let strip = y >= app.main_top() && y < app.tabs_bottom() && x >= app.editor_left();
+            if strip && app.tab_at(x, y).is_none() {
+                app.new_document();
+            } else {
+                app.on_click(x, y);
+            }
             0
         }
         WM_LBUTTONUP => {

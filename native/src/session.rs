@@ -57,6 +57,11 @@ pub struct Session {
     pub active: usize,
     pub explorer_width: Option<i32>,
     pub explorer_visible: Option<bool>,
+    pub panel_visible: Option<bool>,
+    /// Altezza del pannello inferiore in pixel a 96 DPI.
+    pub panel_height: Option<i32>,
+    /// "console", "git" o "commit".
+    pub panel_tab: Option<String>,
     /// left, top, right, bottom in pixel dello schermo.
     pub window: Option<[i32; 4]>,
     pub maximized: bool,

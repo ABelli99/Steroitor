@@ -356,7 +356,8 @@ impl Panel {
         for pane in &preview {
             crate::side_by_side::configure(pane, palette);
         }
-        for sci in [&console] {
+        {
+            let sci = &console;
             sci.call_str(SCI_STYLESETFONT, STYLE_DEFAULT, "Cascadia Mono");
             sci.call(SCI_STYLESETSIZEFRACTIONAL, STYLE_DEFAULT, 975);
             sci.call(SCI_STYLESETFORE, STYLE_DEFAULT, palette.fg as isize);
@@ -372,8 +373,8 @@ impl Panel {
         let list = || List::create(parent, instance, palette.editor, palette.dark);
         Panel {
             visible: Cell::new(false),
-            tab: Cell::new(Tab::Git),
-            height: Cell::new(260),
+            tab: Cell::new(Tab::Console),
+            height: Cell::new(200),
             console,
             branches: list(),
             log: list(),
@@ -572,7 +573,7 @@ impl Panel {
             if active {
                 fill(dc, &RECT { top: area.bottom - scale(2), ..area }, palette.accent);
             }
-            text(dc, label, &area, if active { palette.fg } else { palette.muted }, DT_CENTER);
+            text(dc, label, &area, if active { palette.accent } else { palette.fg }, DT_CENTER);
             tabs.push((area, tab));
             left += width;
         }
