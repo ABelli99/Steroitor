@@ -160,6 +160,8 @@ struct Doc {
     first_line: isize,
     /// Annotazioni (blame) mostrate nel margine, una per riga; vuoto se spente.
     blame: Vec<BlameLine>,
+    /// Tab vuota nascosta che tiene il posto quando non c'è nessun file aperto (si vede "Nessun file aperto").
+    placeholder: bool,
 }
 
 impl Doc {
@@ -731,6 +733,7 @@ impl App {
 
     /// Crea il documento Scintilla, lo rende attivo e lo aggiunge come nuova tab.
     fn add_document(&self, path: Option<PathBuf>, text: &str, encoding: String, bom: bool) {
+        let replaces_placeholder = self.is_empty_state();
         self.remember_view();
         let pointer = self.sci.call(SCI_CREATEDOCUMENT, 0, 0);
         self.sci.call(SCI_SETDOCPOINTER, 0, pointer);
@@ -741,7 +744,7 @@ impl App {
         // In lista prima di caricare il testo: le notifiche di modifica devono arrivare a questa tab, non alla precedente.
         let index = {
             let mut docs = self.docs.borrow_mut();
-            docs.push(Doc { pointer, path, untitled, encoding, bom, eol, language, dirty: false, modified, stale: false, anchor: 0, caret: 0, first_line: 0, blame: Vec::new() });
+            docs.push(Doc { pointer, path, untitled, encoding, bom, eol, language, dirty: false, modified, stale: false, anchor: 0, caret: 0, first_line: 0, blame: Vec::new(), placeholder: false });
             docs.len() - 1
         };
         self.active.set(index);
@@ -754,10 +757,35 @@ impl App {
         self.refresh();
         self.update_markers();
         self.with_plugins(|plugins, sci, settings, path| plugins.on_activate(sci, settings, path));
+        if replaces_placeholder {
+            self.remove(0);
+            self.layout();
+        }
     }
 
     pub fn new_document(&self) {
+        if self.is_empty_state() {
+            self.docs.borrow_mut()[0].placeholder = false;
+            self.layout();
+            self.refresh();
+            return self.focus_editor();
+        }
         self.add_document(None, "", "UTF-8".into(), false);
+    }
+
+    /// Nessun file aperto: resta solo la tab segnaposto, nascosta.
+    fn is_empty_state(&self) -> bool {
+        let docs = self.docs.borrow();
+        docs.len() == 1 && docs[0].placeholder
+    }
+
+    fn show_empty_state(&self) {
+        self.add_document(None, "", "UTF-8".into(), false);
+        if let Some(doc) = self.docs.borrow_mut().last_mut() {
+            doc.placeholder = true;
+        }
+        self.layout();
+        self.refresh();
     }
 
     fn read(&self, path: &Path) -> Option<steroitor_core::text::TextFile> {
@@ -779,7 +807,7 @@ impl App {
         // Un'unica tab vuota e intatta (quella di avvio) lascia il posto al file aperto.
         let replace = {
             let docs = self.docs.borrow();
-            docs.len() == 1 && docs[0].path.is_none() && !docs[0].dirty && self.sci.call(SCI_GETLENGTH, 0, 0) == 0
+            docs.len() == 1 && docs[0].path.is_none() && !docs[0].dirty && !docs[0].placeholder && self.sci.call(SCI_GETLENGTH, 0, 0) == 0
         };
         self.add_document(Some(path.to_path_buf()), &file.content, file.encoding, file.bom);
         if replace {
@@ -846,10 +874,13 @@ impl App {
         self.focus_editor();
     }
 
-    /// Toglie la tab senza chiedere nulla; se era l'ultima ne apre una vuota.
+    /// Toglie la tab senza chiedere nulla; se era l'ultima resta "Nessun file aperto".
     fn remove(&self, index: usize) {
         if self.docs.borrow().len() == 1 {
-            self.new_document();
+            if self.is_empty_state() {
+                return;
+            }
+            self.show_empty_state();
         }
         if index == self.active.get() {
             let next = if index + 1 < self.docs.borrow().len() { index + 1 } else { index - 1 };
@@ -900,6 +931,9 @@ impl App {
 
     /// Salva la tab attiva; con `ask` (o se non ha un percorso) chiede dove.
     pub fn save(&self, ask: bool) -> bool {
+        if self.is_empty_state() {
+            return false;
+        }
         let index = self.active.get();
         let (current, name, encoding, bom) = {
             let doc = &self.docs.borrow()[index];
@@ -1008,7 +1042,7 @@ impl App {
         }
         let count = self.docs.borrow().len();
         if count == 0 {
-            self.new_document();
+            self.show_empty_state();
         } else {
             self.activate(project.active.min(count - 1));
         }
@@ -1615,11 +1649,13 @@ impl App {
         // SAFETY: finestre valide create da questo thread.
         unsafe {
             let tree = self.explorer_visible.get() && self.explorer.root().is_some();
+            let editor = !self.is_empty_state();
+            ShowWindow(self.sci.hwnd, if editor { SW_SHOW } else { SW_HIDE });
             ShowWindow(self.explorer.hwnd(), if tree { SW_SHOW } else { SW_HIDE });
             MoveWindow(self.explorer.hwnd(), self.bar_width(), tree_top, self.explorer_edge() - self.bar_width(), (bottom - tree_top).max(0), 1);
             MoveWindow(self.sci.hwnd, left, tab + find_height, (client.right - left - self.right_strip()).max(0), (bottom - tab - find_height).max(0), 1);
             let minimap_width = self.scale(minimap::WIDTH);
-            ShowWindow(self.minimap.sci.hwnd, if self.minimap_on.get() { SW_SHOW } else { SW_HIDE });
+            ShowWindow(self.minimap.sci.hwnd, if self.minimap_on.get() && editor { SW_SHOW } else { SW_HIDE });
             MoveWindow(self.minimap.sci.hwnd, client.right - minimap_width, tab + find_height, minimap_width, (bottom - tab - find_height).max(0), 1);
             InvalidateRect(self.hwnd, std::ptr::null(), 0);
         }
@@ -1641,7 +1677,7 @@ impl App {
     fn refresh(&self) {
         let title = {
             let docs = self.docs.borrow();
-            docs.get(self.active.get()).map_or_else(|| "Steroitor".to_string(), |doc| format!("{}{} — Steroitor", if doc.dirty { "● " } else { "" }, doc.name()))
+            docs.get(self.active.get()).filter(|doc| !doc.placeholder).map_or_else(|| "Steroitor".to_string(), |doc| format!("{}{} — Steroitor", if doc.dirty { "● " } else { "" }, doc.name()))
         };
         let title = wide(&title);
         // SAFETY: finestra valida, stringa terminata da zero.
@@ -1759,6 +1795,9 @@ impl App {
                 fill(dc, &RECT { left: splitter.left, right: splitter.left + 1, ..splitter }, self.palette.border);
             }
             self.paint_tabs(dc, &client);
+            if self.is_empty_state() {
+                self.paint_empty_state(dc);
+            }
             if self.find.is_open() {
                 self.find.paint(dc, self.find_rect(), &self.palette, |value| self.scale(value));
             }
@@ -1907,7 +1946,7 @@ impl App {
         let close = self.scale(CLOSE_SIZE);
         let pointer = self.pointer.get();
         let mut left = start;
-        for (index, doc) in docs.iter().enumerate() {
+        for (index, doc) in docs.iter().enumerate().filter(|(_, doc)| !doc.placeholder) {
             let name = doc.name();
             // Padding 0 6px 0 12px, 6px tra nome e ×, come nella versione Tauri.
             let width = (self.scale(12) + text_width(dc, &name) + self.scale(6) + close + self.scale(6)).min(self.scale(TAB_MAX_WIDTH));
@@ -1935,6 +1974,29 @@ impl App {
             left += width;
         }
         *self.tabs.borrow_mut() = rects;
+    }
+
+    /// "Nessun file aperto" con Nuovo file e Apri file, come nella versione Tauri; i pulsanti vanno con quelli della barra.
+    unsafe fn paint_empty_state(&self, dc: HDC) {
+        let palette = &self.palette;
+        let area = RECT { left: self.editor_left(), top: self.tabs_bottom(), right: self.client_rect().right, bottom: self.panel_rect().top.min(self.status_rect().top) };
+        fill(dc, &area, palette.editor);
+        let (width, height, gap) = (self.scale(200), self.scale(28), self.scale(8));
+        let total = self.scale(24) + 2 * (height + gap);
+        let left = (area.left + area.right - width) / 2;
+        let mut top = (area.top + area.bottom - total) / 2;
+        text(dc, "Nessun file aperto", &RECT { left: area.left, top, right: area.right, bottom: top + self.scale(20) }, palette.muted, DT_CENTER);
+        top += self.scale(24) + gap;
+        let pointer = self.pointer.get();
+        for (label, key, button) in [("Nuovo file", "Ctrl+N", TopButton::New), ("Apri file", "Ctrl+O", TopButton::Open)] {
+            let rect = RECT { left, top, right: left + width, bottom: top + height };
+            fill(dc, &rect, if pointer.is_some_and(|(x, y)| contains(&rect, x, y)) { palette.hover } else { palette.panel });
+            frame(dc, &rect, palette.border);
+            text(dc, label, &RECT { left: rect.left + self.scale(10), ..rect }, palette.fg, DT_LEFT);
+            text(dc, key, &RECT { right: rect.right - self.scale(10), ..rect }, palette.muted, DT_RIGHT);
+            self.top_buttons.borrow_mut().push((rect, button));
+            top += height + gap;
+        }
     }
 
     unsafe fn strip(dc: HDC, rect: RECT, palette: &Palette) {
@@ -1985,7 +2047,7 @@ impl App {
         // A destra: posizione, fine riga, encoding, linguaggio (con una tab aperta), Minimap, A capo.
         let docs = self.docs.borrow();
         let mut segments: Vec<(String, u32, u8)> = Vec::new();
-        if let Some(doc) = docs.get(self.active.get()) {
+        if let Some(doc) = docs.get(self.active.get()).filter(|doc| !doc.placeholder) {
             let caret = self.sci.call(SCI_GETCURRENTPOS, 0, 0);
             let line = self.sci.call(SCI_LINEFROMPOSITION, caret as usize, 0) + 1;
             let column = self.sci.call(SCI_GETCOLUMN, caret as usize, 0) + 1;
@@ -2011,7 +2073,7 @@ impl App {
             }
             right = area.left - self.scale(4);
         }
-        if docs.get(self.active.get()).is_none() {
+        if docs.get(self.active.get()).is_none_or(|doc| doc.placeholder) {
             self.eol_rect.set(RECT { left: 0, top: 0, right: 0, bottom: 0 });
         }
     }
