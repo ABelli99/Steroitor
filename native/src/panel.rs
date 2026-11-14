@@ -34,6 +34,14 @@ const CHECKBOX: i32 = 14;
 const SCI_SETREADONLY: u32 = 2171;
 const SCI_SETUNDOCOLLECTION: u32 = 2012;
 const SCI_DOCUMENTEND: u32 = 2318;
+const SCI_STARTSTYLING: u32 = 2032;
+const SCI_SETSTYLING: u32 = 2033;
+/// Righe della Console: sotto-tab (Comandi Git, terminali, + Terminale) e barra del log dei comandi.
+const CONSOLE_ROW: i32 = 26;
+/// Voci del log dei comandi tenute per progetto.
+const LOG_LIMIT: usize = 500;
+const STYLE_DANGER: usize = 1;
+const STYLE_MUTED: usize = 2;
 /// Colori delle corsie del grafo (0xRRGGBB), a giro.
 const LANE_COLORS: [u32; 8] = [0x5a9cf8, 0x73c991, 0xd5b778, 0xc77dbb, 0xd9776e, 0x2aacb8, 0xcf8e6d, 0x9da0a8];
 
@@ -55,6 +63,10 @@ pub enum Button {
     Abort,
     Init,
     Clone,
+    /// Barra del log dei comandi: casella "Comandi in background", Copia, Pulisci.
+    Background,
+    CopyLog,
+    ClearLog,
 }
 
 /// Sotto-tab della Console: il log dei comandi git, un terminale (o la sua ×), il pulsante per aprirne uno.
@@ -64,6 +76,8 @@ pub enum ConsoleTarget {
     Terminal(u32),
     Close(u32),
     New,
+    /// La freccia accanto a "+ Terminale": il menu delle shell.
+    Shells,
 }
 
 pub struct ChangedFile {
@@ -132,6 +146,7 @@ pub struct ProjectState {
     view: Option<u32>,
     /// Documento Scintilla con il log dei comandi git del progetto.
     console_doc: isize,
+    log: Vec<CommandLog>,
 }
 
 pub struct Panel {
@@ -176,6 +191,9 @@ pub struct Panel {
     pub repos: RefCell<Vec<RepoTab>>,
     /// La cartella aperta (None se non ce n'è), per il messaggio della tab Git vuota.
     pub has_folder: Cell<bool>,
+    /// Comandi git eseguiti (anche quelli in background, mostrati solo con la casella).
+    pub command_log: RefCell<Vec<CommandLog>>,
+    pub show_background: Cell<bool>,
     pub terminals: RefCell<Vec<Terminal>>,
     /// Terminale mostrato nella Console; None è il log dei comandi git.
     pub view: Cell<Option<u32>>,
@@ -202,6 +220,48 @@ pub fn local_time(timestamp: i64) -> String {
         }
         format!("{:02}/{:02}/{} {:02}:{:02}", local.wDay, local.wMonth, local.wYear, local.wHour, local.wMinute)
     }
+}
+
+/// Ora locale (ore:minuti:secondi) di un istante in millisecondi dall'epoca Unix.
+fn local_clock(milliseconds: u128) -> String {
+    let ticks = (milliseconds as u64) * 10_000 + 116_444_736_000_000_000;
+    let file_time = FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 };
+    // SAFETY: strutture locali inizializzate; fuso orario corrente del sistema.
+    unsafe {
+        let (mut utc, mut local): (SYSTEMTIME, SYSTEMTIME) = (std::mem::zeroed(), std::mem::zeroed());
+        if FileTimeToSystemTime(&file_time, &mut utc) == 0 || SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) == 0 {
+            return String::new();
+        }
+        format!("{:02}:{:02}:{:02}", local.wHour, local.wMinute, local.wSecond)
+    }
+}
+
+/// Testo del log e tratti da colorare (inizio, lunghezza, stile), in byte.
+fn log_text(log: &[CommandLog], background: bool) -> (String, Vec<(usize, usize, usize)>) {
+    let mut text = String::new();
+    let mut runs = Vec::new();
+    let mut push = |text: &mut String, part: &str, style: usize| {
+        if style != 0 && !part.is_empty() {
+            runs.push((text.len(), part.len(), style));
+        }
+        text.push_str(part);
+    };
+    for entry in log.iter().filter(|entry| background || !entry.background) {
+        let failed = entry.code != Some(0);
+        push(&mut text, &local_clock(entry.started_at), STYLE_MUTED);
+        push(&mut text, &format!("  $ {}  ", entry.command), 0);
+        let code = entry.code.map_or_else(|| "—".to_string(), |code| code.to_string());
+        push(&mut text, &format!("{code} · {} ms\n", entry.duration_ms), if failed { STYLE_DANGER } else { STYLE_MUTED });
+        for (output, style) in [(&entry.stdout, 0), (&entry.stderr, STYLE_DANGER)] {
+            for line in output.trim_end().lines().filter(|_| !output.trim().is_empty()) {
+                push(&mut text, &format!("    {line}\n"), style);
+            }
+        }
+    }
+    if log.iter().all(|entry| entry.background && !background) {
+        text.push_str("Nessun comando eseguito.");
+    }
+    (text, runs)
 }
 
 fn now() -> i64 {
@@ -369,6 +429,8 @@ impl Panel {
             sci.call(SCI_SETUNDOCOLLECTION, 0, 0);
             sci.call(SCI_SETREADONLY, 1, 0);
             sci.call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_SELECTION_BACK, (palette.selection | 0xFF00_0000) as isize);
+            sci.call(SCI_STYLESETFORE, STYLE_DANGER, palette.danger as isize);
+            sci.call(SCI_STYLESETFORE, STYLE_MUTED, palette.muted as isize);
         }
         let list = || List::create(parent, instance, palette.editor, palette.dark);
         Panel {
@@ -404,6 +466,8 @@ impl Panel {
             root: RefCell::new(None),
             repos: RefCell::new(Vec::new()),
             has_folder: Cell::new(false),
+            command_log: RefCell::new(Vec::new()),
+            show_background: Cell::new(false),
             terminals: RefCell::new(Vec::new()),
             view: Cell::new(None),
             next_terminal: Cell::new(1),
@@ -430,6 +494,7 @@ impl Panel {
         std::mem::swap(&mut *self.graph.borrow_mut(), &mut state.graph);
         std::mem::swap(&mut *self.changes.borrow_mut(), &mut state.changes);
         std::mem::swap(&mut *self.terminals.borrow_mut(), &mut state.terminals);
+        std::mem::swap(&mut *self.command_log.borrow_mut(), &mut state.log);
         state.view = self.view.replace(state.view);
         // La vista tiene un riferimento al documento mostrato: quello uscente va tenuto vivo, quello entrante passa alla vista.
         let current = self.console.call(SCI_GETDOCPOINTER, 0, 0);
@@ -452,6 +517,7 @@ impl Panel {
             pane.call(SCI_SETREADONLY, 0, 0);
             pane.set_text(b"");
         }
+        self.render_log();
     }
 
     /// Progetto chiuso: terminali e documento della Console.
@@ -501,8 +567,8 @@ impl Panel {
             }
         };
         let console = visible && tab == Tab::Console;
-        let body_console = RECT { top: rect.top + scale(HEADER), ..rect };
-        place(self.console.hwnd, console && self.view.get().is_none(), body_console);
+        let body_console = RECT { top: rect.top + scale(HEADER) + scale(CONSOLE_ROW), ..rect };
+        place(self.console.hwnd, console && self.view.get().is_none(), RECT { top: body_console.top + scale(CONSOLE_ROW), ..body_console });
         for terminal in self.terminals.borrow().iter() {
             let shown = console && self.view.get() == Some(terminal.id);
             place(terminal.sci.hwnd, shown, body_console);
@@ -579,36 +645,59 @@ impl Panel {
         }
         *self.tabs.borrow_mut() = tabs;
         let mut console_tabs = Vec::new();
+        let mut console_buttons = Vec::new();
         if visible && self.tab.get() == Tab::Console {
-            fill(dc, &RECT { left: left + scale(6), top: header.top + scale(7), right: left + scale(7), bottom: header.bottom - scale(7) }, palette.border);
-            left += scale(12);
-            let mut targets = vec![("Comandi git".to_owned(), ConsoleTarget::Log)];
-            targets.extend(self.terminals.borrow().iter().map(|terminal| {
-                let title = if terminal.exited.get() { format!("{} (terminato)", terminal.title) } else { terminal.title.clone() };
-                (title, ConsoleTarget::Terminal(terminal.id))
-            }));
-            targets.push(("+".to_owned(), ConsoleTarget::New));
-            for (label, target) in targets {
+            // Sotto-tab come nella versione Tauri: Comandi Git, un tab per terminale con la ×, + Terminale e la freccia delle shell.
+            let row = RECT { top: header.bottom, bottom: header.bottom + scale(CONSOLE_ROW), ..rect };
+            fill(dc, &RECT { top: row.bottom - 1, ..row }, palette.border);
+            let mut left = row.left + scale(6);
+            let mut targets: Vec<(String, ConsoleTarget, bool)> = vec![("Comandi Git".to_owned(), ConsoleTarget::Log, false)];
+            targets.extend(self.terminals.borrow().iter().map(|terminal| (terminal.title.clone(), ConsoleTarget::Terminal(terminal.id), terminal.exited.get())));
+            targets.push(("+ Terminale".to_owned(), ConsoleTarget::New, false));
+            targets.push(("⌄".to_owned(), ConsoleTarget::Shells, false));
+            for (label, target, exited) in targets {
                 let close = matches!(target, ConsoleTarget::Terminal(_));
-                let width = text_width(dc, &label) + scale(if close { 36 } else { 20 });
-                let area = RECT { left, top: header.top, right: left + width, bottom: header.bottom };
+                let width = text_width(dc, &label) + scale(if close { 34 } else { 16 });
+                let area = RECT { left, top: row.top + scale(2), right: left + width, bottom: row.bottom - scale(2) };
                 let active = match target {
                     ConsoleTarget::Log => self.view.get().is_none(),
                     ConsoleTarget::Terminal(id) => self.view.get() == Some(id),
                     _ => false,
                 };
-                if active {
-                    fill(dc, &RECT { top: area.bottom - scale(2), ..area }, palette.muted);
-                }
-                let label_area = RECT { left: area.left + scale(10), right: area.right - scale(if close { 26 } else { 10 }), ..area };
-                text(dc, &label, &label_area, if active { palette.fg } else { palette.muted }, DT_LEFT);
+                let color = if active { palette.accent } else if exited || matches!(target, ConsoleTarget::New | ConsoleTarget::Shells) { palette.muted } else { palette.fg };
+                let label_area = RECT { left: area.left + scale(8), right: area.right - scale(if close { 26 } else { 8 }), ..area };
+                text(dc, &label, &label_area, color, DT_LEFT);
                 console_tabs.push((area, target));
                 if let ConsoleTarget::Terminal(id) = target {
-                    let cross = RECT { left: area.right - scale(24), right: area.right - scale(6), ..area };
+                    let cross = RECT { left: area.right - scale(22), right: area.right - scale(6), ..area };
                     text(dc, "×", &cross, palette.muted, DT_CENTER);
                     console_tabs.insert(console_tabs.len() - 1, (cross, ConsoleTarget::Close(id)));
                 }
-                left += width;
+                left = area.right + scale(2);
+            }
+            // Barra del log dei comandi: casella "Comandi in background", quanti sono nascosti, Copia e Pulisci.
+            if self.view.get().is_none() {
+                let bar = RECT { top: row.bottom, bottom: row.bottom + scale(CONSOLE_ROW), ..rect };
+                fill(dc, &RECT { top: bar.bottom - 1, ..bar }, palette.border);
+                let size = scale(CHECKBOX);
+                let middle = (bar.top + bar.bottom) / 2;
+                let check = RECT { left: bar.left + scale(8), top: middle - size / 2, right: bar.left + scale(8) + size, bottom: middle + size / 2 };
+                Self::checkbox(dc, palette, check, self.show_background.get(), false);
+                let label = "Comandi in background";
+                let label_area = RECT { left: check.right + scale(6), right: check.right + scale(6) + text_width(dc, label), ..bar };
+                text(dc, label, &label_area, palette.muted, DT_LEFT);
+                console_buttons.push((RECT { left: check.left, right: label_area.right, ..bar }, Button::Background));
+                let hidden = if self.show_background.get() { 0 } else { self.command_log.borrow().iter().filter(|entry| entry.background).count() };
+                if hidden > 0 {
+                    text(dc, &format!("({hidden} nascosti)"), &RECT { left: label_area.right + scale(8), ..bar }, palette.muted, DT_LEFT);
+                }
+                let mut right = bar.right - scale(8);
+                for (label, button) in [("Pulisci", Button::ClearLog), ("Copia", Button::CopyLog)] {
+                    let area = RECT { left: right - text_width(dc, label) - scale(16), top: bar.top + scale(2), right, bottom: bar.bottom - scale(2) };
+                    text(dc, label, &area, palette.fg, DT_CENTER);
+                    console_buttons.push((area, button));
+                    right = area.left - scale(4);
+                }
             }
         }
         *self.console_tabs.borrow_mut() = console_tabs;
@@ -616,7 +705,7 @@ impl Panel {
         let mut buttons = Vec::new();
         if !visible || self.tab.get() == Tab::Console {
             *self.repo_tabs.borrow_mut() = repo_tabs;
-            *self.buttons.borrow_mut() = buttons;
+            *self.buttons.borrow_mut() = console_buttons;
             return;
         }
 
@@ -908,30 +997,33 @@ impl Panel {
     }
 
     pub fn append_console(&self, entries: &[CommandLog]) {
-        let mut text = String::new();
-        for entry in entries.iter().filter(|entry| !entry.background) {
-            let status = match entry.code {
-                Some(0) => String::new(),
-                Some(code) => format!(", uscita {code}"),
-                None => ", non eseguito".into(),
-            };
-            text.push_str(&format!("$ {}    ({} ms{status})    {}\n", entry.command, entry.duration_ms, entry.cwd));
-            for output in [&entry.stdout, &entry.stderr] {
-                let output = output.trim_end();
-                if !output.is_empty() {
-                    text.push_str(output);
-                    text.push('\n');
-                }
-            }
-        }
-        if text.is_empty() {
+        if entries.is_empty() {
             return;
         }
-        let bytes = text.into_bytes();
+        {
+            let mut log = self.command_log.borrow_mut();
+            log.extend(entries.iter().cloned());
+            let excess = log.len().saturating_sub(LOG_LIMIT);
+            log.drain(..excess);
+        }
+        self.render_log();
+    }
+
+    /// Testo del log come nella versione Tauri: ora, `$ comando`, codice · durata; sotto stdout e stderr (in rosso).
+    pub fn render_log(&self) {
+        let (text, runs) = log_text(&self.command_log.borrow(), self.show_background.get());
         self.console.call(SCI_SETREADONLY, 0, 0);
-        self.console.call(SCI_APPENDTEXT, bytes.len(), bytes.as_ptr() as isize);
+        self.console.set_text(text.as_bytes());
+        for (start, length, style) in runs {
+            self.console.call(SCI_STARTSTYLING, start, 0);
+            self.console.call(SCI_SETSTYLING, length, style as isize);
+        }
         self.console.call(SCI_SETREADONLY, 1, 0);
         self.console.call(SCI_DOCUMENTEND, 0, 0);
+    }
+
+    pub fn log_text(&self) -> String {
+        log_text(&self.command_log.borrow(), self.show_background.get()).0
     }
 
     unsafe fn row_start(row: &RowPaint, palette: &Palette, font: HFONT) {
@@ -1120,6 +1212,17 @@ mod tests {
         assert_eq!(relative_time(now - 2 * 86_400, now), "l'altro ieri");
         assert_eq!(relative_time(now - 5 * 86_400, now), "5 giorni fa");
         assert_eq!(relative_time(now - 40_000_000, now), "l'anno scorso");
+    }
+
+    #[test]
+    fn writes_the_command_log_like_the_tauri_version() {
+        let entry = |command: &str, code: Option<i32>, background: bool, stderr: &str| CommandLog { id: 0, command: command.into(), cwd: String::new(), code, duration_ms: 12, started_at: 0, stdout: "ok\n".into(), stderr: stderr.into(), background };
+        let log = [entry("git status", Some(0), true, ""), entry("git push", Some(1), false, "rifiutato")];
+        let (text, runs) = log_text(&log, false);
+        assert!(!text.contains("git status") && text.contains("  $ git push  1 · 12 ms\n    ok\n    rifiutato\n"));
+        assert!(runs.iter().any(|&(start, length, style)| style == STYLE_DANGER && &text[start..start + length] == "    rifiutato\n"));
+        assert!(log_text(&log, true).0.contains("git status"));
+        assert_eq!(log_text(&log[..1], false).0, "Nessun comando eseguito.");
     }
 
     #[test]

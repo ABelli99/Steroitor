@@ -75,6 +75,8 @@ const VCS_HISTORY_SELECTION: usize = 11;
 const VCS_METHOD_MERGE: usize = 12;
 const VCS_METHOD_REBASE: usize = 13;
 const VCS_BRANCH_FROM: usize = 9000;
+const SHELL_NEW: usize = 100;
+const SHELL_DEFAULT: usize = 200;
 const EDIT_DECLARATION: usize = 1;
 const EDIT_CUT: usize = 2;
 const EDIT_COPY: usize = 3;
@@ -2490,7 +2492,38 @@ impl App {
 
     /// Ctrl+T fuori dai pannelli Git: un nuovo terminale nella cartella del progetto, con il focus.
     fn new_terminal(&self) {
-        let shell = match steroitor_core::shells::resolve(Some(self.settings.borrow().terminal_shell.clone()).filter(|id| !id.is_empty()).as_deref()) {
+        let shell = self.settings.borrow().terminal_shell.clone();
+        self.new_terminal_with(&shell);
+    }
+
+    /// Menu della freccia accanto a "+ Terminale", come nella versione Tauri: una shell nuova o quella predefinita.
+    fn shell_menu(&self) {
+        let shells = steroitor_core::shells::detect();
+        let current = self.settings.borrow().terminal_shell.clone();
+        let mark = |on: bool| if on { "● " } else { "   " };
+        let news: Vec<String> = shells.iter().map(|shell| format!("Nuovo {}", shell.name)).collect();
+        let defaults: Vec<String> = std::iter::once(format!("{}Predefinita: Automatica", mark(current.is_empty()))).chain(shells.iter().map(|shell| format!("{}Predefinita: {}", mark(shell.id == current), shell.name))).collect();
+        let mut entries: Vec<(usize, &str)> = news.iter().enumerate().map(|(index, label)| (SHELL_NEW + index, label.as_str())).collect();
+        entries.push((0, ""));
+        entries.extend(defaults.iter().enumerate().map(|(index, label)| (SHELL_DEFAULT + index, label.as_str())));
+        match popup_menu(self.hwnd, &entries) {
+            id if (SHELL_NEW..SHELL_DEFAULT).contains(&id) => {
+                if let Some(shell) = shells.get(id - SHELL_NEW) {
+                    self.new_terminal_with(&shell.id);
+                }
+            }
+            id if id >= SHELL_DEFAULT => {
+                let mut settings = self.settings.borrow().clone();
+                settings.terminal_shell = if id == SHELL_DEFAULT { String::new() } else { shells.get(id - SHELL_DEFAULT - 1).map_or_else(String::new, |shell| shell.id.clone()) };
+                settings.save();
+                *self.settings.borrow_mut() = settings;
+            }
+            _ => {}
+        }
+    }
+
+    fn new_terminal_with(&self, shell: &str) {
+        let shell = match steroitor_core::shells::resolve(Some(shell.to_string()).filter(|id| !id.is_empty()).as_deref()) {
             Ok(shell) => shell,
             Err(error) => {
                 message_box(self.hwnd, &error, MB_ICONERROR);
@@ -2536,6 +2569,7 @@ impl App {
             }
             ConsoleTarget::Close(id) => self.close_terminal(id),
             ConsoleTarget::New => self.new_terminal(),
+            ConsoleTarget::Shells => self.shell_menu(),
         }
     }
 
@@ -3049,6 +3083,17 @@ impl App {
                     self.invalidate();
                 }
                 Some(panel::Button::StageAll) => self.toggle_stage_all(),
+                Some(panel::Button::Background) => {
+                    self.panel.show_background.set(!self.panel.show_background.get());
+                    self.panel.render_log();
+                    self.invalidate();
+                }
+                Some(panel::Button::CopyLog) => copy_to_clipboard(self.hwnd, &self.panel.log_text()),
+                Some(panel::Button::ClearLog) => {
+                    self.panel.command_log.borrow_mut().clear();
+                    self.panel.render_log();
+                    self.invalidate();
+                }
                 Some(panel::Button::OpenInEditor) => {
                     let path = self.panel.changes.borrow().iter().find(|file| Some(file.relative.replace('\\', "/")) == *self.panel.preview_path.borrow()).map(|file| PathBuf::from(&file.path));
                     if let Some(path) = path.filter(|path| path.is_file()) {
@@ -3413,6 +3458,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             let (x, y) = point(lparam);
             if let Some(index) = app.project_at(x, y) {
                 app.close_project(index);
+            } else if let Some(panel::ConsoleTarget::Terminal(id)) = app.panel.visible.get().then(|| app.panel.console_target_at(x, y)).flatten() {
+                app.close_terminal(id);
             } else if let Some((index, _)) = app.tab_at(x, y) {
                 app.close(index);
             }
