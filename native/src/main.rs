@@ -9,6 +9,7 @@ mod diff;
 mod explorer;
 mod find;
 mod git;
+mod indent;
 mod hunks;
 mod icons;
 mod lang;

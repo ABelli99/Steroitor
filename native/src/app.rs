@@ -29,6 +29,7 @@ use crate::dialogs::{copy_to_clipboard, message_box, open_files, pick_folder, sa
 use crate::explorer::{popup_menu, Action, Explorer};
 use crate::find::{self, window_text, FindBar};
 use crate::hunks;
+use crate::indent;
 use crate::git::{line_changes, repo_of, CommitRequest, Event, FileColors, Repo, Worker, WM_COMMAND_LOGGED, WM_GIT_EVENT};
 use crate::lang::{self, Language};
 use crate::minimap::{self, Minimap, WM_MINIMAP_LINE};
@@ -698,6 +699,39 @@ impl App {
         let (ascent, descent) = style.line_spacing(self.dpi());
         self.sci.call(SCI_SETEXTRAASCENT, ascent as usize, 0);
         self.sci.call(SCI_SETEXTRADESCENT, descent as usize, 0);
+    }
+
+    /// Invio: la riga nuova indentata come in CodeMirror (vedi `indent`), con un solo cursore.
+    fn indent_new_line(&self, ch: i32) {
+        let sci = &self.sci;
+        let mode = sci.call(SCI_GETEOLMODE, 0, 0) as usize;
+        let enter = if mode == SC_EOL_CR { b'\r' } else { b'\n' };
+        if ch != i32::from(enter) || sci.call(SCI_GETSELECTIONS, 0, 0) > 1 {
+            return;
+        }
+        let line = sci.call(SCI_LINEFROMPOSITION, sci.call(SCI_GETCURRENTPOS, 0, 0) as usize, 0).max(0) as usize;
+        if line == 0 {
+            return;
+        }
+        let unit = match sci.call(SCI_GETINDENT, 0, 0) {
+            0 => sci.call(SCI_GETTABWIDTH, 0, 0),
+            unit => unit,
+        } as usize;
+        let previous_columns = sci.call(SCI_GETLINEINDENTATION, line - 1, 0).max(0) as usize;
+        let next = indent::after_enter(&sci.line(line - 1), previous_columns, &sci.line(line), unit);
+        sci.call(SCI_BEGINUNDOACTION, 0, 0);
+        sci.call(SCI_SETLINEINDENTATION, line, next.columns as isize);
+        if let Some(columns) = next.closer {
+            let eol = match mode {
+                SC_EOL_CRLF => "\r\n",
+                SC_EOL_CR => "\r",
+                _ => "\n",
+            };
+            sci.call_str(SCI_INSERTTEXT, sci.call(SCI_GETLINEINDENTPOSITION, line, 0) as usize, eol);
+            sci.call(SCI_SETLINEINDENTATION, line + 1, columns as isize);
+        }
+        sci.call(SCI_GOTOPOS, sci.call(SCI_GETLINEINDENTPOSITION, line, 0) as usize, 0);
+        sci.call(SCI_ENDUNDOACTION, 0, 0);
     }
 
     /// Tab e indentazione sono del documento attivo.
@@ -1767,7 +1801,10 @@ impl App {
                 unsafe { SetTimer(self.hwnd, MARKER_TIMER, MARKER_DELAY_MS, None) };
                 self.with_plugins(|plugins, _, settings, path| plugins.on_modified(settings, path));
             }
-            SCN_CHARADDED => self.with_plugins(|plugins, sci, settings, path| plugins.on_char(sci, settings, path, notification.ch)),
+            SCN_CHARADDED => {
+                self.indent_new_line(notification.ch);
+                self.with_plugins(|plugins, sci, settings, path| plugins.on_char(sci, settings, path, notification.ch));
+            }
             SCN_AUTOCSELECTIONCHANGE => self.with_plugins(|plugins, _, settings, path| plugins.on_selection(settings, path, &notification.text())),
             SCN_AUTOCCANCELLED | SCN_AUTOCCOMPLETED => self.plugins.on_list_closed(&self.sci),
             SCN_DWELLSTART => self.with_plugins(|plugins, sci, settings, path| plugins.on_dwell(sci, settings, path, notification.position)),

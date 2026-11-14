@@ -76,6 +76,16 @@ pub const SCI_INDICATORCLEARRANGE: u32 = 2505;
 pub const SCI_SCROLLCARET: u32 = 2169;
 pub const SCI_BEGINUNDOACTION: u32 = 2078;
 pub const SCI_ENDUNDOACTION: u32 = 2079;
+pub const SCI_GETLINE: u32 = 2153;
+pub const SCI_LINELENGTH: u32 = 2350;
+pub const SCI_GETLINEINDENTATION: u32 = 2127;
+pub const SCI_SETLINEINDENTATION: u32 = 2126;
+pub const SCI_GETLINEINDENTPOSITION: u32 = 2128;
+pub const SCI_GETEOLMODE: u32 = 2030;
+pub const SCI_INSERTTEXT: u32 = 2003;
+pub const SCI_GETINDENT: u32 = 2123;
+pub const SCI_GETTABWIDTH: u32 = 2121;
+pub const SCI_GETSELECTIONS: u32 = 2570;
 pub const SCI_GETSELTEXT: u32 = 2161;
 pub const SCI_GETSELECTIONSTART: u32 = 2143;
 pub const SCI_GETSELECTIONEND: u32 = 2145;
@@ -237,6 +247,15 @@ impl Sci {
         let length = self.call(SCI_GETLENGTH, 0, 0) as usize;
         let mut buffer = vec![0u8; length + 1];
         self.call(SCI_GETTEXT, length + 1, buffer.as_mut_ptr() as isize);
+        buffer.truncate(length);
+        String::from_utf8_lossy(&buffer).into_owned()
+    }
+
+    /// Testo della riga, con il fine riga.
+    pub fn line(&self, line: usize) -> String {
+        let length = self.call(SCI_LINELENGTH, line, 0).max(0) as usize;
+        let mut buffer = vec![0u8; length + 1];
+        self.call(SCI_GETLINE, line, buffer.as_mut_ptr() as isize);
         buffer.truncate(length);
         String::from_utf8_lossy(&buffer).into_owned()
     }

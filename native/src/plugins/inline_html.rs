@@ -1,4 +1,5 @@
-//! HTML dentro JavaScript/TypeScript: JSX (React) e i template inline di Angular (`template: \`…\``).
+//! HTML dentro JavaScript/TypeScript: JSX (React) e i template inline di Angular (`template: \`…\``) con il
+//! loro CSS (`styles`).
 //! Il lexer C-like non li conosce; qui si trovano i pezzi da colorare come HTML, che l'editor sovrappone con indicatori.
 use std::ops::Range;
 
@@ -20,6 +21,8 @@ pub enum Role {
     Function,
     Property,
     Comment,
+    /// Classi e pseudo-classi del CSS.
+    Type,
 }
 
 pub type Span = (Range<usize>, Role);
@@ -423,6 +426,186 @@ fn angular_scan(bytes: &[u8], spans: &mut Vec<Span>) {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Statement {
+    Selector,
+    /// Dopo `@media`, `@keyframes`…, fino a `{` o `;`.
+    AtRule,
+    Declaration,
+}
+
+fn css_name_end(bytes: &[u8], mut index: usize, end: usize) -> usize {
+    while index < end && (bytes[index].is_ascii_alphanumeric() || matches!(bytes[index], b'-' | b'_')) {
+        index += 1;
+    }
+    index
+}
+
+/// Selettore o dichiarazione: dentro un blocco decide cosa arriva prima tra `{` e `;`/`}`.
+fn statement_at(bytes: &[u8], at: usize, end: usize, depth: usize) -> Statement {
+    if depth == 0 {
+        return Statement::Selector;
+    }
+    let first = bytes[at..end].iter().position(|byte| matches!(byte, b'{' | b';' | b'}'));
+    if first.is_some_and(|offset| bytes[at + offset] == b'{') {
+        Statement::Selector
+    } else {
+        Statement::Declaration
+    }
+}
+
+/// CSS di `styles` colorato come il CSS della versione Tauri: tag e classi nei selettori, proprietà, valori come
+/// costanti, numeri, funzioni e at-rule come keyword.
+fn css(bytes: &[u8], range: Range<usize>, spans: &mut Vec<Span>) {
+    let end = range.end;
+    let mut index = range.start;
+    let mut depth = 0usize;
+    let mut statement = None;
+    let mut value = false;
+    while index < end {
+        let byte = bytes[index];
+        let next = bytes.get(index + 1).copied().filter(|_| index + 1 < end);
+        if byte.is_ascii_whitespace() {
+            index += 1;
+            continue;
+        }
+        if byte == b'/' && next == Some(b'*') {
+            let close = find(&bytes[..end], index + 2, b"*/").map_or(end, |close| close + 2);
+            spans.push((index..close, Role::Comment));
+            index = close;
+            continue;
+        }
+        if matches!(byte, b'"' | b'\'') {
+            let close = bytes[index + 1..end].iter().position(|&candidate| candidate == byte).map_or(end, |close| index + close + 2);
+            spans.push((index..close, Role::Value));
+            index = close;
+            continue;
+        }
+        if matches!(byte, b'{' | b'}' | b';') {
+            depth = match byte {
+                b'{' => depth + 1,
+                b'}' => depth.saturating_sub(1),
+                _ => depth,
+            };
+            statement = None;
+            value = false;
+            spans.push((index..index + 1, Role::Punctuation));
+            index += 1;
+            continue;
+        }
+        if byte == b'@' {
+            let word = css_name_end(bytes, index + 1, end);
+            spans.push((index..word, Role::Keyword));
+            statement = Some(Statement::AtRule);
+            index = word;
+            continue;
+        }
+        let current = *statement.get_or_insert_with(|| statement_at(bytes, index, end, depth));
+        let number = byte.is_ascii_digit() || (matches!(byte, b'.' | b'-') && next.is_some_and(|next| next.is_ascii_digit()));
+        if number && (value || current != Statement::Declaration) {
+            let digits = index + 1 + bytes[index + 1..end].iter().position(|byte| !(byte.is_ascii_digit() || *byte == b'.')).unwrap_or(end - index - 1);
+            spans.push((index..digits, Role::Number));
+            let unit = css_name_end(bytes, digits, end);
+            let unit = if bytes.get(unit) == Some(&b'%') && unit < end { unit + 1 } else { unit };
+            spans.push((digits..unit, Role::Text));
+            index = unit;
+            continue;
+        }
+        let is_name = byte.is_ascii_alphabetic() || matches!(byte, b'-' | b'_');
+        if !is_name {
+            let role = match (current, byte) {
+                (Statement::Selector, b'.' | b':' | b'#') => {
+                    let name_start = (index + 1..end).find(|&at| bytes[at] != b':').unwrap_or(end);
+                    let name = name_start..css_name_end(bytes, name_start, end);
+                    spans.push((index..name.start, Role::Punctuation));
+                    spans.push((name.clone(), if byte == b'#' { Role::Text } else { Role::Type }));
+                    index = name.end.max(index + 1);
+                    continue;
+                }
+                (Statement::Selector, b'[') => {
+                    let name = css_name_end(bytes, index + 1, end);
+                    spans.push((index..index + 1, Role::Punctuation));
+                    spans.push((index + 1..name, Role::Attribute));
+                    index = name;
+                    continue;
+                }
+                (Statement::Declaration, b':') if !value => {
+                    value = true;
+                    Role::Punctuation
+                }
+                (Statement::Declaration, b'!') if value => {
+                    let word = css_name_end(bytes, index + 1, end);
+                    spans.push((index..word, Role::Keyword));
+                    index = word;
+                    continue;
+                }
+                (Statement::Declaration, b'#') if value => {
+                    let word = css_name_end(bytes, index + 1, end);
+                    spans.push((index..word, Role::Text));
+                    index = word;
+                    continue;
+                }
+                _ => Role::Punctuation,
+            };
+            spans.push((index..index + 1, role));
+            index += 1;
+            continue;
+        }
+        let word_end = css_name_end(bytes, index, end);
+        let word = &bytes[index..word_end];
+        let following = bytes[word_end..end].iter().find(|byte| !byte.is_ascii_whitespace()).copied();
+        let role = match current {
+            Statement::Selector if word == b"from" || word == b"to" => Role::Keyword,
+            Statement::Selector => Role::Tag,
+            Statement::AtRule if following == Some(b':') => Role::Property,
+            Statement::AtRule => Role::Keyword,
+            Statement::Declaration if !value => Role::Property,
+            Statement::Declaration if bytes.get(word_end) == Some(&b'(') => Role::Keyword,
+            Statement::Declaration if word.starts_with(b"--") => Role::Text,
+            Statement::Declaration => Role::Number,
+        };
+        spans.push((index..word_end, role));
+        index = word_end;
+    }
+}
+
+/// Il CSS di `styles: \`…\`` e `styles: [\`…\`, \`…\`]` nei componenti Angular.
+fn styles_scan(bytes: &[u8], spans: &mut Vec<Span>) {
+    let mut from = 0;
+    while let Some(found) = find(bytes, from, b"styles") {
+        from = found + 6;
+        if (found > 0 && is_name(bytes[found - 1])) || bytes.get(from).is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_') {
+            continue;
+        }
+        let colon = skip_space(bytes, from, bytes.len());
+        if bytes.get(colon) != Some(&b':') {
+            continue;
+        }
+        let mut index = skip_space(bytes, colon + 1, bytes.len());
+        let list = bytes.get(index) == Some(&b'[');
+        if list {
+            index += 1;
+        }
+        loop {
+            index = skip_space(bytes, index, bytes.len());
+            if bytes.get(index) == Some(&b',') && list {
+                index += 1;
+                continue;
+            }
+            if bytes.get(index) != Some(&b'`') {
+                break;
+            }
+            let close = skip_js_literal(bytes, index).unwrap_or(bytes.len());
+            css(bytes, index + 1..close.saturating_sub(1).max(index + 1), spans);
+            index = close;
+            if !list {
+                break;
+            }
+        }
+        from = from.max(index);
+    }
+}
+
 /// I pezzi HTML del testo da colorare; vuoto per file troppo grandi.
 pub fn spans(text: &str, react: bool, angular: bool) -> Vec<Span> {
     let bytes = text.as_bytes();
@@ -435,6 +618,7 @@ pub fn spans(text: &str, react: bool, angular: bool) -> Vec<Span> {
     }
     if angular {
         angular_scan(bytes, &mut spans);
+        styles_scan(bytes, &mut spans);
     }
     spans.retain(|(range, _)| !range.is_empty());
     spans
@@ -488,6 +672,39 @@ mod tests {
         );
         assert!(roles(code, true, false).is_empty());
         assert!(roles("const templateUrl = `<p>`;", false, true).is_empty());
+    }
+
+    #[test]
+    fn colors_angular_styles_as_css() {
+        let code = "@Component({ styles: [`\n  :host { display: block; }\n  .card > h2:hover, a[href] { margin: 0 4px !important; color: #fff; width: calc(100% - 2rem); }\n  @media (max-width: 600px) { .card { padding: .5em; } }\n  /* nota */\n`] })";
+        let found = roles(code, false, true);
+        for expected in [
+            ("host", Role::Type),
+            ("display", Role::Property),
+            ("block", Role::Number),
+            ("card", Role::Type),
+            ("h2", Role::Tag),
+            ("hover", Role::Type),
+            ("a", Role::Tag),
+            ("href", Role::Attribute),
+            ("margin", Role::Property),
+            ("0", Role::Number),
+            ("4", Role::Number),
+            ("px", Role::Text),
+            ("!important", Role::Keyword),
+            ("#fff", Role::Text),
+            ("calc", Role::Keyword),
+            ("@media", Role::Keyword),
+            ("max-width", Role::Property),
+            ("600", Role::Number),
+            ("padding", Role::Property),
+            (".5", Role::Number),
+            ("/* nota */", Role::Comment),
+        ] {
+            assert!(found.contains(&expected), "{expected:?} in {found:?}");
+        }
+        assert!(roles(code, false, false).is_empty());
+        assert!(roles("const styles = x;", false, true).is_empty());
     }
 
     #[test]

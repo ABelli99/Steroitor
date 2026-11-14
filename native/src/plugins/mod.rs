@@ -100,7 +100,7 @@ const DOCS: &str = SERVER_OPTIONS[2].0;
 const REACT: &str = "reactInline";
 const ANGULAR: &str = "angularInline";
 /// Indicatori che colorano il testo dell'HTML inline, uno per ruolo.
-const HTML_INDICATORS: [(usize, inline_html::Role); 12] = [
+const HTML_INDICATORS: [(usize, inline_html::Role); 13] = [
     (11, inline_html::Role::Tag),
     (12, inline_html::Role::Attribute),
     (13, inline_html::Role::Value),
@@ -113,6 +113,7 @@ const HTML_INDICATORS: [(usize, inline_html::Role); 12] = [
     (20, inline_html::Role::Number),
     (FUNCTION_INDICATOR, inline_html::Role::Function),
     (PROPERTY_INDICATOR, inline_html::Role::Property),
+    (TYPE_INDICATOR, inline_html::Role::Type),
 ];
 const FUNCTION_INDICATOR: usize = 21;
 const PROPERTY_INDICATOR: usize = 22;
@@ -319,12 +320,11 @@ impl Host {
                 inline_html::Role::Number => palette.number,
                 inline_html::Role::Function => palette.function,
                 inline_html::Role::Comment => palette.comment,
+                inline_html::Role::Type => palette.kind,
             };
             sci.call(SCI_INDICSETSTYLE, indicator, INDIC_TEXTFORE);
             sci.call(SCI_INDICSETFORE, indicator, color as isize);
         }
-        sci.call(SCI_INDICSETSTYLE, TYPE_INDICATOR, INDIC_TEXTFORE);
-        sci.call(SCI_INDICSETFORE, TYPE_INDICATOR, palette.kind as isize);
         for (indicator, color) in [(ERROR_INDICATOR, palette.danger), (WARNING_INDICATOR, palette.number)] {
             sci.call(SCI_INDICSETSTYLE, indicator, INDIC_SQUIGGLEPIXMAP);
             sci.call(SCI_INDICSETFORE, indicator, color as isize);
@@ -544,10 +544,10 @@ impl Host {
     }
 
     /// Nei file JavaScript/TypeScript colora funzioni, tipi e proprietà come la versione Tauri (sempre) e, secondo le
-    /// opzioni del plugin, il JSX e i template Angular come HTML.
+    /// opzioni del plugin, il JSX e i template Angular come HTML, gli `styles` Angular come CSS.
     pub fn highlight(&self, sci: &Sci, settings: &Settings, path: Option<&Path>) {
         let length = sci.call(SCI_GETLENGTH, 0, 0);
-        for indicator in HTML_INDICATORS.iter().map(|(indicator, _)| *indicator).chain([TYPE_INDICATOR]) {
+        for indicator in HTML_INDICATORS.iter().map(|(indicator, _)| *indicator) {
             sci.call(SCI_SETINDICATORCURRENT, indicator, 0);
             sci.call(SCI_INDICATORCLEARRANGE, 0, length);
         }
