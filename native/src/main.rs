@@ -1,7 +1,9 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod compare;
 mod dialogs;
+mod diff;
 mod explorer;
 mod find;
 mod git;

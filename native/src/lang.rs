@@ -1,4 +1,5 @@
 //! Linguaggi riconosciuti dall'estensione: lexer di Lexilla, parole chiave e colore di ogni stile.
+use crate::sci::*;
 use crate::theme::Palette;
 
 #[derive(Clone, Copy)]
@@ -225,4 +226,46 @@ mod tests {
         assert_eq!(detect(Path::new(".gitconfig")).name, "Properties / INI");
         assert_eq!(detect(Path::new("README")).name, "Testo semplice");
     }
+}
+
+extern "C" {
+    fn steroitor_create_lexer(name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+}
+
+pub fn set_lexer(sci: &Sci, language: &Language) {
+    let lexer = language.lexer.map_or(std::ptr::null_mut(), |name| {
+        let name = std::ffi::CString::new(name).unwrap_or_default();
+        // SAFETY: nome valido; il documento prende possesso del lexer restituito.
+        unsafe { steroitor_create_lexer(name.as_ptr()) }
+    });
+    sci.call(SCI_SETILEXER, 0, lexer as isize);
+    for (index, keywords) in language.keywords.iter().enumerate() {
+        sci.call_str(SCI_SETKEYWORDS, index, keywords);
+    }
+    for (key, value) in language.properties {
+        sci.set_property(key, value);
+    }
+}
+
+/// Gli stili sono della vista: si riapplicano a ogni cambio di documento, perché ogni lexer numera gli stili a modo suo.
+pub fn apply_styles(sci: &Sci, language: &Language, palette: &Palette, font_fraction: isize) {
+    sci.call_str(SCI_STYLESETFONT, STYLE_DEFAULT, "Cascadia Mono");
+    sci.call(SCI_STYLESETSIZEFRACTIONAL, STYLE_DEFAULT, font_fraction);
+    sci.call(SCI_STYLESETFORE, STYLE_DEFAULT, palette.fg as isize);
+    sci.call(SCI_STYLESETBACK, STYLE_DEFAULT, palette.editor as isize);
+    sci.call(SCI_STYLECLEARALL, 0, 0);
+    sci.call(SCI_STYLESETFORE, STYLE_LINENUMBER, palette.muted as isize);
+    sci.call(SCI_STYLESETBACK, STYLE_LINENUMBER, palette.editor as isize);
+    sci.call(SCI_STYLESETFORE, STYLE_INDENTGUIDE, palette.border as isize);
+    sci.call(SCI_STYLESETFORE, STYLE_BRACELIGHT, palette.accent as isize);
+    sci.call(SCI_STYLESETBOLD, STYLE_BRACELIGHT, 1);
+    sci.call(SCI_STYLESETFORE, STYLE_BRACEBAD, palette.danger as isize);
+    for &(style, role) in language.styles {
+        sci.style(style, role.color(palette));
+        if role.italic() {
+            sci.call(SCI_STYLESETITALIC, style, 1);
+        }
+    }
+    let width = sci.call_str(SCI_TEXTWIDTH, STYLE_LINENUMBER, "_99999");
+    sci.call(SCI_SETMARGINWIDTHN, 0, width);
 }

@@ -22,6 +22,7 @@ pub enum Event {
     Finished(PathBuf, Result<(), String>),
     Log(PathBuf, Result<Vec<Commit>, String>),
     Committed(PathBuf, Result<(), String>),
+    Compare(crate::compare::Loaded),
 }
 
 #[derive(Clone)]

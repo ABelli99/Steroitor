@@ -129,7 +129,11 @@ impl List {
         self.redraw();
     }
 
-    fn select(&self, index: usize, event: ListEvent) {
+    pub fn selected(&self) -> Option<usize> {
+        self.selected.get()
+    }
+
+    pub fn select(&self, index: usize, event: ListEvent) {
         if self.rows.get() == 0 {
             return;
         }

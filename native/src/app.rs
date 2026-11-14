@@ -2,7 +2,6 @@
 //! Tab, intestazioni e status bar sono disegnate a mano; c'è un documento Scintilla per tab.
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
-use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -23,6 +22,7 @@ use steroitor_core::git::history::ResetMode;
 use steroitor_core::git::parse::FileStatus;
 use steroitor_core::text::{decode, encode};
 
+use crate::compare::Compare;
 use crate::dialogs::{copy_to_clipboard, message_box, open_files, pick_folder, save_file, wide};
 use crate::explorer::{popup_menu, Action, Explorer};
 use crate::find::{self, window_text, FindBar};
@@ -37,9 +37,6 @@ use crate::session::{Session, Settings};
 use crate::terminal::{Terminal, WM_TERMINAL_EXIT, WM_TERMINAL_OUTPUT};
 use crate::theme::{system_palette, Palette};
 
-extern "C" {
-    fn steroitor_create_lexer(name: *const std::ffi::c_char) -> *mut c_void;
-}
 
 const CLASS_NAME: &str = "SteroitorMain";
 const TAB_HEIGHT: i32 = 32;
@@ -73,6 +70,9 @@ const LOG_RESET_SOFT: usize = 6;
 const LOG_RESET_MIXED: usize = 7;
 const LOG_RESET_HARD: usize = 8;
 const LOG_COPY_HASH: usize = 9;
+const LOG_SHOW_CHANGES: usize = 10;
+const FILE_DIFF: usize = 1;
+const FILE_OPEN: usize = 2;
 const LIST_ROW_HEIGHT: i32 = 24;
 const VCS_PULL: usize = 1;
 const VCS_PUSH: usize = 2;
@@ -123,6 +123,7 @@ pub struct App {
     palette: Palette,
     settings: Settings,
     worker: Worker,
+    compare: &'static Compare,
     repos: RefCell<Vec<Repo>>,
     colors: RefCell<FileColors>,
     /// Contenuto in HEAD dei file aperti (None = non tracciato), per i marker nel gutter.
@@ -244,6 +245,8 @@ impl App {
             (hwnd, editor)
         };
 
+        let settings = Settings::load();
+        let worker = Worker::new(hwnd);
         let app: &'static App = Box::leak(Box::new(App {
             hwnd,
             sci: Sci::new(editor),
@@ -252,8 +255,9 @@ impl App {
             dragging_panel: Cell::new(false),
             find: FindBar::create(hwnd, instance),
             palette,
-            settings: Settings::load(),
-            worker: Worker::new(hwnd),
+            compare: Compare::create(hwnd, instance, &palette, settings.editor.font_size_fraction(), worker.clone()),
+            settings,
+            worker,
             repos: RefCell::new(Vec::new()),
             colors: RefCell::new(FileColors::default()),
             heads: RefCell::new(HashMap::new()),
@@ -367,44 +371,12 @@ impl App {
         sci.call(SCI_INDICSETUNDER, find::INDICATOR, 1);
     }
 
-    /// Gli stili sono della vista: si riapplicano a ogni cambio di tab, perché ogni lexer numera gli stili a modo suo.
     fn apply_styles(&self, language: &Language) {
-        let sci = &self.sci;
-        let palette = &self.palette;
-        sci.call_str(SCI_STYLESETFONT, STYLE_DEFAULT, "Cascadia Mono");
-        sci.call(SCI_STYLESETSIZEFRACTIONAL, STYLE_DEFAULT, self.settings.editor.font_size_fraction());
-        sci.call(SCI_STYLESETFORE, STYLE_DEFAULT, palette.fg as isize);
-        sci.call(SCI_STYLESETBACK, STYLE_DEFAULT, palette.editor as isize);
-        sci.call(SCI_STYLECLEARALL, 0, 0);
-        sci.call(SCI_STYLESETFORE, STYLE_LINENUMBER, palette.muted as isize);
-        sci.call(SCI_STYLESETBACK, STYLE_LINENUMBER, palette.editor as isize);
-        sci.call(SCI_STYLESETFORE, STYLE_INDENTGUIDE, palette.border as isize);
-        sci.call(SCI_STYLESETFORE, STYLE_BRACELIGHT, palette.accent as isize);
-        sci.call(SCI_STYLESETBOLD, STYLE_BRACELIGHT, 1);
-        sci.call(SCI_STYLESETFORE, STYLE_BRACEBAD, palette.danger as isize);
-        for &(style, role) in language.styles {
-            sci.style(style, role.color(palette));
-            if role.italic() {
-                sci.call(SCI_STYLESETITALIC, style, 1);
-            }
-        }
-        let width = sci.call_str(SCI_TEXTWIDTH, STYLE_LINENUMBER, "_99999");
-        sci.call(SCI_SETMARGINWIDTHN, 0, width);
+        lang::apply_styles(&self.sci, language, &self.palette, self.settings.editor.font_size_fraction());
     }
 
     fn set_language(&self, language: &'static Language) {
-        let lexer = language.lexer.map_or(std::ptr::null_mut(), |name| {
-            let name = std::ffi::CString::new(name).unwrap_or_default();
-            // SAFETY: nome valido; il documento prende possesso del lexer restituito.
-            unsafe { steroitor_create_lexer(name.as_ptr()) }
-        });
-        self.sci.call(SCI_SETILEXER, 0, lexer as isize);
-        for (index, keywords) in language.keywords.iter().enumerate() {
-            self.sci.call_str(SCI_SETKEYWORDS, index, keywords);
-        }
-        for (key, value) in language.properties {
-            self.sci.set_property(key, value);
-        }
+        lang::set_lexer(&self.sci, language);
     }
 
     /// Crea il documento Scintilla, lo rende attivo e lo aggiunge come nuova tab.
@@ -778,6 +750,9 @@ impl App {
     pub fn shortcut(&self, msg: &MSG) -> bool {
         // SAFETY: lettura dello stato della tastiera e del focus del thread.
         let (ctrl, shift, focus) = unsafe { (GetKeyState(VK_CONTROL as i32) < 0, GetKeyState(VK_SHIFT as i32) < 0, GetFocus()) };
+        if self.compare.owns(focus) {
+            return self.compare.key(msg);
+        }
         let key = msg.wParam as u16;
         if let Some(handled) = self.terminal_key(focus, msg, ctrl, shift) {
             return handled;
@@ -803,6 +778,10 @@ impl App {
         }
         if focus == self.panel.message && ctrl && key == VK_RETURN {
             self.commit(false);
+            return true;
+        }
+        if ctrl && !shift && key == 0x44 && (focus == self.panel.log.hwnd || focus == self.panel.files.hwnd) {
+            self.show_diff(focus);
             return true;
         }
         if ctrl && !shift && key == 0x54 && self.panel.owns(focus) {
@@ -1238,6 +1217,7 @@ impl App {
                         self.update_markers();
                     }
                 }
+                Event::Compare(loaded) => self.compare.on_loaded(loaded),
                 Event::Finished(root, result) => {
                     if let Err(error) = result {
                         message_box(self.hwnd, &error, MB_ICONERROR);
@@ -1471,6 +1451,8 @@ impl App {
         let Some(root) = self.panel.root.borrow().clone() else { return };
         let Some(hash) = self.panel.commits.borrow().get(index).map(|commit| commit.hash.clone()) else { return };
         let entries = [
+            (LOG_SHOW_CHANGES, "Mostra modifiche	Ctrl+D"),
+            (0, ""),
             (LOG_CHECKOUT, "Checkout"),
             (LOG_BRANCH, "Nuovo branch da qui…"),
             (LOG_TAG, "Crea tag…"),
@@ -1508,6 +1490,7 @@ impl App {
                 }
             }
             LOG_COPY_HASH => copy_to_clipboard(self.hwnd, &hash),
+            LOG_SHOW_CHANGES => self.show_commit_changes(index),
             _ => {}
         }
     }
@@ -1525,16 +1508,61 @@ impl App {
         match event {
             ListEvent::Toggle => self.panel.toggle(index),
             ListEvent::Select if self.panel.on_checkbox(|value| self.scale(value)) => self.panel.toggle(index),
-            ListEvent::Activate => {
-                let path = self.panel.changes.borrow().get(index).map(|file| PathBuf::from(&file.path));
-                if let Some(path) = path.filter(|path| path.is_file()) {
-                    self.open(&path);
-                }
-            }
+            ListEvent::Activate if self.conflicted(index) => self.show_file_diff(index),
+            ListEvent::Activate => self.open_change(index),
+            ListEvent::Menu => self.file_menu(index),
             _ => {}
         }
         // SAFETY: area del pannello nella finestra principale (contatore dei file selezionati).
         unsafe { InvalidateRect(self.hwnd, &self.panel_rect(), 0) };
+    }
+
+    fn conflicted(&self, index: usize) -> bool {
+        self.panel.changes.borrow().get(index).is_some_and(|file| file.status == FileStatus::Conflict)
+    }
+
+    fn open_change(&self, index: usize) {
+        let path = self.panel.changes.borrow().get(index).map(|file| PathBuf::from(&file.path));
+        if let Some(path) = path.filter(|path| path.is_file()) {
+            self.open(&path);
+        }
+    }
+
+    /// Diff del file rispetto a HEAD, o merge a 3 vie se è in conflitto.
+    fn show_file_diff(&self, index: usize) {
+        let Some(root) = self.panel.root.borrow().clone() else { return };
+        let Some(path) = self.panel.changes.borrow().get(index).map(|file| PathBuf::from(&file.path)) else { return };
+        if self.conflicted(index) {
+            self.compare.show_merge(&root, &path, self.font.get());
+        } else {
+            self.compare.show_file(&root, &path, self.font.get());
+        }
+    }
+
+    fn show_commit_changes(&self, index: usize) {
+        let Some(root) = self.panel.root.borrow().clone() else { return };
+        let Some((hash, subject)) = self.panel.commits.borrow().get(index).map(|commit| (commit.hash.clone(), commit.subject.clone())) else { return };
+        self.compare.show_commit(&root, &hash, &subject, self.font.get());
+    }
+
+    /// Ctrl+D col focus nel log (modifiche del commit) o nella lista del Commit (diff del file).
+    fn show_diff(&self, focus: HWND) {
+        if focus == self.panel.log.hwnd {
+            if let Some(index) = self.panel.log.selected() {
+                self.show_commit_changes(index);
+            }
+        } else if let Some(index) = self.panel.files.selected() {
+            self.show_file_diff(index);
+        }
+    }
+
+    fn file_menu(&self, index: usize) {
+        let diff = if self.conflicted(index) { "Risolvi conflitti…" } else { "Mostra diff\tCtrl+D" };
+        match popup_menu(self.hwnd, &[(FILE_DIFF, diff), (FILE_OPEN, "Apri nell'editor")]) {
+            FILE_DIFF => self.show_file_diff(index),
+            FILE_OPEN => self.open_change(index),
+            _ => {}
+        }
     }
 
     fn panel_height(&self) -> i32 {
