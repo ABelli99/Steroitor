@@ -15,6 +15,7 @@ use crate::dialogs::wide;
 use crate::list::{List, RowPaint};
 use crate::paint::{fill, frame, text, text_width};
 use crate::sci::*;
+use crate::terminal::Terminal;
 use crate::theme::Palette;
 
 pub const HEADER: i32 = 28;
@@ -41,6 +42,15 @@ pub enum Button {
     CommitAndPush,
 }
 
+/// Sotto-tab della Console: il log dei comandi git, un terminale (o la sua ×), il pulsante per aprirne uno.
+#[derive(Clone, Copy, PartialEq)]
+pub enum ConsoleTarget {
+    Log,
+    Terminal(u32),
+    Close(u32),
+    New,
+}
+
 pub struct ChangedFile {
     pub path: String,
     pub relative: String,
@@ -63,7 +73,12 @@ pub struct Panel {
     pub changes: RefCell<Vec<ChangedFile>>,
     /// Repository mostrato da log e commit.
     pub root: RefCell<Option<PathBuf>>,
+    pub terminals: RefCell<Vec<Terminal>>,
+    /// Terminale mostrato nella Console; None è il log dei comandi git.
+    pub view: Cell<Option<u32>>,
+    pub next_terminal: Cell<u32>,
     tabs: RefCell<Vec<(RECT, Tab)>>,
+    console_tabs: RefCell<Vec<(RECT, ConsoleTarget)>>,
     buttons: RefCell<Vec<(RECT, Button)>>,
 }
 
@@ -125,7 +140,11 @@ impl Panel {
             graph: RefCell::new(Vec::new()),
             changes: RefCell::new(Vec::new()),
             root: RefCell::new(None),
+            terminals: RefCell::new(Vec::new()),
+            view: Cell::new(None),
+            next_terminal: Cell::new(1),
             tabs: RefCell::new(Vec::new()),
+            console_tabs: RefCell::new(Vec::new()),
             buttons: RefCell::new(Vec::new()),
         }
     }
@@ -153,7 +172,15 @@ impl Panel {
                 }
             }
         };
-        place(self.console.hwnd, visible && tab == Tab::Console, body);
+        let console = visible && tab == Tab::Console;
+        place(self.console.hwnd, console && self.view.get().is_none(), body);
+        for terminal in self.terminals.borrow().iter() {
+            let shown = console && self.view.get() == Some(terminal.id);
+            place(terminal.sci.hwnd, shown, body);
+            if shown {
+                terminal.fit();
+            }
+        }
         place(self.log.hwnd, visible && tab == Tab::Git, body);
         let commit = visible && tab == Tab::Commit;
         let message_top = body.bottom - scale(BUTTON_ROW) - scale(MESSAGE_HEIGHT);
@@ -179,6 +206,40 @@ impl Panel {
             tabs.push((area, tab));
             left += width;
         }
+        let mut console_tabs = Vec::new();
+        if self.tab.get() == Tab::Console {
+            fill(dc, &RECT { left: left + scale(6), top: header.top + scale(7), right: left + scale(7), bottom: header.bottom - scale(7) }, palette.border);
+            left += scale(12);
+            let mut targets = vec![("Comandi git".to_owned(), ConsoleTarget::Log)];
+            targets.extend(self.terminals.borrow().iter().map(|terminal| {
+                let title = if terminal.exited.get() { format!("{} (terminato)", terminal.title) } else { terminal.title.clone() };
+                (title, ConsoleTarget::Terminal(terminal.id))
+            }));
+            targets.push(("+".to_owned(), ConsoleTarget::New));
+            for (label, target) in targets {
+                let close = matches!(target, ConsoleTarget::Terminal(_));
+                let width = text_width(dc, &label) + scale(if close { 36 } else { 20 });
+                let area = RECT { left, top: header.top, right: left + width, bottom: header.bottom };
+                let active = match target {
+                    ConsoleTarget::Log => self.view.get().is_none(),
+                    ConsoleTarget::Terminal(id) => self.view.get() == Some(id),
+                    _ => false,
+                };
+                if active {
+                    fill(dc, &RECT { top: area.bottom - scale(2), ..area }, palette.muted);
+                }
+                let label_area = RECT { left: area.left + scale(10), right: area.right - scale(if close { 26 } else { 10 }), ..area };
+                text(dc, &label, &label_area, if active { palette.fg } else { palette.muted }, DT_LEFT);
+                console_tabs.push((area, target));
+                if let ConsoleTarget::Terminal(id) = target {
+                    let cross = RECT { left: area.right - scale(24), right: area.right - scale(6), ..area };
+                    text(dc, "×", &cross, palette.muted, DT_CENTER);
+                    console_tabs.insert(console_tabs.len() - 1, (cross, ConsoleTarget::Close(id)));
+                }
+                left += width;
+            }
+        }
+        *self.console_tabs.borrow_mut() = console_tabs;
         if let Some(root) = self.root.borrow().as_ref() {
             let name = root.file_name().map_or_else(|| root.display().to_string(), |name| name.to_string_lossy().into_owned());
             let area = RECT { left, right: rect.right - scale(12), ..header };
@@ -212,6 +273,21 @@ impl Panel {
 
     pub fn tab_at(&self, x: i32, y: i32) -> Option<Tab> {
         self.tabs.borrow().iter().find(|(r, _)| x >= r.left && x < r.right && y >= r.top && y < r.bottom).map(|(_, tab)| *tab)
+    }
+
+    /// La × viene prima del suo tab nella lista, così vince sul clic.
+    pub fn console_target_at(&self, x: i32, y: i32) -> Option<ConsoleTarget> {
+        self.console_tabs.borrow().iter().find(|(r, _)| x >= r.left && x < r.right && y >= r.top && y < r.bottom).map(|(_, target)| *target)
+    }
+
+    /// Il controllo che riceve il focus nella Console: il terminale scelto o il log.
+    pub fn console_focus(&self) -> HWND {
+        let view = self.view.get();
+        self.terminals.borrow().iter().find(|terminal| Some(terminal.id) == view).map_or(self.console.hwnd, |terminal| terminal.sci.hwnd)
+    }
+
+    pub fn terminal_at(&self, hwnd: HWND) -> Option<usize> {
+        self.terminals.borrow().iter().position(|terminal| terminal.sci.hwnd == hwnd)
     }
 
     pub fn button_at(&self, x: i32, y: i32) -> Option<Button> {

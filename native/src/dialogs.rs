@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use windows_sys::core::GUID;
 use windows_sys::Win32::Foundation::{GlobalFree, HWND};
 use windows_sys::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
-use windows_sys::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+use windows_sys::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData};
 use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows_sys::Win32::UI::Controls::Dialogs::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MESSAGEBOX_RESULT, MESSAGEBOX_STYLE};
@@ -134,5 +134,25 @@ pub fn copy_to_clipboard(owner: HWND, text: &str) {
             }
         }
         CloseClipboard();
+    }
+}
+
+pub fn clipboard_text(owner: HWND) -> Option<String> {
+    // SAFETY: la memoria degli appunti si legge solo tra GlobalLock e GlobalUnlock, ad appunti aperti.
+    unsafe {
+        if OpenClipboard(owner) == 0 {
+            return None;
+        }
+        let memory = GetClipboardData(CF_UNICODETEXT as u32);
+        let source = if memory.is_null() { std::ptr::null() } else { GlobalLock(memory) as *const u16 };
+        let text = (!source.is_null()).then(|| {
+            let length = (0..).take_while(|&index| *source.add(index) != 0).count();
+            String::from_utf16_lossy(std::slice::from_raw_parts(source, length))
+        });
+        if !source.is_null() {
+            GlobalUnlock(memory);
+        }
+        CloseClipboard();
+        text
     }
 }

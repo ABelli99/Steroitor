@@ -12,7 +12,9 @@ mod panel;
 mod prompt;
 mod sci;
 mod session;
+mod terminal;
 mod theme;
+mod vt;
 
 use std::path::PathBuf;
 

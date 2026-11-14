@@ -30,10 +30,11 @@ use crate::git::{line_changes, repo_of, Event, FileColors, Repo, Worker, WM_COMM
 use crate::lang::{self, Language};
 use crate::list::{decode_event, ListEvent, RowPaint, WM_LIST_EVENT, WM_LIST_PAINT};
 use crate::paint::{fill, text, text_width};
-use crate::panel::{self, Panel, Tab};
+use crate::panel::{self, ConsoleTarget, Panel, Tab};
 use crate::prompt::prompt;
 use crate::sci::*;
 use crate::session::{Session, Settings};
+use crate::terminal::{Terminal, WM_TERMINAL_EXIT, WM_TERMINAL_OUTPUT};
 use crate::theme::{system_palette, Palette};
 
 extern "C" {
@@ -778,6 +779,9 @@ impl App {
         // SAFETY: lettura dello stato della tastiera e del focus del thread.
         let (ctrl, shift, focus) = unsafe { (GetKeyState(VK_CONTROL as i32) < 0, GetKeyState(VK_SHIFT as i32) < 0, GetFocus()) };
         let key = msg.wParam as u16;
+        if let Some(handled) = self.terminal_key(focus, msg, ctrl, shift) {
+            return handled;
+        }
         if msg.message == WM_SYSKEYDOWN {
             match key {
                 0x31 => self.toggle_explorer(),
@@ -855,9 +859,33 @@ impl App {
             (0x46, false) => self.open_find(false),
             (0x48, false) => self.open_find(true),
             (0x4B, true) => self.push(),
+            (0x54, false) => self.new_terminal(),
             _ => return false,
         }
         true
+    }
+
+    /// Col focus in un terminale i tasti vanno alla shell, tranne le scorciatoie dell'app che lì servono:
+    /// Alt+1/Z/`/9, Alt+F4, Ctrl+K (commit, con Shift push, con Alt commit e push), Ctrl+T, Ctrl+Tab. None le lascia all'app.
+    fn terminal_key(&self, focus: HWND, msg: &MSG, ctrl: bool, shift: bool) -> Option<bool> {
+        let index = self.panel.terminal_at(focus)?;
+        let terminals = self.panel.terminals.borrow();
+        let terminal = &terminals[index];
+        let key = msg.wParam as u16;
+        match msg.message {
+            WM_CHAR => terminal.char(key, false),
+            WM_SYSCHAR => terminal.char(key, true),
+            WM_SYSKEYDOWN if matches!(key, 0x31 | 0x5A | 0xC0 | 0x39 | VK_F4) => return None,
+            WM_SYSKEYDOWN => return Some(terminal.key_down(self.hwnd, key, ctrl, shift, true)),
+            WM_KEYDOWN if ctrl && matches!(key, 0x4B | 0x54 | VK_TAB) => return None,
+            WM_KEYDOWN => {
+                // SAFETY: lettura dello stato della tastiera del thread.
+                let alt = unsafe { GetKeyState(VK_MENU as i32) < 0 };
+                return Some(terminal.key_down(self.hwnd, key, ctrl, shift, alt));
+            }
+            _ => return None,
+        }
+        Some(true)
     }
 
     /// Bordo destro dell'explorer in pixel reali (0 se nascosto); la larghezza è salvata in pixel a 96 DPI.
@@ -1323,12 +1351,69 @@ impl App {
         self.sync_panel();
         self.layout();
         let focus = match tab {
-            Tab::Console => self.panel.console.hwnd,
+            Tab::Console => self.panel.console_focus(),
             Tab::Git => self.panel.log.hwnd,
             Tab::Commit => self.panel.message,
         };
         // SAFETY: controllo valido.
         unsafe { SetFocus(focus) };
+    }
+
+    /// Ctrl+T fuori dai pannelli Git: un nuovo terminale nella cartella del progetto, con il focus.
+    fn new_terminal(&self) {
+        let shell = match steroitor_core::shells::resolve(Some(&self.settings.terminal_shell).filter(|id| !id.is_empty()).map(String::as_str)) {
+            Ok(shell) => shell,
+            Err(error) => {
+                message_box(self.hwnd, &error, MB_ICONERROR);
+                return;
+            }
+        };
+        let id = self.panel.next_terminal.get();
+        self.panel.next_terminal.set(id + 1);
+        let cwd = self.explorer.root().or_else(|| self.active_repo_root());
+        // SAFETY: istanza del modulo che ha creato la finestra principale.
+        let instance = unsafe { GetWindowLongPtrW(self.hwnd, GWLP_HINSTANCE) } as HINSTANCE;
+        match Terminal::open(self.hwnd, instance, &self.palette, id, &shell, cwd.as_deref()) {
+            Ok(terminal) => self.panel.terminals.borrow_mut().push(terminal),
+            Err(error) => {
+                message_box(self.hwnd, &error, MB_ICONERROR);
+                return;
+            }
+        }
+        self.panel.view.set(Some(id));
+        self.show_panel(Tab::Console);
+    }
+
+    fn close_terminal(&self, id: u32) {
+        let mut terminals = self.panel.terminals.borrow_mut();
+        let Some(index) = terminals.iter().position(|terminal| terminal.id == id) else { return };
+        terminals.remove(index).close();
+        if self.panel.view.get() == Some(id) {
+            self.panel.view.set(terminals.get(index.min(terminals.len().saturating_sub(1))).map(|terminal| terminal.id));
+        }
+        drop(terminals);
+        self.show_panel(Tab::Console);
+    }
+
+    fn on_console_target(&self, target: ConsoleTarget) {
+        match target {
+            ConsoleTarget::Log => {
+                self.panel.view.set(None);
+                self.show_panel(Tab::Console);
+            }
+            ConsoleTarget::Terminal(id) => {
+                self.panel.view.set(Some(id));
+                self.show_panel(Tab::Console);
+            }
+            ConsoleTarget::Close(id) => self.close_terminal(id),
+            ConsoleTarget::New => self.new_terminal(),
+        }
+    }
+
+    fn with_terminal(&self, id: u32, action: impl FnOnce(&Terminal)) {
+        if let Some(terminal) = self.panel.terminals.borrow().iter().find(|terminal| terminal.id == id) {
+            action(terminal);
+        }
     }
 
     /// Alt+9 e simili: apre la tab, o chiude il pannello se è già quella mostrata.
@@ -1485,6 +1570,9 @@ impl App {
         if self.panel.visible.get() && contains(&self.panel_rect(), x, y) {
             if let Some(tab) = self.panel.tab_at(x, y) {
                 return self.show_panel(tab);
+            }
+            if let Some(target) = self.panel.console_target_at(x, y) {
+                return self.on_console_target(target);
             }
             match self.panel.button_at(x, y) {
                 Some(panel::Button::Commit) => self.commit(false),
@@ -1719,6 +1807,15 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             app.on_git_events();
             0
         }
+        WM_TERMINAL_OUTPUT => {
+            app.with_terminal(wparam as u32, Terminal::on_output);
+            0
+        }
+        WM_TERMINAL_EXIT => {
+            app.with_terminal(wparam as u32, |terminal| terminal.on_exit(lparam as u32));
+            app.invalidate();
+            0
+        }
         WM_COMMAND_LOGGED => {
             app.panel.append_console(&app.worker.take_log());
             0
@@ -1761,6 +1858,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             0
         }
         WM_DESTROY => {
+            app.panel.terminals.borrow_mut().drain(..).for_each(|terminal| terminal.close());
             PostQuitMessage(0);
             0
         }

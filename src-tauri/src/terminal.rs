@@ -132,7 +132,7 @@ pub fn terminal_open(
     rows: u16,
 ) -> Result<OpenedTerminal, String> {
     let shell = shells::resolve(shell.as_deref())?;
-    let Spawned { session, mut reader, mut child } = spawn(window.label(), shell.command(), cwd.as_deref(), cols, rows)?;
+    let Spawned { session, mut reader, mut child } = spawn(window.label(), shells::command(&shell), cwd.as_deref(), cols, rows)?;
     let app = window.app_handle().clone();
     let label = window.label().to_owned();
     let id = terminals.next_id.fetch_add(1, Ordering::Relaxed) + 1;

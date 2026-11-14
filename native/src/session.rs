@@ -65,6 +65,8 @@ pub struct Settings {
     pub editor: EditorStyle,
     /// "merge" (default) o "rebase", per il pull.
     pub update_method: String,
+    /// Id della shell scelta (`pwsh`, `cmd`, `git-bash`, …); vuoto per la prima trovata.
+    pub terminal_shell: String,
 }
 
 impl Settings {
