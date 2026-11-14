@@ -3,6 +3,7 @@
 //! valgono subito; il server parte al primo file che lo richiede e si chiude quando non serve più.
 mod doc_popup;
 mod inline_html;
+mod navigation;
 mod process;
 mod protocol;
 mod script_names;
@@ -132,6 +133,28 @@ fn option(settings: &Settings, path: Option<&Path>, option: &str) -> Option<usiz
     let plugin = plugin_for(path?)?;
     let id = PLUGINS[plugin].id;
     (settings.plugin_enabled(id) && settings.plugin_option(id, option)).then_some(plugin)
+}
+
+pub use navigation::Jump;
+
+/// Ctrl+click e Ctrl+B senza server: nei file del plugin JavaScript/TypeScript e negli HTML, con il plugin attivo.
+fn navigable<'a>(settings: &Settings, path: Option<&'a Path>) -> Option<&'a Path> {
+    let path = path?;
+    let extension = path.extension()?.to_string_lossy().to_lowercase();
+    let script = PLUGINS[0].languages.iter().any(|(_, extensions)| extensions.contains(&extension.as_str()));
+    (settings.plugin_enabled(PLUGINS[0].id) && (script || extension == "html" || extension == "htm")).then_some(path)
+}
+
+/// Il simbolo da sottolineare sotto il mouse con Ctrl premuto.
+pub fn link_at(settings: &Settings, path: Option<&Path>, text: &str, position: usize) -> Option<std::ops::Range<usize>> {
+    navigable(settings, path)?;
+    navigation::target_at(text, position).map(|(range, _)| range)
+}
+
+/// Dove porta il simbolo in `position`; None se non si trova (si prova con il server o nel file).
+pub fn jump(settings: &Settings, path: Option<&Path>, text: &str, position: usize) -> Option<Jump> {
+    let path = navigable(settings, path)?;
+    navigation::jump(path, text, position, &servers::script_root(path))
 }
 
 /// (riga, colonna UTF-16) dell'offset in byte, come le vogliono i server.

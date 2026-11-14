@@ -79,6 +79,7 @@ const VCS_BRANCH_FROM: usize = 9000;
 const SHELL_NEW: usize = 100;
 const SHELL_DEFAULT: usize = 200;
 const EDIT_DECLARATION: usize = 1;
+const LINK_INDICATOR: usize = 24;
 const EDIT_CUT: usize = 2;
 const EDIT_COPY: usize = 3;
 const EDIT_PASTE: usize = 4;
@@ -246,6 +247,8 @@ pub struct App {
     worker: Worker,
     compare: &'static Compare,
     plugins: Host,
+    /// Simbolo sottolineato con Ctrl premuto (inizio, fine).
+    link: Cell<Option<(usize, usize)>>,
     repos: RefCell<Vec<Repo>>,
     colors: RefCell<FileColors>,
     /// Contenuto in HEAD dei file aperti (None = non tracciato), per i marker nel gutter.
@@ -500,6 +503,7 @@ impl App {
             settings: RefCell::new(settings),
             worker,
             plugins: Host::new(hwnd, crate::session::data_dir(), palette),
+            link: Cell::new(None),
             repos: RefCell::new(Vec::new()),
             colors: RefCell::new(FileColors::default()),
             heads: RefCell::new(HashMap::new()),
@@ -675,6 +679,9 @@ impl App {
         sci.call(SCI_INDICSETOUTLINEALPHA, find::INDICATOR, 160);
         sci.call(SCI_INDICSETUNDER, find::INDICATOR, 1);
         Host::configure(sci, palette);
+        sci.call(SCI_INDICSETSTYLE, LINK_INDICATOR, INDIC_PLAIN);
+        sci.call(SCI_INDICSETFORE, LINK_INDICATOR, palette.accent as isize);
+        crate::definition_link::attach(sci.hwnd, self.hwnd);
     }
 
     /// Le funzioni dei plugin vogliono editor, impostazioni e percorso della tab attiva.
@@ -1079,8 +1086,20 @@ impl App {
         text
     }
 
-    /// Ctrl+B (come IntelliJ): dichiarazione del simbolo sotto il cursore, dal server del plugin o cercandola nel file.
+    /// Ctrl+B (come IntelliJ): dichiarazione del simbolo sotto il cursore. Prima come la versione Tauri (nel file,
+    /// nel modulo importato, nel componente del tag), poi dal server del plugin o cercandola nel file.
     fn go_to_declaration(&self) {
+        let caret = self.sci.call(SCI_GETCURRENTPOS, 0, 0) as usize;
+        let jump = plugins::jump(&self.settings.borrow(), self.active_path().as_deref(), &self.sci.text(), caret);
+        match jump {
+            Some(plugins::Jump::Here(offset)) => {
+                self.sci.call(SCI_GOTOPOS, offset, 0);
+                self.center_line(self.sci.call(SCI_LINEFROMPOSITION, offset, 0).max(0) as usize);
+                return;
+            }
+            Some(plugins::Jump::File(path, position)) => return self.navigate(&path, position),
+            None => {}
+        }
         let mut asked = false;
         self.with_plugins(|plugins, sci, settings, path| asked = plugins.definition(sci, settings, path));
         if !asked {
@@ -1097,6 +1116,47 @@ impl App {
         if let Some(found) = plugins::local_declaration(&text, word) {
             self.sci.call(SCI_SETSEL, found, (found + word.len()) as isize);
             self.center_line(self.sci.call(SCI_LINEFROMPOSITION, found, 0).max(0) as usize);
+        }
+    }
+
+    /// Ctrl+mouse sull'editor (vedi `definition_link`): restituisce 1 se il clic va alla dichiarazione.
+    fn on_editor_link(&self, action: usize, lparam: LPARAM) -> LRESULT {
+        use crate::definition_link::{ACTIVE, CLICK, HOVER};
+        if action == ACTIVE {
+            return LRESULT::from(self.link.get().is_some());
+        }
+        let (x, y) = ((lparam & 0xFFFF) as i16 as isize, ((lparam >> 16) & 0xFFFF) as i16 as isize);
+        let position = self.sci.call(SCI_POSITIONFROMPOINTCLOSE, x as usize, y);
+        let range = if action == HOVER || action == CLICK {
+            let text = self.sci.text();
+            (position >= 0).then(|| plugins::link_at(&self.settings.borrow(), self.active_path().as_deref(), &text, position as usize)).flatten()
+        } else {
+            None
+        };
+        let range = range.map(|range| (range.start, range.end));
+        if action == CLICK {
+            self.set_link(None);
+            let Some((start, _)) = range else { return 0 };
+            self.sci.call(SCI_SETEMPTYSELECTION, start, 0);
+            self.go_to_declaration();
+            self.focus_editor();
+            return 1;
+        }
+        self.set_link(range);
+        0
+    }
+
+    fn set_link(&self, range: Option<(usize, usize)>) {
+        if self.link.get() == range {
+            return;
+        }
+        if let Some((start, end)) = self.link.replace(range) {
+            self.sci.call(SCI_SETINDICATORCURRENT, LINK_INDICATOR, 0);
+            self.sci.call(SCI_INDICATORCLEARRANGE, start, (end - start) as isize);
+        }
+        if let Some((start, end)) = range {
+            self.sci.call(SCI_SETINDICATORCURRENT, LINK_INDICATOR, 0);
+            self.sci.call(SCI_INDICATORFILLRANGE, start, (end - start) as isize);
         }
     }
 
@@ -3712,6 +3772,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             }
             0
         }
+        crate::definition_link::WM_EDITOR_LINK => app.on_editor_link(wparam, lparam),
         WM_MINIMAP_LINE => {
             app.center_line(wparam);
             0

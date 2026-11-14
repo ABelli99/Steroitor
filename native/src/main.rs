@@ -3,6 +3,7 @@
 mod app;
 mod clone_dialog;
 mod compare;
+mod definition_link;
 mod dialogs;
 mod diff;
 mod explorer;

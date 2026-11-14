@@ -14,16 +14,16 @@ const TYPE_LINKS: [&str; 8] = ["extends", "implements", "keyof", "typeof", "read
 const GENERIC_LOOKAHEAD: usize = 64;
 
 #[derive(Clone, Copy, PartialEq)]
-enum Kind {
+pub(super) enum Kind {
     Word,
     Value,
     Punct(u8),
 }
 
-struct Token {
-    range: Range<usize>,
-    kind: Kind,
-    line_break: bool,
+pub(super) struct Token {
+    pub range: Range<usize>,
+    pub kind: Kind,
+    pub line_break: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -39,13 +39,21 @@ struct TypeMode {
     start: usize,
     depth: u32,
     lists: bool,
+    /// Il nome che segue dichiara una classe o un tipo, con il suo rango (`CLASS`, `DECLARATION`).
+    declares: Option<u8>,
 }
+
+/// Rango delle dichiarazioni per Vai alla dichiarazione, come nella versione Tauri: vince la classe, poi i membri.
+pub const CLASS: u8 = 0;
+pub const MEMBER: u8 = 1;
+pub const DECLARATION: u8 = 2;
+const DECLARING: [&str; 4] = ["const", "let", "var", "function"];
 
 fn is_word(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$' || byte >= 0x80
 }
 
-fn tokens(bytes: &[u8]) -> Vec<Token> {
+pub(super) fn tokens(bytes: &[u8]) -> Vec<Token> {
     let mut list = Vec::new();
     let mut index = 0;
     let mut line_break = false;
@@ -101,9 +109,18 @@ fn generic_call(tokens: &[Token], open: usize) -> bool {
 }
 
 pub fn spans(text: &str) -> Vec<(Range<usize>, Role)> {
+    scan(text).0
+}
+
+/// Nomi dichiarati nel testo: classi e tipi, membri delle classi, `const`/`let`/`var`/`function`, con il rango.
+pub fn declarations(text: &str) -> Vec<(Range<usize>, u8)> {
+    scan(text).1
+}
+
+fn scan(text: &str) -> (Vec<(Range<usize>, Role)>, Vec<(Range<usize>, u8)>) {
     let bytes = text.as_bytes();
     if bytes.len() > MAX_LENGTH {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     let keywords: HashSet<&str> = JS_KEYWORDS.split(' ').collect();
     let tokens = tokens(bytes);
@@ -117,12 +134,13 @@ pub fn spans(text: &str) -> Vec<(Range<usize>, Role)> {
     let mut class_header = false;
     let mut alias = false;
     let mut spans = Vec::new();
+    let mut declarations = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
         let previous = index.checked_sub(1);
         let prev_punct = previous.and_then(punct);
         let prev_word = previous.and_then(word);
         let next_punct = punct(index + 1);
-        let start_types = |lists| Some(TypeMode { start: index, depth: 0, lists });
+        let start_types = |lists, declares| Some(TypeMode { start: index, depth: 0, lists, declares });
         match token.kind {
             Kind::Value => {}
             Kind::Punct(byte) => {
@@ -166,10 +184,10 @@ pub fn spans(text: &str) -> Vec<(Range<usize>, Role)> {
                     b':' if top.0 != Frame::Object => {
                         let annotated = prev_word.is_some_and(|word| word != "case" && word != "default") || prev_punct.is_some_and(|byte| b")?!]".contains(&byte));
                         if annotated {
-                            types = start_types(false);
+                            types = start_types(false, None);
                         }
                     }
-                    b'=' if std::mem::take(&mut alias) => types = start_types(false),
+                    b'=' if std::mem::take(&mut alias) => types = start_types(false, None),
                     _ => {}
                 }
             }
@@ -182,6 +200,9 @@ pub fn spans(text: &str) -> Vec<(Range<usize>, Role)> {
                     if joined {
                         if !keyword {
                             spans.push((token.range.clone(), Role::Type));
+                            if let Some(rank) = mode.declares.filter(|_| previous == Some(mode.start)) {
+                                declarations.push((token.range.clone(), rank));
+                            }
                         }
                         continue;
                     }
@@ -203,18 +224,21 @@ pub fn spans(text: &str) -> Vec<(Range<usize>, Role)> {
                 let role = if after_dot {
                     Some(if call { Role::Function } else { Role::Property })
                 } else if member_start && (field || (call && !keyword)) {
+                    if frame == Frame::Class {
+                        declarations.push((token.range.clone(), MEMBER));
+                    }
                     Some(Role::Property)
                 } else if keyword {
                     match name {
                         "class" | "interface" | "enum" => {
                             class_header = name != "enum";
-                            types = start_types(true);
+                            types = start_types(true, Some(if name == "class" { CLASS } else { DECLARATION }));
                         }
-                        "extends" | "implements" => types = start_types(true),
-                        "new" | "as" | "satisfies" | "keyof" => types = start_types(false),
+                        "extends" | "implements" => types = start_types(true, None),
+                        "new" | "as" | "satisfies" | "keyof" => types = start_types(false, None),
                         "type" if word(index + 1).is_some() && (previous.is_none() || prev_punct.is_some_and(|byte| b";{}".contains(&byte)) || prev_word.is_some_and(|word| word == "export" || word == "declare") || token.line_break) => {
                             alias = true;
-                            types = start_types(false);
+                            types = start_types(false, Some(DECLARATION));
                         }
                         _ => {}
                     }
@@ -225,7 +249,10 @@ pub fn spans(text: &str) -> Vec<(Range<usize>, Role)> {
                     None
                 };
                 if generic {
-                    types = start_types(false);
+                    types = start_types(false, None);
+                }
+                if !after_dot && !keyword && prev_word.is_some_and(|word| DECLARING.contains(&word)) {
+                    declarations.push((token.range.clone(), DECLARATION));
                 }
                 if let Some(role) = role {
                     spans.push((token.range.clone(), role));
@@ -233,7 +260,7 @@ pub fn spans(text: &str) -> Vec<(Range<usize>, Role)> {
             }
         }
     }
-    spans
+    (spans, declarations)
 }
 
 #[cfg(test)]
