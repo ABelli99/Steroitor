@@ -311,7 +311,7 @@ pub fn edit(owner: HWND, palette: &Palette, font: HFONT, current: &Settings, she
                 saved.insert((*option).into(), *on);
             }
         }
-        Some(Settings { editor, update_method: (if page.rebase { "rebase" } else { "merge" }).into(), terminal_shell, disabled_plugins, plugin_options })
+        Some(Settings { editor, update_method: (if page.rebase { "rebase" } else { "merge" }).into(), terminal_shell, warn_crlf: current.warn_crlf, disabled_plugins, plugin_options })
     }
 }
 

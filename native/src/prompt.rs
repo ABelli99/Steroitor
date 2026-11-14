@@ -6,7 +6,7 @@ use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSI
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus, VK_ESCAPE, VK_RETURN};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetKeyState, SetFocus, VK_CONTROL, VK_ESCAPE, VK_RETURN};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dialogs::wide;
@@ -17,15 +17,16 @@ use crate::theme::Palette;
 const CLASS_NAME: &str = "SteroitorPrompt";
 const WIDTH: i32 = 420;
 const HEIGHT: i32 = 130;
+const MULTILINE_HEIGHT: i32 = 300;
 
 thread_local! {
-    static STATE: Cell<Option<(Palette, *const u16, HBRUSH)>> = const { Cell::new(None) };
+    static STATE: Cell<Option<(Palette, *const u16, HBRUSH, bool)>> = const { Cell::new(None) };
 }
 
 unsafe extern "system" fn prompt_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match message {
         WM_PAINT => {
-            let Some((palette, label, _)) = STATE.with(Cell::get) else { return DefWindowProcW(hwnd, message, wparam, lparam) };
+            let Some((palette, label, _, multiline)) = STATE.with(Cell::get) else { return DefWindowProcW(hwnd, message, wparam, lparam) };
             let mut paint: PAINTSTRUCT = std::mem::zeroed();
             let dc = BeginPaint(hwnd, &mut paint);
             let mut client = RECT { left: 0, top: 0, right: 0, bottom: 0 };
@@ -40,13 +41,14 @@ unsafe extern "system" fn prompt_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             let area = RECT { left: 16 * scale / 96, top: 12 * scale / 96, right: client.right - 16 * scale / 96, bottom: 36 * scale / 96 };
             text(dc, &label, &area, palette.fg, DT_LEFT);
             let hint = RECT { top: client.bottom - 32 * scale / 96, bottom: client.bottom - 8 * scale / 96, ..area };
-            text(dc, "Invio per confermare, Esc per annullare", &hint, palette.muted, DT_LEFT);
+            let hint_text = if multiline { "Ctrl+Invio per confermare, Esc per annullare" } else { "Invio per confermare, Esc per annullare" };
+            text(dc, hint_text, &hint, palette.muted, DT_LEFT);
             SelectObject(dc, previous);
             EndPaint(hwnd, &paint);
             0
         }
         WM_CTLCOLOREDIT => {
-            let Some((palette, _, brush)) = STATE.with(Cell::get) else { return 0 };
+            let Some((palette, _, brush, _)) = STATE.with(Cell::get) else { return 0 };
             SetTextColor(wparam as HDC, palette.fg);
             SetBkColor(wparam as HDC, palette.editor);
             brush as LRESULT
@@ -61,6 +63,16 @@ unsafe extern "system" fn prompt_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
 
 /// Chiede un testo all'utente; None se annulla o lascia il campo vuoto.
 pub fn prompt(owner: HWND, palette: &Palette, font: HFONT, title: &str, label: &str, initial: &str) -> Option<String> {
+    ask(owner, palette, font, title, label, initial, false)
+}
+
+/// Come `prompt`, con un campo su più righe (es. un messaggio di commit): Invio va a capo, Ctrl+Invio conferma.
+pub fn prompt_text(owner: HWND, palette: &Palette, font: HFONT, title: &str, label: &str, initial: &str) -> Option<String> {
+    let initial = initial.replace("\r\n", "\n").replace('\n', "\r\n");
+    ask(owner, palette, font, title, label, &initial, true).map(|text| text.replace("\r\n", "\n"))
+}
+
+fn ask(owner: HWND, palette: &Palette, font: HFONT, title: &str, label: &str, initial: &str, multiline: bool) -> Option<String> {
     let class_name = wide(CLASS_NAME);
     let (title, label, initial) = (wide(title), wide(label), wide(initial));
     // SAFETY: finestra modale creata, usata e distrutta qui; il proprietario è disabilitato per tutta la durata.
@@ -76,10 +88,10 @@ pub fn prompt(owner: HWND, palette: &Palette, font: HFONT, title: &str, label: &
         };
         RegisterClassExW(&class);
         let brush = CreateSolidBrush(palette.editor);
-        STATE.with(|state| state.set(Some((*palette, label.as_ptr(), brush))));
+        STATE.with(|state| state.set(Some((*palette, label.as_ptr(), brush, multiline))));
 
         let scale = GetDpiForWindow(owner) as i32;
-        let (width, height) = (WIDTH * scale / 96, HEIGHT * scale / 96);
+        let (width, height) = (WIDTH * scale / 96, if multiline { MULTILINE_HEIGHT } else { HEIGHT } * scale / 96);
         let mut owner_rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
         GetWindowRect(owner, &mut owner_rect);
         let (left, top) = (owner_rect.left + (owner_rect.right - owner_rect.left - width) / 2, owner_rect.top + (owner_rect.bottom - owner_rect.top - height) / 3);
@@ -90,7 +102,9 @@ pub fn prompt(owner: HWND, palette: &Palette, font: HFONT, title: &str, label: &
         let mut client = RECT { left: 0, top: 0, right: 0, bottom: 0 };
         GetClientRect(hwnd, &mut client);
         let edit_class = wide("EDIT");
-        let edit = CreateWindowExW(0, edit_class.as_ptr(), initial.as_ptr(), WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL as u32, 16 * scale / 96, 40 * scale / 96, client.right - 32 * scale / 96, 26 * scale / 96, hwnd, std::ptr::null_mut(), instance, std::ptr::null());
+        let style = if multiline { WS_VSCROLL | (ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL) as u32 } else { ES_AUTOHSCROLL as u32 };
+        let edit_height = if multiline { client.bottom - 80 * scale / 96 } else { 26 * scale / 96 };
+        let edit = CreateWindowExW(0, edit_class.as_ptr(), initial.as_ptr(), WS_CHILD | WS_VISIBLE | WS_BORDER | style, 16 * scale / 96, 40 * scale / 96, client.right - 32 * scale / 96, edit_height, hwnd, std::ptr::null_mut(), instance, std::ptr::null());
         SendMessageW(edit, WM_SETFONT, font as usize, 0);
         SendMessageW(edit, 0x00B1, 0, -1);
 
@@ -108,8 +122,10 @@ pub fn prompt(owner: HWND, palette: &Palette, font: HFONT, title: &str, label: &
             if msg.hwnd == hwnd && msg.message == WM_APP {
                 break;
             }
-            if msg.message == WM_KEYDOWN && (msg.wParam as u16 == VK_RETURN || msg.wParam as u16 == VK_ESCAPE) {
-                accepted = msg.wParam as u16 == VK_RETURN;
+            let key = msg.wParam as u16;
+            let confirms = key == VK_RETURN && (!multiline || GetKeyState(VK_CONTROL as i32) < 0);
+            if msg.message == WM_KEYDOWN && (confirms || key == VK_ESCAPE) {
+                accepted = confirms;
                 break;
             }
             TranslateMessage(&msg);

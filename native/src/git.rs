@@ -22,7 +22,20 @@ pub enum Event {
     Finished(PathBuf, Result<(), String>),
     Log(PathBuf, Result<Vec<Commit>, String>),
     Committed(PathBuf, Result<(), String>),
+    /// Il commit si è fermato prima di committare: questi file in stage hanno fine riga CRLF.
+    Crlf(PathBuf, Vec<String>, CommitRequest),
+    Cloned(PathBuf, Result<(), String>),
     Compare(crate::compare::Loaded),
+}
+
+/// Cosa committare: file da aggiungere e da togliere dall'index, messaggio, push, amend dell'ultimo commit.
+#[derive(Clone)]
+pub struct CommitRequest {
+    pub files: Vec<String>,
+    pub unstage: Vec<String>,
+    pub message: String,
+    pub push: bool,
+    pub amend: bool,
 }
 
 #[derive(Clone)]
@@ -43,20 +56,30 @@ impl Worker {
         unsafe { PostMessageW(hwnd as HWND, message, 0, 0) };
     }
 
+    /// Git che registra i comandi per la Console.
+    fn git(&self) -> Git {
+        let log = Arc::clone(&self.log);
+        let hwnd = self.hwnd;
+        Git::new(
+            "git",
+            Box::new(move |entry| {
+                if let Ok(mut log) = log.lock() {
+                    log.push(entry);
+                }
+                Self::post(hwnd, WM_COMMAND_LOGGED);
+            }),
+        )
+    }
+
+    /// Comando rapido sul thread della UI, quando serve la risposta prima di continuare (es. il testo di un messaggio).
+    pub fn now<T>(&self, task: impl FnOnce(&Git) -> T) -> T {
+        task(&self.git())
+    }
+
     pub fn spawn(&self, job: impl FnOnce(&Git) -> Event + Send + 'static) {
         let worker = self.clone();
         std::thread::spawn(move || {
-            let log = Arc::clone(&worker.log);
-            let hwnd = worker.hwnd;
-            let git = Git::new(
-                "git",
-                Box::new(move |entry| {
-                    if let Ok(mut log) = log.lock() {
-                        log.push(entry);
-                    }
-                    Self::post(hwnd, WM_COMMAND_LOGGED);
-                }),
-            );
+            let git = worker.git();
             let event = job(&git);
             if let Ok(mut events) = worker.events.lock() {
                 events.push(event);
@@ -78,23 +101,46 @@ impl Worker {
         self.spawn(move |git| Event::Log(root.clone(), git.log_filtered(&root.to_string_lossy(), &LogFilter::default(), 0, LOG_COMMITS)));
     }
 
-    /// Commit dei file indicati: toglie dall'index quelli non scelti, aggiunge gli altri, committa ed eventualmente fa push.
-    pub fn commit(&self, root: &Path, files: Vec<String>, unstage: Vec<String>, message: String, push: bool) {
+    /// Commit dei file indicati: toglie dall'index quelli non scelti, aggiunge gli altri, committa (o fa amend) ed eventualmente push.
+    /// Con `check_crlf` si ferma dopo lo stage se ci sono file con fine riga CRLF, per chiedere all'utente.
+    pub fn commit(&self, root: &Path, request: CommitRequest, check_crlf: bool) {
         let root = root.to_path_buf();
         self.spawn(move |git| {
             let path = root.to_string_lossy().into_owned();
-            let result = (|| {
-                if !unstage.is_empty() {
-                    git.unstage(&path, &unstage)?;
+            let staged = (|| {
+                if !request.unstage.is_empty() {
+                    git.unstage(&path, &request.unstage)?;
                 }
-                git.stage(&path, &files)?;
-                git.commit(&path, &message)?;
-                if push {
+                git.stage(&path, &request.files)?;
+                if check_crlf {
+                    return git.staged_crlf_files(&path);
+                }
+                Ok(Vec::new())
+            })();
+            match staged {
+                Ok(crlf) if !crlf.is_empty() => return Event::Crlf(root, crlf, request),
+                Err(error) => return Event::Committed(root, Err(error)),
+                Ok(_) => {}
+            }
+            let result = (|| {
+                if request.amend {
+                    git.amend(&path, &request.message)?;
+                } else {
+                    git.commit(&path, &request.message)?;
+                }
+                if request.push {
                     git.push(&path)?;
                 }
                 Ok(())
             })();
             Event::Committed(root, result)
+        });
+    }
+
+    pub fn clone_repo(&self, url: String, target: PathBuf) {
+        self.spawn(move |git| {
+            let result = git.clone_repo(&url, &target.to_string_lossy());
+            Event::Cloned(target, result)
         });
     }
 
@@ -172,6 +218,12 @@ impl FileColors {
     }
 }
 
+/// Nome della cartella di un clone: l'ultimo pezzo dell'URL senza `.git`.
+pub fn repo_name(url: &str) -> Option<String> {
+    let name = url.trim().trim_end_matches(['/', '\\']).rsplit(['/', '\\', ':']).next()?.trim_end_matches(".git");
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 /// Repository che contiene `path`: il più interno, per le cartelle con più repository annidati.
 pub fn repo_of<'a>(repos: &'a [Repo], path: &Path) -> Option<&'a Repo> {
     let key = key(path);
@@ -218,6 +270,14 @@ mod tests {
         assert_eq!(changes.added, vec![1]);
         let changes = line_changes("a\nb\nc\n", "a\nc\n");
         assert_eq!(changes.deleted, vec![1]);
+    }
+
+    #[test]
+    fn names_the_clone_after_the_url() {
+        assert_eq!(repo_name("https://github.com/org/steroitor.git").as_deref(), Some("steroitor"));
+        assert_eq!(repo_name("git@github.com:org/tool.git/").as_deref(), Some("tool"));
+        assert_eq!(repo_name("C:\\repos\\local").as_deref(), Some("local"));
+        assert_eq!(repo_name("   "), None);
     }
 
     #[test]

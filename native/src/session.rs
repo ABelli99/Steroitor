@@ -101,6 +101,8 @@ pub struct Settings {
     pub update_method: String,
     /// Id della shell scelta (`pwsh`, `cmd`, `git-bash`, …); vuoto per la prima trovata.
     pub terminal_shell: String,
+    /// Avviso prima di committare file con fine riga CRLF (`warnCrlf` della versione Tauri); assente vale attivo.
+    pub warn_crlf: Option<bool>,
     /// Id dei plugin spenti, come nella versione Tauri.
     pub disabled_plugins: Vec<String>,
     /// Id plugin → id opzione → attiva; un'opzione mai toccata è spenta.
@@ -202,7 +204,7 @@ mod tests {
     fn saving_keeps_the_keys_of_the_tauri_version() {
         let saved = serde_json::json!({"editor": {"fontSize": 12, "other": 1}, "disabledPlugins": ["java"], "pluginOptions": {"java": {"jdtls": true}}, "skippedVersion": "1.2.0"});
         let plugin_options = HashMap::from([("java".to_string(), HashMap::from([("typeCheck".to_string(), true)]))]);
-        let settings = Settings { editor: EditorStyle { font_size: 16.0, use_tabs: true, ..EditorStyle::default() }, update_method: "rebase".into(), terminal_shell: "cmd".into(), disabled_plugins: vec!["javascript".into()], plugin_options };
+        let settings = Settings { editor: EditorStyle { font_size: 16.0, use_tabs: true, ..EditorStyle::default() }, update_method: "rebase".into(), terminal_shell: "cmd".into(), warn_crlf: None, disabled_plugins: vec!["javascript".into()], plugin_options };
         let merged = settings.merge_into(saved);
         assert_eq!(merged["disabledPlugins"][0], "javascript");
         assert_eq!(merged["pluginOptions"]["java"]["jdtls"], true);

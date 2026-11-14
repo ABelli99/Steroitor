@@ -40,6 +40,7 @@ pub enum Tab {
 pub enum Button {
     Commit,
     CommitAndPush,
+    Amend,
 }
 
 /// Sotto-tab della Console: il log dei comandi git, un terminale (o la sua ×), il pulsante per aprirne uno.
@@ -82,6 +83,8 @@ pub struct Panel {
     pub log: List,
     pub files: List,
     pub message: HWND,
+    /// Il prossimo commit modifica l'ultimo (amend).
+    pub amend: Cell<bool>,
     pub commits: RefCell<Vec<Commit>>,
     graph: RefCell<Vec<GraphRow>>,
     pub changes: RefCell<Vec<ChangedFile>>,
@@ -153,6 +156,7 @@ impl Panel {
             log: List::create(parent, instance, palette.editor, palette.dark),
             files: List::create(parent, instance, palette.editor, palette.dark),
             message,
+            amend: Cell::new(false),
             commits: RefCell::new(Vec::new()),
             graph: RefCell::new(Vec::new()),
             changes: RefCell::new(Vec::new()),
@@ -330,6 +334,18 @@ impl Panel {
                 buttons.push((area, button));
                 left += width + scale(8);
             }
+            let size = scale(CHECKBOX);
+            let middle = (row.top + row.bottom) / 2;
+            let check = RECT { left: left + scale(4), top: middle - size / 2, right: left + scale(4) + size, bottom: middle + size / 2 };
+            frame(dc, &check, palette.muted);
+            if self.amend.get() {
+                fill(dc, &RECT { left: check.left + 3, top: check.top + 3, right: check.right - 3, bottom: check.bottom - 3 }, palette.accent);
+            }
+            let label = "Modifica l'ultimo commit";
+            let label_area = RECT { left: check.right + scale(6), right: check.right + scale(6) + text_width(dc, label), ..row };
+            text(dc, label, &label_area, palette.fg, DT_LEFT);
+            buttons.push((RECT { left: check.left, right: label_area.right, ..row }, Button::Amend));
+            left = label_area.right + scale(16);
             let checked = self.changes.borrow().iter().filter(|file| file.checked).count();
             let hint = RECT { left, right: row.right - scale(12), ..row };
             text(dc, &format!("{checked} file selezionati · Ctrl+Invio nel messaggio per il commit"), &hint, palette.muted, DT_LEFT | DT_END_ELLIPSIS);

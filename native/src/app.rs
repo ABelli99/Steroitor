@@ -19,20 +19,20 @@ use windows_sys::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW,
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use steroitor_core::git::history::ResetMode;
-use steroitor_core::git::parse::FileStatus;
+use steroitor_core::git::parse::{FileStatus, Operation};
 use steroitor_core::text::{decode, encode};
 
 use crate::compare::Compare;
 use crate::dialogs::{copy_to_clipboard, message_box, open_files, pick_folder, save_file, wide};
 use crate::explorer::{popup_menu, Action, Explorer};
 use crate::find::{self, window_text, FindBar};
-use crate::git::{line_changes, repo_of, Event, FileColors, Repo, Worker, WM_COMMAND_LOGGED, WM_GIT_EVENT};
+use crate::git::{line_changes, repo_name, repo_of, CommitRequest, Event, FileColors, Repo, Worker, WM_COMMAND_LOGGED, WM_GIT_EVENT};
 use crate::lang::{self, Language};
 use crate::list::{decode_event, ListEvent, RowPaint, WM_LIST_EVENT, WM_LIST_PAINT};
 use crate::paint::{fill, frame, text, text_width};
 use crate::panel::{self, ConsoleTarget, Panel, Tab};
 use crate::plugins::{self, Host};
-use crate::prompt::prompt;
+use crate::prompt::{prompt, prompt_text};
 use crate::sci::*;
 use crate::session::{ProjectSession, Session, Settings};
 use crate::settings_page;
@@ -62,6 +62,8 @@ const MENU_CLOSE_FOLDER: usize = 2;
 const MENU_SETTINGS: usize = 3;
 const MENU_NEW_PROJECT: usize = 4;
 const MENU_CLOSE_PROJECT: usize = 5;
+const MENU_CLONE: usize = 6;
+const MENU_INIT: usize = 7;
 const MARKER_TIMER: usize = 1;
 const MARKER_DELAY_MS: u32 = 300;
 const GIT_MARGIN: usize = 1;
@@ -78,6 +80,7 @@ const LOG_RESET_MIXED: usize = 7;
 const LOG_RESET_HARD: usize = 8;
 const LOG_COPY_HASH: usize = 9;
 const LOG_SHOW_CHANGES: usize = 10;
+const LOG_REWORD: usize = 11;
 const FILE_DIFF: usize = 1;
 const FILE_OPEN: usize = 2;
 const LIST_ROW_HEIGHT: i32 = 24;
@@ -87,6 +90,12 @@ const VCS_FETCH: usize = 3;
 const VCS_NEW_BRANCH: usize = 4;
 const VCS_CHECKOUT: usize = 1000;
 const VCS_MERGE: usize = 3000;
+const VCS_REBASE: usize = 5000;
+const VCS_STASH_POP: usize = 7000;
+const VCS_STASH_DROP: usize = 8000;
+const VCS_CONTINUE: usize = 5;
+const VCS_ABORT: usize = 6;
+const VCS_STASH_PUSH: usize = 7;
 
 struct Doc {
     pointer: isize,
@@ -113,6 +122,15 @@ impl Doc {
             Some(path) => path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned()),
             None => format!("Senza titolo {}", self.untitled),
         }
+    }
+}
+
+fn operation_name(operation: &Operation) -> &'static str {
+    match operation {
+        Operation::Merge => "merge",
+        Operation::Rebase => "rebase",
+        Operation::CherryPick => "cherry-pick",
+        Operation::Revert => "revert",
     }
 }
 
@@ -1434,7 +1452,8 @@ impl App {
                 let name = branch.head.clone().unwrap_or_else(|| format!("HEAD staccato ({})", branch.oid.as_deref().and_then(|oid| oid.get(..7)).unwrap_or("?")));
                 let ahead = if branch.ahead > 0 { format!(" ↑{}", branch.ahead) } else { String::new() };
                 let behind = if branch.behind > 0 { format!(" ↓{}", branch.behind) } else { String::new() };
-                format!("⎇ {name}{ahead}{behind}")
+                let operation = status.operation.as_ref().map_or_else(String::new, |operation| format!("   ⚠ {} in corso", operation_name(operation)));
+                format!("⎇ {name}{ahead}{behind}{operation}")
             })
         };
         match branch {
@@ -1524,9 +1543,25 @@ impl App {
                 Event::Log(_, Err(error)) => {
                     message_box(self.hwnd, &error, MB_ICONERROR);
                 }
+                Event::Crlf(root, files, request) => {
+                    let list = files.iter().take(10).map(|file| format!("  {file}")).collect::<Vec<_>>().join("\n");
+                    let question = format!("Questi file in stage hanno fine riga CRLF:\n{list}\n\nCommittarli così?");
+                    if message_box(self.hwnd, &question, MB_YESNO | MB_ICONWARNING) == IDYES {
+                        self.worker.commit(&root, request, false);
+                    } else {
+                        self.worker.refresh(&root);
+                    }
+                }
+                Event::Cloned(target, result) => match result {
+                    Ok(()) => self.open_project(target),
+                    Err(error) => {
+                        message_box(self.hwnd, &error, MB_ICONERROR);
+                    }
+                },
                 Event::Committed(root, result) => {
                     match result {
                         Ok(()) => {
+                            self.panel.amend.set(false);
                             let empty = wide("");
                             // SAFETY: controllo valido, stringa terminata da zero.
                             unsafe { SetWindowTextW(self.panel.message, empty.as_ptr()) };
@@ -1586,73 +1621,117 @@ impl App {
         }
     }
 
-    /// Menu VCS (clic sul branch nella status bar o Alt+`): pull, push, fetch, nuovo branch, checkout, merge.
+    /// Menu VCS (clic sul branch nella status bar o Alt+`): operazione in corso, pull, push, fetch, stash, branch, checkout, merge, rebase.
     fn vcs_menu(&self) {
         let Some(root) = self.active_repo_root() else { return };
-        let branches: Vec<(String, bool, bool)> = self
-            .repos
-            .borrow()
-            .iter()
-            .find(|repo| repo.root == root)
-            .map(|repo| repo.branches.iter().map(|branch| (branch.name.clone(), branch.remote, branch.current)).collect())
-            .unwrap_or_default();
+        let (branches, operation): (Vec<(String, bool, bool)>, Option<&'static str>) = {
+            let repos = self.repos.borrow();
+            let repo = repos.iter().find(|repo| repo.root == root);
+            let branches = repo.map(|repo| repo.branches.iter().map(|branch| (branch.name.clone(), branch.remote, branch.current)).collect()).unwrap_or_default();
+            let operation = repo.and_then(|repo| repo.status.as_ref()).and_then(|status| status.operation.as_ref()).map(operation_name);
+            (branches, operation)
+        };
+        let path = root.to_string_lossy().into_owned();
+        let stashes = self.worker.now(|git| git.stashes(&path)).unwrap_or_default();
         let anchor = self.vcs_rect.get();
         // SAFETY: menu creato, mostrato e distrutto qui (DestroyMenu distrugge anche i sottomenu); le stringhe vivono per tutta la chiamata.
         let command = unsafe {
+            let mut strings: Vec<Vec<u16>> = Vec::new();
+            let mut label = |text: &str| {
+                strings.push(wide(text));
+                strings.last().map_or(std::ptr::null(), |text| text.as_ptr())
+            };
             let menu = CreatePopupMenu();
-            let labels: Vec<Vec<u16>> = branches.iter().map(|(name, _, _)| wide(name)).collect();
-            let fixed: Vec<(usize, Vec<u16>)> = [(VCS_PULL, "Aggiorna (pull)"), (VCS_PUSH, "Push\tCtrl+Shift+K"), (VCS_FETCH, "Fetch"), (VCS_NEW_BRANCH, "Nuovo branch…")]
-                .iter()
-                .map(|(id, label)| (*id, wide(label)))
-                .collect();
-            for (index, (id, label)) in fixed.iter().enumerate() {
-                if index == 3 {
-                    AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-                }
-                AppendMenuW(menu, MF_STRING, *id, label.as_ptr());
+            if let Some(operation) = operation {
+                AppendMenuW(menu, MF_STRING, VCS_CONTINUE, label(&format!("Continua {operation}")));
+                AppendMenuW(menu, MF_STRING, VCS_ABORT, label(&format!("Annulla {operation}")));
+                AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
             }
+            AppendMenuW(menu, MF_STRING, VCS_PULL, label("Aggiorna (pull)"));
+            AppendMenuW(menu, MF_STRING, VCS_PUSH, label("Push\tCtrl+Shift+K"));
+            AppendMenuW(menu, MF_STRING, VCS_FETCH, label("Fetch"));
+            AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+            AppendMenuW(menu, MF_STRING, VCS_STASH_PUSH, label("Accantona le modifiche (stash)…"));
+            let stash_menu = CreatePopupMenu();
+            for (index, stash) in stashes.iter().enumerate() {
+                let entry = CreatePopupMenu();
+                AppendMenuW(entry, MF_STRING, VCS_STASH_POP + index, label("Applica e rimuovi (pop)"));
+                AppendMenuW(entry, MF_STRING, VCS_STASH_DROP + index, label("Elimina"));
+                AppendMenuW(stash_menu, MF_POPUP, entry as usize, label(&format!("{}: {}", stash.name, stash.message)));
+            }
+            AppendMenuW(menu, MF_POPUP | if stashes.is_empty() { MF_GRAYED } else { 0 }, stash_menu as usize, label(&format!("Stash ({})", stashes.len())));
+            AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+            AppendMenuW(menu, MF_STRING, VCS_NEW_BRANCH, label("Nuovo branch…"));
             let checkout = CreatePopupMenu();
             let merge = CreatePopupMenu();
-            for (index, ((_, remote, current), label)) in branches.iter().zip(&labels).enumerate() {
+            let rebase = CreatePopupMenu();
+            for (index, (name, remote, current)) in branches.iter().enumerate() {
                 let flags = if *current { MF_STRING | MF_CHECKED | MF_GRAYED } else { MF_STRING };
                 if *remote && index > 0 && !branches[index - 1].1 {
                     AppendMenuW(checkout, MF_SEPARATOR, 0, std::ptr::null());
                 }
-                AppendMenuW(checkout, flags, VCS_CHECKOUT + index, label.as_ptr());
+                AppendMenuW(checkout, flags, VCS_CHECKOUT + index, label(name));
                 if !current {
-                    AppendMenuW(merge, MF_STRING, VCS_MERGE + index, label.as_ptr());
+                    AppendMenuW(merge, MF_STRING, VCS_MERGE + index, label(name));
+                    AppendMenuW(rebase, MF_STRING, VCS_REBASE + index, label(name));
                 }
             }
-            let (checkout_label, merge_label) = (wide("Checkout"), wide("Merge nel branch corrente"));
-            AppendMenuW(menu, MF_POPUP, checkout as usize, checkout_label.as_ptr());
-            AppendMenuW(menu, MF_POPUP, merge as usize, merge_label.as_ptr());
+            AppendMenuW(menu, MF_POPUP, checkout as usize, label("Checkout"));
+            AppendMenuW(menu, MF_POPUP, merge as usize, label("Merge nel branch corrente"));
+            AppendMenuW(menu, MF_POPUP, rebase as usize, label("Rebase del branch corrente su"));
             let mut point = POINT { x: anchor.left, y: anchor.top };
             ClientToScreen(self.hwnd, &mut point);
             let command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_BOTTOMALIGN | TPM_LEFTALIGN, point.x, point.y, 0, self.hwnd, std::ptr::null());
             DestroyMenu(menu);
             command as usize
         };
-        let branch = |offset: usize| branches.get(command - offset).cloned();
+        let branch = |offset: usize| branches.get(command.wrapping_sub(offset)).map(|(name, remote, _)| (name.clone(), *remote));
+        let stash = |offset: usize| stashes.get(command.wrapping_sub(offset)).map(|stash| stash.name.clone());
         match command {
-            VCS_PULL => {
-                let rebase = self.settings.borrow().pull_rebase();
-                self.worker.run(&root, move |git, root| git.pull(root, rebase));
+            VCS_CONTINUE => self.worker.run(&root, |git, root| git.continue_operation(root)),
+            VCS_ABORT => {
+                if message_box(self.hwnd, "Annullare l'operazione in corso? Si torna allo stato di prima.", MB_YESNO | MB_ICONWARNING) == IDYES {
+                    self.worker.run(&root, |git, root| git.abort_operation(root));
+                }
             }
+            VCS_PULL => self.pull(),
             VCS_PUSH => self.push(),
             VCS_FETCH => self.worker.run(&root, |git, root| git.fetch(root)),
+            VCS_STASH_PUSH => {
+                if let Some(message) = prompt(self.hwnd, &self.palette, self.font.get(), "Stash", "Descrizione delle modifiche accantonate:", "WIP") {
+                    self.worker.run(&root, move |git, root| git.stash_push(root, &message));
+                }
+            }
             VCS_NEW_BRANCH => {
                 if let Some(name) = prompt(self.hwnd, &self.palette, self.font.get(), "Nuovo branch", "Nome del nuovo branch (parte da HEAD e diventa quello corrente):", "") {
                     self.worker.run(&root, move |git, root| git.create_branch(root, &name, true, None));
                 }
             }
             id if (VCS_CHECKOUT..VCS_MERGE).contains(&id) => {
-                if let Some((name, remote, _)) = branch(VCS_CHECKOUT) {
+                if let Some((name, remote)) = branch(VCS_CHECKOUT) {
                     self.worker.run(&root, move |git, root| git.switch(root, &name, remote));
                 }
             }
-            id if id >= VCS_MERGE => {
-                if let Some((name, _, _)) = branch(VCS_MERGE) {
+            id if (VCS_MERGE..VCS_REBASE).contains(&id) => {
+                if let Some((name, _)) = branch(VCS_MERGE) {
                     self.worker.run(&root, move |git, root| git.merge(root, &name));
+                }
+            }
+            id if (VCS_REBASE..VCS_STASH_POP).contains(&id) => {
+                if let Some((name, _)) = branch(VCS_REBASE) {
+                    self.worker.run(&root, move |git, root| git.rebase(root, &name));
+                }
+            }
+            id if (VCS_STASH_POP..VCS_STASH_DROP).contains(&id) => {
+                if let Some(name) = stash(VCS_STASH_POP) {
+                    self.worker.run(&root, move |git, root| git.stash_pop(root, &name));
+                }
+            }
+            id if id >= VCS_STASH_DROP => {
+                if let Some(name) = stash(VCS_STASH_DROP) {
+                    if message_box(self.hwnd, &format!("Eliminare {name}? Le modifiche accantonate andranno perse."), MB_YESNO | MB_ICONWARNING) == IDYES {
+                        self.worker.run(&root, move |git, root| git.stash_drop(root, &name));
+                    }
                 }
             }
             _ => {}
@@ -1781,6 +1860,7 @@ impl App {
             message_box(self.hwnd, "Scrivi il messaggio di commit.", MB_ICONINFORMATION);
             return;
         }
+        let amend = self.panel.amend.get();
         let (files, unstage): (Vec<String>, Vec<String>) = {
             let changes = self.panel.changes.borrow();
             (
@@ -1788,11 +1868,35 @@ impl App {
                 changes.iter().filter(|file| !file.checked && file.staged).map(|file| file.path.clone()).collect(),
             )
         };
-        if files.is_empty() {
+        if files.is_empty() && !amend {
             message_box(self.hwnd, "Nessun file selezionato per il commit.", MB_ICONINFORMATION);
             return;
         }
-        self.worker.commit(&root, files, unstage, message, push);
+        let detached = self.repos.borrow().iter().find(|repo| repo.root == root).and_then(|repo| repo.status.as_ref()).is_some_and(|status| status.branch.head.is_none());
+        if detached && message_box(self.hwnd, "HEAD è staccato: il commit non starà su nessun branch e potresti perderlo cambiando branch. Committare comunque?", MB_YESNO | MB_ICONWARNING) != IDYES {
+            return;
+        }
+        let path = root.to_string_lossy().into_owned();
+        if amend && self.worker.now(|git| git.head_is_pushed(&path)).unwrap_or(false) && message_box(self.hwnd, "L'ultimo commit è già sul remote: dopo l'amend servirà un push forzato, da terminale. Continuare?", MB_YESNO | MB_ICONWARNING) != IDYES {
+            return;
+        }
+        let warn_crlf = self.settings.borrow().warn_crlf.unwrap_or(true);
+        self.worker.commit(&root, CommitRequest { files, unstage, message, push, amend }, warn_crlf);
+    }
+
+    /// Casella "Modifica l'ultimo commit": accesa con il messaggio vuoto, propone quello dell'ultimo commit.
+    fn toggle_amend(&self) {
+        let amend = !self.panel.amend.get();
+        self.panel.amend.set(amend);
+        let Some(root) = self.panel.root.borrow().clone() else { return };
+        if amend && window_text(self.panel.message).trim().is_empty() {
+            let path = root.to_string_lossy().into_owned();
+            if let Ok(message) = self.worker.now(|git| git.last_commit_message(&path)) {
+                let text = wide(&message.trim_end().replace("\r\n", "\n").replace('\n', "\r\n"));
+                // SAFETY: controllo valido, stringa terminata da zero.
+                unsafe { SetWindowTextW(self.panel.message, text.as_ptr()) };
+            }
+        }
     }
 
     fn pull(&self) {
@@ -1820,6 +1924,7 @@ impl App {
             (LOG_RESET_MIXED, "Reset mixed"),
             (LOG_RESET_HARD, "Reset hard"),
             (0, ""),
+            (LOG_REWORD, "Modifica messaggio…"),
             (LOG_COPY_HASH, "Copia hash"),
         ];
         let short = hash.get(..7).unwrap_or(&hash).to_string();
@@ -1846,6 +1951,20 @@ impl App {
                 }
             }
             LOG_COPY_HASH => copy_to_clipboard(self.hwnd, &hash),
+            LOG_REWORD => {
+                let path = root.to_string_lossy().into_owned();
+                let current = match self.worker.now(|git| git.commit_message(&path, &hash)) {
+                    Ok(message) => message,
+                    Err(error) => {
+                        message_box(self.hwnd, &error, MB_ICONERROR);
+                        return;
+                    }
+                };
+                let label = format!("Nuovo messaggio di {short} (solo commit non ancora pushati):");
+                if let Some(message) = prompt_text(self.hwnd, &self.palette, self.font.get(), "Modifica messaggio", &label, current.trim_end()) {
+                    self.worker.run(&root, move |git, root| git.reword(root, &hash, &message));
+                }
+            }
             LOG_SHOW_CHANGES => self.show_commit_changes(index),
             _ => {}
         }
@@ -1967,6 +2086,10 @@ impl App {
             match self.panel.button_at(x, y) {
                 Some(panel::Button::Commit) => self.commit(false),
                 Some(panel::Button::CommitAndPush) => self.commit(true),
+                Some(panel::Button::Amend) => {
+                    self.toggle_amend();
+                    self.invalidate();
+                }
                 None => {}
             }
             return;
@@ -2006,10 +2129,18 @@ impl App {
     }
 
     fn header_menu(&self) {
-        if self.explorer.root().is_none() {
-            return self.open_folder();
+        let folder = self.explorer.root();
+        let mut entries = vec![(MENU_OPEN_FOLDER, "Apri cartella…")];
+        if folder.is_some() {
+            entries.push((MENU_NEW_PROJECT, "Apri cartella in un nuovo progetto…"));
         }
-        let mut entries = vec![(MENU_OPEN_FOLDER, "Apri cartella…"), (MENU_NEW_PROJECT, "Apri cartella in un nuovo progetto…"), (MENU_CLOSE_FOLDER, "Chiudi cartella")];
+        entries.push((MENU_CLONE, "Clona repository…"));
+        if folder.is_some() && self.repos.borrow().is_empty() {
+            entries.push((MENU_INIT, "Inizializza un repository Git qui"));
+        }
+        if folder.is_some() {
+            entries.push((MENU_CLOSE_FOLDER, "Chiudi cartella"));
+        }
         if self.projects.borrow().len() > 1 {
             entries.push((MENU_CLOSE_PROJECT, "Chiudi progetto"));
         }
@@ -2017,10 +2148,42 @@ impl App {
         match popup_menu(self.hwnd, &entries) {
             MENU_OPEN_FOLDER => self.open_folder(),
             MENU_NEW_PROJECT => self.new_project(),
+            MENU_CLONE => self.clone_repository(),
+            MENU_INIT => self.init_repository(),
             MENU_CLOSE_FOLDER => self.set_folder(None),
             MENU_CLOSE_PROJECT => self.close_project(self.current.get()),
             MENU_SETTINGS => self.open_settings(),
             _ => {}
+        }
+    }
+
+    /// Chiede URL e cartella di destinazione; a clone finito la cartella si apre come progetto.
+    fn clone_repository(&self) {
+        let Some(url) = prompt(self.hwnd, &self.palette, self.font.get(), "Clona repository", "URL del repository (HTTPS o SSH):", "") else { return };
+        let Some(name) = repo_name(&url) else {
+            message_box(self.hwnd, "URL non valido.", MB_ICONERROR);
+            return;
+        };
+        let Some(parent) = pick_folder(self.hwnd) else { return };
+        let target = parent.join(&name);
+        if target.exists() {
+            message_box(self.hwnd, &format!("{} esiste già.", target.display()), MB_ICONERROR);
+            return;
+        }
+        self.worker.clone_repo(url.trim().to_string(), target);
+        self.show_panel(Tab::Console);
+        self.panel.view.set(None);
+    }
+
+    /// `git init` nella cartella del progetto, poi la si rilegge per trovare il repository.
+    fn init_repository(&self) {
+        let Some(folder) = self.explorer.root() else { return };
+        let path = folder.to_string_lossy().into_owned();
+        match self.worker.now(|git| git.init_repo(&path)) {
+            Ok(()) => self.set_folder(Some(folder)),
+            Err(error) => {
+                message_box(self.hwnd, &error, MB_ICONERROR);
+            }
         }
     }
 
