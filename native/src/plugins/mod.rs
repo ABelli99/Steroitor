@@ -97,14 +97,19 @@ const DOCS: &str = SERVER_OPTIONS[2].0;
 const REACT: &str = "reactInline";
 const ANGULAR: &str = "angularInline";
 /// Indicatori che colorano il testo dell'HTML inline, uno per ruolo.
-const HTML_INDICATORS: [(usize, inline_html::Role); 7] = [
+const HTML_INDICATORS: [(usize, inline_html::Role); 12] = [
     (11, inline_html::Role::Tag),
     (12, inline_html::Role::Attribute),
     (13, inline_html::Role::Value),
     (14, inline_html::Role::Punctuation),
     (15, inline_html::Role::Text),
-    (16, inline_html::Role::Binding),
+    (16, inline_html::Role::Keyword),
     (17, inline_html::Role::Comment),
+    (18, inline_html::Role::AngleBracket),
+    (19, inline_html::Role::Event),
+    (20, inline_html::Role::Number),
+    (21, inline_html::Role::Function),
+    (22, inline_html::Role::Property),
 ];
 const INDIC_TEXTFORE: isize = 17;
 
@@ -277,12 +282,14 @@ impl Host {
         sci.call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_LIST_SELECTED_BACK, opaque(palette.selection));
         for (indicator, role) in HTML_INDICATORS {
             let color = match role {
-                inline_html::Role::Tag => palette.tag,
+                inline_html::Role::Tag | inline_html::Role::AngleBracket => palette.tag,
                 inline_html::Role::Attribute => palette.attribute,
+                inline_html::Role::Event | inline_html::Role::Property => palette.property,
                 inline_html::Role::Value => palette.string,
-                inline_html::Role::Punctuation => palette.muted,
-                inline_html::Role::Text => palette.fg,
-                inline_html::Role::Binding => palette.keyword,
+                inline_html::Role::Punctuation | inline_html::Role::Text => palette.fg,
+                inline_html::Role::Keyword => palette.keyword,
+                inline_html::Role::Number => palette.number,
+                inline_html::Role::Function => palette.function,
                 inline_html::Role::Comment => palette.comment,
             };
             sci.call(SCI_INDICSETSTYLE, indicator, INDIC_TEXTFORE);

@@ -5,13 +5,20 @@ use std::ops::Range;
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Role {
     Tag,
+    /// `<`, `</`, `>`, `/>`: col colore del tag, come nella versione Tauri.
+    AngleBracket,
     Attribute,
+    /// Binding di Angular: `[prop]`, `(event)`, `[(ngModel)]`, `*ngIf`, `#ref`.
+    Event,
     Value,
+    /// `=`, `{{`, `}}` e gli operatori: colore normale.
     Punctuation,
-    /// Testo tra i tag: colore normale, così le parole non sembrano keyword.
+    /// Testo tra i tag e nomi nelle espressioni: colore normale, così le parole non sembrano keyword.
     Text,
-    /// `{{ … }}` di Angular.
-    Binding,
+    Keyword,
+    Number,
+    Function,
+    Property,
     Comment,
 }
 
@@ -92,7 +99,7 @@ fn jsx_element(bytes: &[u8], at: usize, spans: &mut Vec<Span>) -> Option<usize> 
         if fragment && bytes.get(index) != Some(&b'>') {
             return None;
         }
-        spans.push((at..at + 1, Role::Punctuation));
+        spans.push((at..at + 1, Role::AngleBracket));
         if !fragment {
             spans.push((name.clone(), Role::Tag));
         }
@@ -102,11 +109,11 @@ fn jsx_element(bytes: &[u8], at: usize, spans: &mut Vec<Span>) -> Option<usize> 
             index = skip_space(bytes, index, end);
             match bytes.get(index)? {
                 b'/' if bytes.get(index + 1) == Some(&b'>') => {
-                    spans.push((index..index + 2, Role::Punctuation));
+                    spans.push((index..index + 2, Role::AngleBracket));
                     return Some(index + 2);
                 }
                 b'>' => {
-                    spans.push((index..index + 1, Role::Punctuation));
+                    spans.push((index..index + 1, Role::AngleBracket));
                     index += 1;
                     break;
                 }
@@ -151,9 +158,9 @@ fn jsx_element(bytes: &[u8], at: usize, spans: &mut Vec<Span>) -> Option<usize> 
                 if bytes.get(after) != Some(&b'>') {
                     return None;
                 }
-                spans.push((index..index + 2, Role::Punctuation));
+                spans.push((index..index + 2, Role::AngleBracket));
                 spans.push((close_name, Role::Tag));
-                spans.push((after..after + 1, Role::Punctuation));
+                spans.push((after..after + 1, Role::AngleBracket));
                 return Some(after + 1);
             }
             match bytes[index] {
@@ -209,7 +216,68 @@ fn jsx_scan(bytes: &[u8], range: Range<usize>, spans: &mut Vec<Span>) {
     }
 }
 
-/// HTML di un template Angular nel tratto `range`.
+const EXPRESSION_KEYWORDS: [&str; 10] = ["this", "typeof", "new", "in", "of", "let", "as", "track", "instanceof", "void"];
+const EXPRESSION_ATOMS: [&str; 4] = ["true", "false", "null", "undefined"];
+/// Blocchi del control flow di Angular 17+.
+const BLOCKS: [&str; 12] = ["if", "else", "for", "switch", "case", "default", "empty", "defer", "placeholder", "loading", "error", "let"];
+
+/// Un'espressione Angular (binding, `{{ }}`, condizione di un blocco) colorata come codice: stringhe, numeri,
+/// keyword, funzioni, proprietà dopo il punto, pipe; il resto col colore normale.
+fn expression(bytes: &[u8], range: Range<usize>, spans: &mut Vec<Span>) {
+    let end = range.end;
+    let mut index = range.start;
+    while index < end {
+        let byte = bytes[index];
+        if byte.is_ascii_whitespace() {
+            index += 1;
+        } else if matches!(byte, b'"' | b'\'' | b'`') {
+            let mut close = index + 1;
+            while close < end && bytes[close] != byte {
+                close += if bytes[close] == b'\\' { 2 } else { 1 };
+            }
+            let close = (close + 1).min(end);
+            spans.push((index..close, Role::Value));
+            index = close;
+        } else if byte.is_ascii_digit() {
+            let start = index;
+            while index < end && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'.') {
+                index += 1;
+            }
+            spans.push((start..index, Role::Number));
+        } else if byte.is_ascii_alphabetic() || byte == b'_' || byte == b'$' {
+            let start = index;
+            while index < end && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_' || bytes[index] == b'$') {
+                index += 1;
+            }
+            let word = std::str::from_utf8(&bytes[start..index]).unwrap_or("");
+            let before = bytes[range.start..start].iter().rposition(|byte| !byte.is_ascii_whitespace()).map(|at| bytes[range.start + at]);
+            let pipe = before == Some(b'|') && (start < 2 || bytes[range.start..start].iter().rev().filter(|byte| !byte.is_ascii_whitespace()).nth(1) != Some(&b'|'));
+            let call = bytes[index..end].iter().find(|byte| !byte.is_ascii_whitespace()) == Some(&b'(');
+            let role = if EXPRESSION_ATOMS.contains(&word) {
+                Role::Number
+            } else if EXPRESSION_KEYWORDS.contains(&word) {
+                Role::Keyword
+            } else if call || pipe {
+                Role::Function
+            } else if before == Some(b'.') {
+                Role::Property
+            } else {
+                Role::Text
+            };
+            spans.push((start..index, role));
+        } else {
+            spans.push((index..index + 1, Role::Punctuation));
+            index += 1;
+        }
+    }
+}
+
+/// Binding di Angular: il valore è un'espressione, non una stringa.
+fn is_binding(name: &[u8]) -> bool {
+    matches!(name.first(), Some(b'[' | b'(' | b'*')) || name.starts_with(b"bind-") || name.starts_with(b"on-")
+}
+
+/// HTML di un template Angular nel tratto `range`, con binding, `{{ }}` e blocchi `@if`/`@for` come nella versione Tauri.
 fn template_html(bytes: &[u8], range: Range<usize>, spans: &mut Vec<Span>) {
     let end = range.end;
     let mut index = range.start;
@@ -219,51 +287,118 @@ fn template_html(bytes: &[u8], range: Range<usize>, spans: &mut Vec<Span>) {
             spans.push((index..close, Role::Comment));
             index = close;
         } else if bytes[index] == b'<' && bytes.get(index + 1).is_some_and(|&next| next.is_ascii_alphabetic() || next == b'/') {
-            let closing = bytes[index + 1] == b'/';
-            let name_start = index + 1 + usize::from(closing);
-            let name = name_start..name_end(bytes, name_start, end);
-            spans.push((index..name_start, Role::Punctuation));
-            spans.push((name.clone(), Role::Tag));
-            index = name.end;
-            while index < end && bytes[index] != b'>' {
-                match bytes[index] {
-                    b'"' | b'\'' => {
-                        let quote = bytes[index];
-                        let close = bytes[index + 1..end].iter().position(|&byte| byte == quote).map_or(end, |close| index + 2 + close);
-                        spans.push((index..close, Role::Value));
-                        index = close;
-                    }
-                    b'=' | b'/' => {
-                        spans.push((index..index + 1, Role::Punctuation));
-                        index += 1;
-                    }
-                    byte if byte.is_ascii_whitespace() => index += 1,
-                    _ => {
-                        // Attributi Angular compresi: [prop], (event), [(ngModel)], *ngIf, #ref.
-                        let start = index;
-                        while index < end && !bytes[index].is_ascii_whitespace() && !matches!(bytes[index], b'=' | b'>' | b'/' | b'"' | b'\'') {
-                            index += 1;
-                        }
-                        spans.push((start..index, Role::Attribute));
-                    }
-                }
-            }
-            if index < end {
-                spans.push((index..index + 1, Role::Punctuation));
-                index += 1;
-            }
+            index = template_tag(bytes, index, end, spans);
         } else if bytes[index..end].starts_with(b"{{") {
-            let close = find(&bytes[..end], index + 2, b"}}").map_or(end, |close| close + 2);
-            spans.push((index..close, Role::Binding));
-            index = close;
+            let close = find(&bytes[..end], index + 2, b"}}").unwrap_or(end);
+            spans.push((index..index + 2, Role::Punctuation));
+            expression(bytes, index + 2..close, spans);
+            if close < end {
+                spans.push((close..close + 2, Role::Punctuation));
+            }
+            index = (close + 2).min(end);
+        } else if bytes[index] == b'@' && bytes.get(index + 1).is_some_and(u8::is_ascii_alphabetic) {
+            index = template_block(bytes, index, end, spans);
         } else {
             let start = index;
-            while index < end && bytes[index] != b'<' && !bytes[index..end].starts_with(b"{{") {
+            index += 1;
+            while index < end && bytes[index] != b'<' && bytes[index] != b'@' && !bytes[index..end].starts_with(b"{{") {
                 index += 1;
             }
             spans.push((start..index, Role::Text));
         }
     }
+}
+
+/// Un tag da `<` in `at`; restituisce dove finisce.
+fn template_tag(bytes: &[u8], at: usize, end: usize, spans: &mut Vec<Span>) -> usize {
+    let closing = bytes[at + 1] == b'/';
+    let name_start = at + 1 + usize::from(closing);
+    let name = name_start..name_end(bytes, name_start, end);
+    spans.push((at..name_start, Role::AngleBracket));
+    spans.push((name.clone(), Role::Tag));
+    let mut index = name.end;
+    let mut binding = false;
+    while index < end && bytes[index] != b'>' {
+        match bytes[index] {
+            b'"' | b'\'' => {
+                let quote = bytes[index];
+                let close = bytes[index + 1..end].iter().position(|&byte| byte == quote).map_or(end, |close| index + 1 + close);
+                if binding {
+                    spans.push((index..index + 1, Role::Value));
+                    expression(bytes, index + 1..close, spans);
+                    if close < end {
+                        spans.push((close..close + 1, Role::Value));
+                    }
+                } else {
+                    spans.push((index..(close + 1).min(end), Role::Value));
+                }
+                index = (close + 1).min(end);
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'>') => {
+                spans.push((index..index + 1, Role::AngleBracket));
+                index += 1;
+            }
+            b'=' | b'/' => {
+                spans.push((index..index + 1, Role::Punctuation));
+                index += 1;
+            }
+            byte if byte.is_ascii_whitespace() => index += 1,
+            _ => {
+                let start = index;
+                while index < end && !bytes[index].is_ascii_whitespace() && !matches!(bytes[index], b'=' | b'>' | b'/' | b'"' | b'\'') {
+                    index += 1;
+                }
+                binding = is_binding(&bytes[start..index]);
+                let special = binding || bytes[start] == b'#' || bytes[start] == b'@';
+                spans.push((start..index, if special { Role::Event } else { Role::Attribute }));
+            }
+        }
+    }
+    if index < end {
+        spans.push((index..index + 1, Role::AngleBracket));
+        index += 1;
+    }
+    index
+}
+
+/// Un blocco `@if (…) {`, `@for (…)`, `@else`…: keyword e condizione; le graffe restano col colore normale.
+fn template_block(bytes: &[u8], at: usize, end: usize, spans: &mut Vec<Span>) -> usize {
+    let word_end = (at + 1..end).find(|&index| !bytes[index].is_ascii_alphabetic()).unwrap_or(end);
+    if !BLOCKS.iter().any(|block| block.as_bytes() == &bytes[at + 1..word_end]) {
+        spans.push((at..word_end, Role::Text));
+        return word_end;
+    }
+    spans.push((at..word_end, Role::Keyword));
+    let mut index = skip_space(bytes, word_end, end);
+    // `@else if`
+    if bytes[index..end].starts_with(b"if") && bytes.get(index + 2).is_some_and(|byte| !byte.is_ascii_alphanumeric()) {
+        spans.push((index..index + 2, Role::Keyword));
+        index = skip_space(bytes, index + 2, end);
+    }
+    if bytes.get(index) == Some(&b'(') {
+        let mut depth = 0;
+        let mut close = index;
+        while close < end {
+            match bytes[close] {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            close += 1;
+        }
+        spans.push((index..index + 1, Role::Punctuation));
+        expression(bytes, index + 1..close, spans);
+        if close < end {
+            spans.push((close..close + 1, Role::Punctuation));
+        }
+        index = (close + 1).min(end);
+    }
+    index
 }
 
 /// I template di `template: \`…\`` (decoratore @Component di Angular).
@@ -310,7 +445,7 @@ mod tests {
     use super::*;
 
     fn roles(text: &str, react: bool, angular: bool) -> Vec<(&str, Role)> {
-        spans(text, react, angular).into_iter().filter(|(_, role)| *role != Role::Punctuation).map(|(range, role)| (&text[range], role)).collect()
+        spans(text, react, angular).into_iter().filter(|(_, role)| !matches!(role, Role::Punctuation | Role::AngleBracket)).map(|(range, role)| (&text[range], role)).collect()
     }
 
     #[test]
@@ -331,12 +466,37 @@ mod tests {
 
     #[test]
     fn colors_angular_templates_only_when_asked() {
-        let code = "@Component({ selector: 'x', template: `<p *ngIf=\"ok\" (click)=\"go()\">{{ name }} if</p>` })";
+        let code = "@Component({ selector: 'x', template: `<p class=\"a\" *ngIf=\"ok\" (click)=\"go()\">{{ name }} if</p>` })";
         assert_eq!(
             roles(code, false, true),
-            vec![("p", Role::Tag), ("*ngIf", Role::Attribute), ("\"ok\"", Role::Value), ("(click)", Role::Attribute), ("\"go()\"", Role::Value), ("{{ name }}", Role::Binding), (" if", Role::Text), ("p", Role::Tag)]
+            vec![
+                ("p", Role::Tag),
+                ("class", Role::Attribute),
+                ("\"a\"", Role::Value),
+                ("*ngIf", Role::Event),
+                ("\"", Role::Value),
+                ("ok", Role::Text),
+                ("\"", Role::Value),
+                ("(click)", Role::Event),
+                ("\"", Role::Value),
+                ("go", Role::Function),
+                ("\"", Role::Value),
+                ("name", Role::Text),
+                (" if", Role::Text),
+                ("p", Role::Tag),
+            ]
         );
         assert!(roles(code, true, false).is_empty());
         assert!(roles("const templateUrl = `<p>`;", false, true).is_empty());
+    }
+
+    #[test]
+    fn colors_angular_expressions_and_blocks_as_code() {
+        let code = "template: `@if (user.active && count > 1) {<b [title]=\"'x' + user.name | uppercase\">{{ total(2) }}</b>} @else {no}`";
+        let found = roles(code, false, true);
+        for expected in [("@if", Role::Keyword), ("active", Role::Property), ("1", Role::Number), ("'x'", Role::Value), ("name", Role::Property), ("uppercase", Role::Function), ("total", Role::Function), ("2", Role::Number), ("@else", Role::Keyword), ("[title]", Role::Event)] {
+            assert!(found.contains(&expected), "{expected:?} in {found:?}");
+        }
+        assert!(spans("template: `<b>`", false, true).iter().any(|(range, role)| *range == (11..12) && *role == Role::AngleBracket));
     }
 }
