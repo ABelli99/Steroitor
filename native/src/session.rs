@@ -29,6 +29,18 @@ pub struct ProjectSession {
     pub folder: Option<PathBuf>,
     pub files: Vec<PathBuf>,
     pub active: usize,
+    /// Tab con modifiche non salvate (o senza titolo): il loro testo, rimesso al prossimo avvio.
+    pub unsaved: Vec<UnsavedTab>,
+}
+
+#[derive(Serialize, Deserialize, Default, Clone, PartialEq, Debug)]
+#[serde(default)]
+pub struct UnsavedTab {
+    /// None per una tab senza titolo.
+    pub path: Option<PathBuf>,
+    pub content: String,
+    pub encoding: String,
+    pub bom: bool,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -62,7 +74,7 @@ impl Session {
         if !self.projects.is_empty() {
             return self.projects.clone();
         }
-        vec![ProjectSession { folder: self.folder.clone(), files: self.files.clone(), active: self.active }]
+        vec![ProjectSession { folder: self.folder.clone(), files: self.files.clone(), active: self.active, unsaved: Vec::new() }]
     }
 
     pub fn load() -> Session {
@@ -230,7 +242,7 @@ mod tests {
     #[test]
     fn tolerates_an_old_or_partial_session() {
         let session: Session = serde_json::from_str(r#"{"files":["C:\\a.txt"]}"#).unwrap();
-        assert_eq!(session.project_list(), vec![ProjectSession { folder: None, files: vec![PathBuf::from("C:\\a.txt")], active: 0 }]);
+        assert_eq!(session.project_list(), vec![ProjectSession { folder: None, files: vec![PathBuf::from("C:\\a.txt")], active: 0, unsaved: Vec::new() }]);
         let session: Session = serde_json::from_str(r#"{"folder":"C:\\vecchia","projects":[{"folder":"C:\\a"},{"folder":"C:\\b"}],"active_project":1}"#).unwrap();
         assert_eq!(session.project_list().len(), 2);
         assert!(!serde_json::to_string(&session).unwrap().contains("vecchia"));

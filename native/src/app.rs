@@ -36,8 +36,9 @@ use crate::paint::{fill, frame, text, text_width};
 use crate::panel::{self, ConsoleTarget, Panel, Tab};
 use crate::plugins::{self, Host};
 use crate::prompt::{prompt, prompt_text};
+use crate::quick_open;
 use crate::sci::*;
-use crate::session::{ProjectSession, Session, Settings};
+use crate::session::{ProjectSession, Session, Settings, UnsavedTab};
 use crate::settings_page;
 use crate::terminal::{Terminal, WM_TERMINAL_EXIT, WM_TERMINAL_OUTPUT};
 use crate::theme::{system_palette, Palette};
@@ -171,6 +172,10 @@ fn modified_time(path: &Path) -> Option<SystemTime> {
 pub struct App {
     hwnd: HWND,
     sci: Sci,
+    /// Vista nascosta per leggere il testo dei documenti non mostrati (le tab modificate da salvare nella sessione).
+    scratch: Sci,
+    /// Tab che si sta trascinando per riordinarla.
+    tab_drag: Cell<Option<usize>>,
     minimap: Minimap,
     minimap_on: Cell<bool>,
     minimap_rect: Cell<RECT>,
@@ -239,20 +244,49 @@ impl Parked {
         self.pending.as_ref().map_or_else(|| self.explorer.root(), |pending| pending.folder.clone())
     }
 
-    fn session(&self) -> ProjectSession {
+    fn session(&self, text_of: impl Fn(isize) -> String) -> ProjectSession {
         if let Some(pending) = &self.pending {
             return pending.clone();
         }
-        session_of(self.explorer.root(), &self.docs, self.active)
+        session_of(self.explorer.root(), &self.docs, self.active, text_of)
     }
 }
 
-/// Cartella, file salvati e tab attiva (contata tra i file salvati).
-fn session_of(folder: Option<PathBuf>, docs: &[Doc], active: usize) -> ProjectSession {
+/// Cartella, file con un percorso, tab attiva (contata tra quei file) e testo delle tab modificate o senza titolo.
+fn session_of(folder: Option<PathBuf>, docs: &[Doc], active: usize, text_of: impl Fn(isize) -> String) -> ProjectSession {
     let saved: Vec<(usize, PathBuf)> = docs.iter().enumerate().filter_map(|(index, doc)| doc.path.clone().map(|path| (index, path))).collect();
     let active = saved.iter().position(|(index, _)| *index == active).unwrap_or(0);
-    ProjectSession { folder, files: saved.into_iter().map(|(_, path)| path).collect(), active }
+    let unsaved = docs
+        .iter()
+        .filter(|doc| doc.dirty)
+        .map(|doc| UnsavedTab { path: doc.path.clone(), content: text_of(doc.pointer), encoding: doc.encoding.clone(), bom: doc.bom })
+        .collect();
+    ProjectSession { folder, files: saved.into_iter().map(|(_, path)| path).collect(), active, unsaved }
 }
+
+/// Invia file e cartelle alla finestra già aperta (se c'è) e la porta in primo piano; true se l'ha trovata.
+pub fn forward_to_running(paths: &[PathBuf]) -> bool {
+    use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
+    let class = wide(CLASS_NAME);
+    // SAFETY: la struttura e il testo vivono per tutta la SendMessageW, che è sincrona.
+    unsafe {
+        let existing = FindWindowW(class.as_ptr(), std::ptr::null());
+        if existing.is_null() {
+            return false;
+        }
+        let joined = paths.iter().map(|path| std::path::absolute(path).unwrap_or_else(|_| path.clone()).to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n");
+        let text: Vec<u16> = joined.encode_utf16().collect();
+        let data = COPYDATASTRUCT { dwData: COPYDATA_OPEN, cbData: (text.len() * 2) as u32, lpData: text.as_ptr() as *mut _ };
+        SendMessageW(existing, WM_COPYDATA, 0, &data as *const COPYDATASTRUCT as isize);
+        if IsIconic(existing) != 0 {
+            ShowWindow(existing, SW_RESTORE);
+        }
+        SetForegroundWindow(existing);
+        true
+    }
+}
+
+const COPYDATA_OPEN: usize = 0x5354_4f50;
 
 fn folder_name(folder: Option<&Path>) -> String {
     folder.map_or_else(|| "Senza cartella".into(), |folder| folder.file_name().map_or_else(|| folder.display().to_string(), |name| name.to_string_lossy().into_owned()))
@@ -384,6 +418,9 @@ impl App {
         let app: &'static App = Box::leak(Box::new(App {
             hwnd,
             sci: Sci::new(editor),
+            // SAFETY: controllo figlio nascosto della finestra principale.
+            scratch: Sci::new(unsafe { CreateWindowExW(0, wide("Scintilla").as_ptr(), std::ptr::null(), WS_CHILD, 0, 0, 0, 0, hwnd, std::ptr::null_mut(), instance, std::ptr::null()) }),
+            tab_drag: Cell::new(None),
             minimap: Minimap::create(hwnd, instance, editor, &palette),
             minimap_on: Cell::new(session.minimap),
             minimap_rect: Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }),
@@ -757,26 +794,6 @@ impl App {
         (0..count).all(|index| self.confirm_discard(index))
     }
 
-    /// Chiede per le tab modificate di tutti i progetti, portando in primo piano quello che ne ha.
-    fn confirm_quit(&self) -> bool {
-        let count = self.projects.borrow().len();
-        for index in 0..count {
-            let dirty = if index == self.current.get() {
-                self.docs.borrow().iter().any(|doc| doc.dirty)
-            } else {
-                self.projects.borrow()[index].as_ref().is_some_and(|parked| parked.docs.iter().any(|doc| doc.dirty))
-            };
-            if !dirty {
-                continue;
-            }
-            self.switch_project(index);
-            if !self.confirm_project() {
-                return false;
-            }
-        }
-        true
-    }
-
     /// Salva la tab attiva; con `ask` (o se non ha un percorso) chiede dove.
     pub fn save(&self, ask: bool) -> bool {
         let index = self.active.get();
@@ -880,12 +897,80 @@ impl App {
         for file in project.files.iter().filter(|file| file.is_file()) {
             self.open(file);
         }
+        for tab in &project.unsaved {
+            self.restore_unsaved(tab);
+        }
         let count = self.docs.borrow().len();
         if count == 0 {
             self.new_document();
         } else {
             self.activate(project.active.min(count - 1));
         }
+    }
+
+    /// Rimette il testo di una tab modificata: sostituito al contenuto del file (o in una tab nuova), così risulta modificata e Ctrl+Z torna al file.
+    fn restore_unsaved(&self, tab: &UnsavedTab) {
+        let existing = tab.path.as_ref().and_then(|path| self.docs.borrow().iter().position(|doc| doc.path.as_ref() == Some(path)));
+        match existing {
+            Some(index) => self.activate(index),
+            None => self.add_document(tab.path.clone(), "", tab.encoding.clone(), tab.bom),
+        }
+        let length = self.sci.call(SCI_GETLENGTH, 0, 0);
+        self.sci.call(SCI_SETTARGETRANGE, 0, length);
+        self.sci.call(SCI_REPLACETARGET, tab.content.len(), tab.content.as_ptr() as isize);
+        let eol = eol_of(&tab.content);
+        self.sci.call(SCI_SETEOLMODE, eol, 0);
+        if let Some(doc) = self.docs.borrow_mut().get_mut(self.active.get()) {
+            doc.eol = eol;
+        }
+    }
+
+    /// Testo di un documento anche se non è quello mostrato.
+    fn doc_text(&self, pointer: isize) -> String {
+        if pointer == self.sci.call(SCI_GETDOCPOINTER, 0, 0) {
+            return self.sci.text();
+        }
+        self.scratch.call(SCI_SETDOCPOINTER, 0, pointer);
+        let text = self.scratch.text();
+        self.scratch.call(SCI_SETDOCPOINTER, 0, 0);
+        text
+    }
+
+    /// Ctrl+P: un file del progetto per nome.
+    fn quick_open(&self) {
+        let Some(root) = self.explorer.root() else { return };
+        let files = steroitor_core::fs::list_files(root.to_string_lossy().into_owned());
+        if let Some(path) = quick_open::pick(self.hwnd, &self.palette, self.font.get(), &root, files) {
+            self.open(&path);
+        }
+    }
+
+    /// File e cartelle arrivati da un secondo avvio dell'app.
+    fn open_paths(&self, paths: Vec<PathBuf>) {
+        for path in paths {
+            if path.is_dir() {
+                self.open_project(path);
+            } else if path.is_file() {
+                self.open(&path);
+            }
+        }
+    }
+
+    /// Sposta la tab trascinata sulla posizione sotto il mouse; la tab trascinata resta quella attiva.
+    fn drag_tab(&self, x: i32) {
+        let Some(from) = self.tab_drag.get() else { return };
+        let Some(to) = self.tabs.borrow().iter().position(|(tab, _)| x >= tab.left && x < tab.right) else { return };
+        if to == from {
+            return;
+        }
+        {
+            let mut docs = self.docs.borrow_mut();
+            let doc = docs.remove(from);
+            docs.insert(to, doc);
+        }
+        self.active.set(to);
+        self.tab_drag.set(Some(to));
+        self.invalidate();
     }
 
     fn is_empty_project(&self) -> bool {
@@ -1252,6 +1337,7 @@ impl App {
             (VK_TAB, false) => self.cycle(1),
             (VK_TAB, true) => self.cycle(-1),
             (0x46, false) => self.open_find(false),
+            (0x50, false) => self.quick_open(),
             (0x48, false) => self.open_find(true),
             (0x4B, true) => self.push(),
             (0x54, false) => self.new_terminal(),
@@ -2401,7 +2487,12 @@ impl App {
         }
         match self.tab_at(x, y) {
             Some((index, true)) => self.close(index),
-            Some((index, false)) => self.activate(index),
+            Some((index, false)) => {
+                self.activate(index);
+                self.tab_drag.set(Some(index));
+                // SAFETY: cattura del mouse sulla finestra principale fino al rilascio.
+                unsafe { SetCapture(self.hwnd) };
+            }
             None => {}
         }
     }
@@ -2511,6 +2602,9 @@ impl App {
             self.panel.height.set(height * 96 / self.dpi().max(1));
             return self.layout();
         }
+        if self.tab_drag.get().is_some() {
+            return self.drag_tab(x);
+        }
         if !self.dragging.get() {
             return self.hover_project(x, y);
         }
@@ -2577,8 +2671,8 @@ impl App {
             .borrow()
             .iter()
             .map(|parked| match parked {
-                Some(parked) => parked.session(),
-                None => session_of(self.explorer.root(), &self.docs.borrow(), self.active.get()),
+                Some(parked) => parked.session(|pointer| self.doc_text(pointer)),
+                None => session_of(self.explorer.root(), &self.docs.borrow(), self.active.get(), |pointer| self.doc_text(pointer)),
             })
             .collect();
         // SAFETY: lettura della posizione della finestra.
@@ -2663,7 +2757,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             0
         }
         WM_LBUTTONUP => {
-            if app.dragging.replace(false) | app.dragging_panel.replace(false) {
+            if app.dragging.replace(false) | app.dragging_panel.replace(false) | app.tab_drag.take().is_some() {
                 ReleaseCapture();
             }
             0
@@ -2799,11 +2893,17 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             0
         }
         WM_CLOSE => {
-            if app.confirm_quit() {
-                app.save_session();
-                DestroyWindow(hwnd);
-            }
+            app.save_session();
+            DestroyWindow(hwnd);
             0
+        }
+        WM_COPYDATA => {
+            let data = &*(lparam as *const windows_sys::Win32::System::DataExchange::COPYDATASTRUCT);
+            if data.dwData == COPYDATA_OPEN && !data.lpData.is_null() {
+                let text = String::from_utf16_lossy(std::slice::from_raw_parts(data.lpData as *const u16, data.cbData as usize / 2));
+                app.open_paths(text.lines().filter(|line| !line.is_empty()).map(PathBuf::from).collect());
+            }
+            1
         }
         WM_DESTROY => {
             app.panel.terminals.borrow_mut().drain(..).for_each(|terminal| terminal.close());

@@ -15,6 +15,7 @@ mod paint;
 mod panel;
 mod plugins;
 mod prompt;
+mod quick_open;
 mod sci;
 mod session;
 mod settings_page;
@@ -43,7 +44,13 @@ fn log_panics() {
 
 fn main() {
     log_panics();
-    let files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
+    let mut files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
+    // Istanza singola: file e cartelle vanno alla finestra già aperta. `--new-instance` ne apre comunque una nuova.
+    let before = files.len();
+    files.retain(|file| file.as_os_str() != "--new-instance");
+    if files.len() == before && app::forward_to_running(&files) {
+        return;
+    }
     // SAFETY: inizializzazione Win32 sul thread principale, prima di creare finestre.
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
