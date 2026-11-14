@@ -1,34 +1,30 @@
-//! Quick Open (Ctrl+P): cerca un file del progetto per nome con la ricerca fuzzy della versione Tauri.
-//! Frecce per scegliere, Invio o doppio clic per aprire, Esc per chiudere.
-use std::cell::RefCell;
+//! Quick Open (Ctrl+P), come quello della versione Tauri: riquadro al 10% dall'alto, campo "Cerca file per nome…",
+//! al più 50 risultati con il nome e la cartella attenuata. Frecce e Pag su/giù per scegliere, Invio o clic per aprire,
+//! Esc per chiudere. La ricerca fuzzy è la stessa della versione Tauri.
+use std::cell::{OnceCell, RefCell};
 use std::path::{Path, PathBuf};
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Controls::SetWindowTheme;
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus, VK_DOWN, VK_ESCAPE, VK_NEXT, VK_PRIOR, VK_RETURN, VK_UP};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dialogs::wide;
 use crate::find::window_text;
+use crate::list::{decode_event, List, ListEvent, RowPaint, WM_LIST_EVENT, WM_LIST_PAINT};
+use crate::paint::{fill, frame, text, text_width};
 use crate::theme::Palette;
 
 const CLASS_NAME: &str = "SteroitorQuickOpen";
-const WIDTH: i32 = 620;
-const HEIGHT: i32 = 420;
-const LIMIT: usize = 200;
+const WIDTH: i32 = 600;
+const INPUT: i32 = 36;
+const ROW: i32 = 24;
+const LIMIT: usize = 50;
 const NAME_BONUS: f64 = 10.0;
 const CONSECUTIVE_BONUS: f64 = 5.0;
 const BOUNDARY_BONUS: f64 = 4.0;
-const LB_ADDSTRING: u32 = 0x0180;
-const LB_RESETCONTENT: u32 = 0x0184;
-const LB_SETCURSEL: u32 = 0x0186;
-const LB_GETCURSEL: u32 = 0x0188;
-const LB_GETCOUNT: u32 = 0x018B;
-const LBN_DBLCLK: u32 = 2;
 const EN_CHANGE: u32 = 0x0300;
 
 /// Lettere della ricerca in ordine nel testo: più punti se consecutive o a inizio parola; None se non ci sono tutte.
@@ -66,41 +62,114 @@ pub fn fuzzy_filter<'a>(query: &str, paths: &'a [String], limit: usize) -> Vec<&
     scored.into_iter().take(limit).map(|(_, path)| path).collect()
 }
 
+/// Controlli del riquadro, creati alla prima apertura e riusati.
+struct Ui {
+    hwnd: HWND,
+    edit: HWND,
+    list: List,
+}
+
 struct State {
     palette: Palette,
     brush: HBRUSH,
+    font: HFONT,
     files: Vec<String>,
     shown: Vec<String>,
-    list: HWND,
     changed: bool,
     done: Option<bool>,
+    max_rows: usize,
+    width: i32,
 }
 
 thread_local! {
+    static UI: OnceCell<&'static Ui> = const { OnceCell::new() };
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
 }
 
+fn ui() -> Option<&'static Ui> {
+    UI.with(|cell| cell.get().copied())
+}
+
+unsafe fn paint_row(row: &RowPaint) {
+    STATE.with(|state| {
+        let state = state.borrow();
+        let Some(state) = state.as_ref() else { return };
+        let Some(path) = state.shown.get(row.index) else { return };
+        let palette = &state.palette;
+        let dc = row.dc;
+        SelectObject(dc, state.font);
+        SetBkMode(dc, TRANSPARENT as i32);
+        fill(dc, &row.rect, if row.selected { palette.selection } else { palette.panel });
+        let s = |value: i32| value * GetDpiForWindow(row.list) as i32 / 96;
+        let name = Path::new(path).file_name().map_or_else(|| path.clone(), |name| name.to_string_lossy().into_owned());
+        let dir = Path::new(path).parent().map(|dir| dir.display().to_string()).unwrap_or_default();
+        let left = row.rect.left + s(12);
+        let name_right = (left + text_width(dc, &name)).min(row.rect.right - s(12));
+        text(dc, &name, &RECT { left, right: name_right, ..row.rect }, palette.fg, DT_LEFT | DT_END_ELLIPSIS);
+        text(dc, &dir, &RECT { left: name_right + s(8), right: row.rect.right - s(12), ..row.rect }, palette.muted, DT_LEFT | DT_PATH_ELLIPSIS);
+    });
+}
+
 unsafe extern "system" fn quick_open_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    match message {
+        WM_LIST_PAINT => {
+            paint_row(&*(lparam as *const RowPaint));
+            return 0;
+        }
+        WM_LIST_EVENT => {
+            // Clic o doppio clic su un risultato: si apre (le frecce del campo mandano Toggle, ignorato).
+            let (event, _) = decode_event(lparam);
+            if matches!(event, ListEvent::Select | ListEvent::Activate) {
+                STATE.with(|state| {
+                    if let Some(state) = state.borrow_mut().as_mut() {
+                        state.done = Some(true);
+                    }
+                });
+            }
+            return 0;
+        }
+        _ => {}
+    }
     let handled = STATE.with(|state| {
         let mut state = state.try_borrow_mut().ok()?;
         let state = state.as_mut()?;
         match message {
-            WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
+            WM_PAINT => {
+                let mut paint: PAINTSTRUCT = std::mem::zeroed();
+                let dc = BeginPaint(hwnd, &mut paint);
+                let mut client = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                GetClientRect(hwnd, &mut client);
+                let s = |value: i32| value * GetDpiForWindow(hwnd) as i32 / 96;
+                let palette = &state.palette;
+                fill(dc, &client, palette.panel);
+                let input = RECT { bottom: s(INPUT), ..client };
+                fill(dc, &input, palette.editor);
+                fill(dc, &RECT { top: input.bottom - 1, ..input }, palette.border);
+                if state.shown.is_empty() {
+                    let previous = SelectObject(dc, state.font);
+                    SetBkMode(dc, TRANSPARENT as i32);
+                    text(dc, "Nessun risultato", &RECT { left: s(12), top: input.bottom, right: client.right - s(12), bottom: input.bottom + s(ROW) }, palette.muted, DT_LEFT);
+                    SelectObject(dc, previous);
+                }
+                frame(dc, &client, palette.border);
+                EndPaint(hwnd, &paint);
+                Some(0)
+            }
+            WM_ERASEBKGND => Some(1),
+            WM_CTLCOLOREDIT => {
                 SetTextColor(wparam as HDC, state.palette.fg);
                 SetBkColor(wparam as HDC, state.palette.editor);
                 Some(state.brush as LRESULT)
             }
             WM_COMMAND => {
-                let code = ((wparam >> 16) & 0xFFFF) as u32;
-                if code == EN_CHANGE {
+                if ((wparam >> 16) & 0xFFFF) as u32 == EN_CHANGE {
                     state.changed = true;
-                } else if lparam as HWND == state.list && code == LBN_DBLCLK {
-                    state.done = Some(true);
                 }
                 Some(0)
             }
-            WM_CLOSE => {
-                state.done = Some(false);
+            WM_ACTIVATE if (wparam & 0xFFFF) as u32 == WA_INACTIVE => {
+                // Un clic fuori chiude, come lo sfondo della versione Tauri.
+                state.done.get_or_insert(false);
                 Some(0)
             }
             _ => None,
@@ -109,80 +178,95 @@ unsafe extern "system" fn quick_open_proc(hwnd: HWND, message: u32, wparam: WPAR
     handled.unwrap_or_else(|| DefWindowProcW(hwnd, message, wparam, lparam))
 }
 
-fn refill(query: &str) {
-    STATE.with(|state| {
+/// Risultati per la ricerca; il riquadro si allunga fino a metà della finestra.
+fn refill(ui: &Ui, query: &str) {
+    let (count, max_rows, width) = STATE.with(|state| {
         let mut state = state.borrow_mut();
-        let Some(state) = state.as_mut() else { return };
+        let Some(state) = state.as_mut() else { return (0, 1, 0) };
         state.shown = fuzzy_filter(query, &state.files, LIMIT).into_iter().cloned().collect();
-        // SAFETY: lista valida; le stringhe vivono per la chiamata.
-        unsafe {
-            SendMessageW(state.list, LB_RESETCONTENT, 0, 0);
-            for path in &state.shown {
-                let name = Path::new(path).file_name().map_or_else(|| path.clone(), |name| name.to_string_lossy().into_owned());
-                let parent = Path::new(path).parent().map(|dir| dir.display().to_string()).filter(|dir| !dir.is_empty());
-                let label = wide(&parent.map_or_else(|| name.clone(), |dir| format!("{name}    {dir}")));
-                SendMessageW(state.list, LB_ADDSTRING, 0, label.as_ptr() as isize);
-            }
-            SendMessageW(state.list, LB_SETCURSEL, 0, 0);
-        }
+        (state.shown.len(), state.max_rows, state.width)
     });
+    // SAFETY: finestre valide del riquadro.
+    unsafe {
+        let s = |value: i32| value * GetDpiForWindow(ui.hwnd) as i32 / 96;
+        let rows = count.clamp(1, max_rows) as i32;
+        let height = s(INPUT) + rows * s(ROW) + s(6);
+        SetWindowPos(ui.hwnd, std::ptr::null_mut(), 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        ShowWindow(ui.list.hwnd, if count == 0 { SW_HIDE } else { SW_SHOW });
+        MoveWindow(ui.list.hwnd, 1, s(INPUT), width - 2, rows * s(ROW) + s(4), 1);
+        ui.list.set_rows(count);
+        if count > 0 {
+            ui.list.select(0, ListEvent::Toggle);
+        }
+        InvalidateRect(ui.hwnd, std::ptr::null(), 1);
+    }
+}
+
+fn create_ui(owner: HWND, palette: &Palette) -> &'static Ui {
+    if let Some(ui) = ui() {
+        return ui;
+    }
+    let class_name = wide(CLASS_NAME);
+    // SAFETY: classe e finestre create una volta e tenute per tutta la vita dell'app.
+    let ui: &'static Ui = unsafe {
+        let instance = GetModuleHandleW(std::ptr::null());
+        let class = WNDCLASSEXW { cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32, lpfnWndProc: Some(quick_open_proc), hInstance: instance, hCursor: LoadCursorW(std::ptr::null_mut(), IDC_ARROW), lpszClassName: class_name.as_ptr(), ..std::mem::zeroed() };
+        RegisterClassExW(&class);
+        let hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, class_name.as_ptr(), std::ptr::null(), WS_POPUP | WS_CLIPCHILDREN, 0, 0, 0, 0, owner, std::ptr::null_mut(), instance, std::ptr::null());
+        let edit_class = wide("EDIT");
+        let edit = CreateWindowExW(0, edit_class.as_ptr(), std::ptr::null(), WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL as u32, 0, 0, 0, 0, hwnd, std::ptr::null_mut(), instance, std::ptr::null());
+        Box::leak(Box::new(Ui { hwnd, edit, list: List::create(hwnd, instance, palette.panel, palette.dark) }))
+    };
+    ui.list.attach();
+    UI.with(|cell| {
+        let _ = cell.set(ui);
+    });
+    ui
 }
 
 /// Mostra Quick Open sui file di `root`; il file scelto, se c'è.
 pub fn pick(owner: HWND, palette: &Palette, font: HFONT, root: &Path, files: Vec<String>) -> Option<PathBuf> {
     let relative: Vec<String> = files.iter().map(|file| Path::new(file).strip_prefix(root).map_or_else(|_| file.clone(), |rest| rest.to_string_lossy().into_owned())).collect();
-    let class_name = wide(CLASS_NAME);
-    let title = wide("Apri file");
-    // SAFETY: finestra modale creata, usata e distrutta qui; il proprietario è disabilitato per tutta la durata.
+    let ui = create_ui(owner, palette);
+    // SAFETY: riquadro modale mostrato e nascosto qui; il proprietario è disabilitato per tutta la durata.
     unsafe {
-        let instance = GetModuleHandleW(std::ptr::null());
-        let class = WNDCLASSEXW { cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32, lpfnWndProc: Some(quick_open_proc), hInstance: instance, hCursor: LoadCursorW(std::ptr::null_mut(), IDC_ARROW), hbrBackground: std::ptr::null_mut(), lpszClassName: class_name.as_ptr(), ..std::mem::zeroed() };
-        RegisterClassExW(&class);
-        let scale = |value: i32| value * GetDpiForWindow(owner) as i32 / 96;
-        let mut owner_rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-        GetWindowRect(owner, &mut owner_rect);
-        let (width, height) = (scale(WIDTH), scale(HEIGHT));
-        let left = owner_rect.left + (owner_rect.right - owner_rect.left - width) / 2;
-        let hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, class_name.as_ptr(), title.as_ptr(), WS_POPUP | WS_CAPTION | WS_SYSMENU, left, owner_rect.top + scale(80), width, height, owner, std::ptr::null_mut(), instance, std::ptr::null());
-        let dark: i32 = palette.dark.into();
-        DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE as u32, (&dark as *const i32).cast(), 4);
+        let s = |value: i32| value * GetDpiForWindow(owner) as i32 / 96;
         let mut client = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-        GetClientRect(hwnd, &mut client);
-        let (edit_class, list_class) = (wide("EDIT"), wide("LISTBOX"));
-        let edit = CreateWindowExW(0, edit_class.as_ptr(), std::ptr::null(), WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL as u32, scale(8), scale(8), client.right - scale(16), scale(28), hwnd, std::ptr::null_mut(), instance, std::ptr::null());
-        let list_style = WS_CHILD | WS_VISIBLE | WS_VSCROLL | (LBS_NOTIFY | LBS_NOINTEGRALHEIGHT) as u32;
-        let list = CreateWindowExW(0, list_class.as_ptr(), std::ptr::null(), list_style, scale(8), scale(44), client.right - scale(16), client.bottom - scale(52), hwnd, std::ptr::null_mut(), instance, std::ptr::null());
-        if palette.dark {
-            let theme = wide("DarkMode_Explorer");
-            SetWindowTheme(list, theme.as_ptr(), std::ptr::null());
-        }
-        for control in [edit, list] {
-            SendMessageW(control, WM_SETFONT, font as usize, 0);
-        }
-        let cue = wide("Nome del file (anche lettere sparse, es. apprs per app.rs)");
-        SendMessageW(edit, 0x1501, 1, cue.as_ptr() as isize);
-        STATE.with(|state| *state.borrow_mut() = Some(State { palette: *palette, brush: CreateSolidBrush(palette.editor), files: relative, shown: Vec::new(), list, changed: false, done: None }));
-        refill("");
+        GetClientRect(owner, &mut client);
+        let mut origin = POINT { x: 0, y: 0 };
+        ClientToScreen(owner, &mut origin);
+        let width = s(WIDTH).min(client.right - s(32)).max(s(300));
+        let max_rows = ((client.bottom / 2) / s(ROW)).max(3) as usize;
+        SetWindowPos(ui.hwnd, std::ptr::null_mut(), origin.x + (client.right - width) / 2, origin.y + client.bottom / 10, width, s(INPUT), SWP_NOZORDER | SWP_NOACTIVATE);
+        SendMessageW(ui.edit, WM_SETFONT, font as usize, 0);
+        MoveWindow(ui.edit, s(12), s(9), width - s(24), s(20), 1);
+        let empty = wide("");
+        SetWindowTextW(ui.edit, empty.as_ptr());
+        let cue = wide("Cerca file per nome…");
+        SendMessageW(ui.edit, 0x1501, 1, cue.as_ptr() as isize);
+        ui.list.set_row_height(s(ROW));
+        STATE.with(|state| *state.borrow_mut() = Some(State { palette: *palette, brush: CreateSolidBrush(palette.editor), font, files: relative, shown: Vec::new(), changed: false, done: None, max_rows, width }));
+        refill(ui, "");
 
         EnableWindow(owner, 0);
-        ShowWindow(hwnd, SW_SHOW);
-        SetFocus(edit);
+        ShowWindow(ui.hwnd, SW_SHOW);
+        SetFocus(ui.edit);
         let mut msg: MSG = std::mem::zeroed();
         let accepted = loop {
             if let Some(done) = STATE.with(|state| state.borrow().as_ref().and_then(|state| state.done)) {
                 break done;
             }
             if GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) <= 0 {
-                // WM_QUIT arrivato durante il dialogo: va rimesso in coda per il ciclo principale.
+                // WM_QUIT arrivato durante il riquadro: va rimesso in coda per il ciclo principale.
                 PostQuitMessage(0);
                 break false;
             }
             if msg.message == WM_KEYDOWN {
                 let key = msg.wParam as u16;
-                let count = SendMessageW(list, LB_GETCOUNT, 0, 0).max(1);
-                let current = SendMessageW(list, LB_GETCURSEL, 0, 0).max(0);
+                let rows = STATE.with(|state| state.borrow().as_ref().map_or(0, |state| state.shown.len()));
+                let current = ui.list.selected().unwrap_or(0) as isize;
                 let step = match key {
-                    VK_RETURN => break true,
+                    VK_RETURN => break rows > 0,
                     VK_ESCAPE => break false,
                     VK_DOWN => 1,
                     VK_UP => -1,
@@ -191,24 +275,26 @@ pub fn pick(owner: HWND, palette: &Palette, font: HFONT, root: &Path, files: Vec
                     _ => 0,
                 };
                 if step != 0 {
-                    SendMessageW(list, LB_SETCURSEL, (current + step).clamp(0, count - 1) as usize, 0);
+                    if rows > 0 {
+                        ui.list.select((current + step).clamp(0, rows as isize - 1) as usize, ListEvent::Toggle);
+                    }
                     continue;
                 }
             }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
             if STATE.with(|state| state.borrow_mut().as_mut().is_some_and(|state| std::mem::take(&mut state.changed))) {
-                refill(&window_text(edit));
+                refill(ui, &window_text(ui.edit));
             }
         };
-        let selected = SendMessageW(list, LB_GETCURSEL, 0, 0);
+        let selected = ui.list.selected();
         let state = STATE.with(|state| state.borrow_mut().take());
         EnableWindow(owner, 1);
-        DestroyWindow(hwnd);
+        ShowWindow(ui.hwnd, SW_HIDE);
         SetFocus(owner);
         let state = state?;
         DeleteObject(state.brush);
-        let chosen = usize::try_from(selected).ok().and_then(|index| state.shown.get(index)).filter(|_| accepted)?;
+        let chosen = selected.and_then(|index| state.shown.get(index)).filter(|_| accepted)?;
         Some(root.join(chosen))
     }
 }

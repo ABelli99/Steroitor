@@ -23,12 +23,13 @@ use steroitor_core::git::history::LogFilter;
 use steroitor_core::git::parse::{BlameLine, FileStatus, Operation};
 use steroitor_core::text::{decode, encode};
 
+use crate::clone_dialog;
 use crate::compare::Compare;
 use crate::dialogs::{copy_to_clipboard, message_box, open_files, pick_folder, save_file, wide};
 use crate::explorer::{popup_menu, Action, Explorer};
 use crate::find::{self, window_text, FindBar};
 use crate::hunks;
-use crate::git::{line_changes, repo_name, repo_of, CommitRequest, Event, FileColors, Repo, Worker, WM_COMMAND_LOGGED, WM_GIT_EVENT};
+use crate::git::{line_changes, repo_of, CommitRequest, Event, FileColors, Repo, Worker, WM_COMMAND_LOGGED, WM_GIT_EVENT};
 use crate::lang::{self, Language};
 use crate::minimap::{self, Minimap, WM_MINIMAP_LINE};
 use crate::list::{decode_event, ListEvent, RowPaint, WM_LIST_EVENT, WM_LIST_PAINT};
@@ -3172,18 +3173,14 @@ impl App {
 
     /// Chiede URL e cartella di destinazione; a clone finito la cartella si apre come progetto.
     fn clone_repository(&self) {
-        let Some(url) = prompt(self.hwnd, &self.palette, self.font.get(), "Clona repository", "URL del repository (HTTPS o SSH):", "") else { return };
-        let Some(name) = repo_name(&url) else {
-            message_box(self.hwnd, "URL non valido.", MB_ICONERROR);
-            return;
-        };
-        let Some(parent) = pick_folder(self.hwnd) else { return };
-        let target = parent.join(&name);
-        if target.exists() {
-            message_box(self.hwnd, &format!("{} esiste già.", target.display()), MB_ICONERROR);
-            return;
+        let parent = self.settings.borrow().clone_parent.clone().map(PathBuf::from).or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from)).unwrap_or_default();
+        let Some((url, target)) = clone_dialog::ask(self.hwnd, &self.palette, self.font.get(), parent) else { return };
+        if let Some(parent) = target.parent() {
+            let mut settings = self.settings.borrow_mut();
+            settings.clone_parent = Some(parent.display().to_string());
+            settings.save();
         }
-        self.worker.clone_repo(url.trim().to_string(), target);
+        self.worker.clone_repo(url, target);
         self.show_panel(Tab::Console);
         self.panel.view.set(None);
     }

@@ -125,6 +125,8 @@ pub struct Settings {
     pub disabled_plugins: Vec<String>,
     /// Id plugin → id opzione → attiva; un'opzione mai toccata è spenta.
     pub plugin_options: HashMap<String, HashMap<String, bool>>,
+    /// Ultima cartella in cui si è clonato, proposta al clone successivo.
+    pub clone_parent: Option<String>,
 }
 
 impl Settings {
@@ -162,6 +164,9 @@ impl Settings {
         saved["updateMethod"] = (if self.pull_rebase() { "rebase" } else { "merge" }).into();
         saved["terminalShell"] = self.terminal_shell.clone().into();
         saved["disabledPlugins"] = self.disabled_plugins.clone().into();
+        if let Some(parent) = &self.clone_parent {
+            saved["cloneParent"] = parent.clone().into();
+        }
         // Opzione per opzione: restano quelle che conosce solo la versione Tauri (es. `jdtls`).
         let options = &mut saved["pluginOptions"];
         if !options.is_object() {
@@ -222,7 +227,7 @@ mod tests {
     fn saving_keeps_the_keys_of_the_tauri_version() {
         let saved = serde_json::json!({"editor": {"fontSize": 12, "other": 1}, "disabledPlugins": ["java"], "pluginOptions": {"java": {"jdtls": true}}, "skippedVersion": "1.2.0"});
         let plugin_options = HashMap::from([("java".to_string(), HashMap::from([("typeCheck".to_string(), true)]))]);
-        let settings = Settings { editor: EditorStyle { font_size: 16.0, use_tabs: true, ..EditorStyle::default() }, update_method: "rebase".into(), terminal_shell: "cmd".into(), warn_crlf: None, disabled_plugins: vec!["javascript".into()], plugin_options };
+        let settings = Settings { editor: EditorStyle { font_size: 16.0, use_tabs: true, ..EditorStyle::default() }, update_method: "rebase".into(), terminal_shell: "cmd".into(), warn_crlf: None, disabled_plugins: vec!["javascript".into()], plugin_options, clone_parent: None };
         let merged = settings.merge_into(saved);
         assert_eq!(merged["disabledPlugins"][0], "javascript");
         assert_eq!(merged["pluginOptions"]["java"]["jdtls"], true);
