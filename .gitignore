@@ -2,3 +2,5 @@ node_modules
 /dist
 *.local
 vite.config.ts.timestamp-*
+/core/target
+/native/target

@@ -194,6 +194,28 @@ Note di implementazione:
 
 ---
 
+## Riscrittura nativa (branch `native`) — N1 implementata
+
+Obiettivo: la massima leggerezza. WebView2 da solo vale ~65 dei ~72 MB dell'app Tauri; un'app Win32 con l'editor di Notepad++ (Scintilla) ne usa una frazione. L'app Tauri resta su `master`, usabile, finché la nativa non arriva a parità.
+
+| Area | Scelta | Perché | Scartato |
+|---|---|---|---|
+| Linguaggio | **Rust** | Riusa il backend esistente (git, watcher, sessioni, ConPTY, LSP); stessa RAM del C++ | C++ (backend da riscrivere, nessun guadagno di memoria) |
+| Finestre | **Win32** (`windows-sys`), tab e status bar disegnate con GDI | Il minimo possibile; i controlli comuni non seguono il tema scuro | egui, Slint (editor di codice da scrivere da zero) |
+| Editor | **Scintilla 5.6.9 + Lexilla 5.5.5** (sorgenti in `native/vendor`, compilati con `cc`) | Evidenziazione, folding, multi-cursore, completamento già pronti; un documento Scintilla per tab | — |
+| Logica condivisa | crate **`core/`** | Usato da entrambe le app mentre si migra (per ora: decodifica/codifica dei file) | — |
+
+Fasi:
+- **N1** — finestra, editor con evidenziazione (16 lexer: C-like per JS/TS/Java/C/C#, Python, JSON, YAML, Markdown, HTML/XML, CSS, Rust, TOML, INI, Batch, PowerShell, SQL, Diff), tab (clic, clic centrale, ×, `Ctrl+Tab`), `Ctrl+N/O/S/Shift+S/W`, file da riga di comando, encoding e BOM preservati, fine riga rilevato, tema chiaro/scuro di sistema, DPI per monitor. **Misura: 2 MB di RAM privata** (19 MB di working set con le DLL di sistema condivise) contro ~72 MB; eseguibile 1,3 MB contro 7 MB
+- **N2** — File Explorer (TreeView), cartella di progetto, watcher, sessioni e impostazioni, ricerca nel file (`Ctrl+F`), cambio fine riga dalla status bar, drag & drop dei file
+- **N3** — Git: colori dei file, marker nel gutter, Commit, log con grafo, branch, menu VCS
+- **N4** — Console dei comandi, terminale (ConPTY + emulatore)
+- **N5** — diff e merge a 3 vie, pagina impostazioni, plugin (completamento, jdtls riusando `lsp.rs`)
+
+Note N1: il trascinamento di file sull'editor non apre i file (Scintilla accetta solo testo trascinato); il cambio di tema di Windows vale dal riavvio.
+
+---
+
 ## Fuori scope (decisione esplicita)
 
 Presenti nel CLAUDE.md ma incompatibili con "notepad leggero":

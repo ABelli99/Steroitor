@@ -1,0 +1,9 @@
+[package]
+name = "steroitor-core"
+version = "0.1.0"
+edition = "2021"
+description = "Logica condivisa tra l'app Tauri e quella nativa: niente UI"
+
+[dependencies]
+encoding_rs = "0.8"
+serde = { version = "1", features = ["derive"] }
