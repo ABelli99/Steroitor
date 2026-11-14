@@ -140,6 +140,8 @@ pub struct App {
     font: Cell<HFONT>,
     edit_brush: HBRUSH,
     tabs: RefCell<Vec<(RECT, RECT)>>,
+    /// Pulsante delle impostazioni, in fondo alla barra delle tab.
+    settings_rect: Cell<RECT>,
     eol_rect: Cell<RECT>,
     explorer_width: Cell<i32>,
     explorer_visible: Cell<bool>,
@@ -275,6 +277,7 @@ impl App {
             // SAFETY: pennello creato una volta e usato per tutta la vita dell'app.
             edit_brush: unsafe { CreateSolidBrush(palette.editor) },
             tabs: RefCell::new(Vec::new()),
+            settings_rect: Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }),
             eol_rect: Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }),
             explorer_width: Cell::new(session.explorer_width.unwrap_or(EXPLORER_WIDTH)),
             explorer_visible: Cell::new(session.explorer_visible.unwrap_or(true)),
@@ -649,6 +652,8 @@ impl App {
         self.explorer.set_root(folder.as_deref());
         let roots = folder.as_deref().map(steroitor_core::repos::find_repos).unwrap_or_default();
         *self.repos.borrow_mut() = roots.iter().map(|root| Repo { root: root.clone(), status: None, branches: Vec::new() }).collect();
+        self.panel.repo_count.set(roots.len());
+        *self.panel.root.borrow_mut() = None;
         *self.colors.borrow_mut() = FileColors::default();
         self.heads.borrow_mut().clear();
         for root in &roots {
@@ -1075,9 +1080,7 @@ impl App {
             if self.find.is_open() {
                 self.find.paint(dc, self.find_rect(), &self.palette, |value| self.scale(value));
             }
-            if self.panel.visible.get() {
-                self.panel.paint(dc, self.panel_rect(), &self.palette, |value| self.scale(value));
-            }
+            self.panel.paint(dc, self.panel_rect(), &self.palette, |value| self.scale(value));
             self.paint_status(dc);
             BitBlt(target, 0, 0, client.right, client.bottom, dc, 0, 0, SRCCOPY);
             SelectObject(dc, previous_font);
@@ -1128,6 +1131,11 @@ impl App {
             left += width;
         }
         *self.tabs.borrow_mut() = rects;
+        let gear = RECT { left: client.right - self.scale(36), top: 0, right: client.right, bottom: height - 1 };
+        fill(dc, &gear, palette.panel);
+        fill(dc, &RECT { right: gear.left + 1, ..gear }, palette.border);
+        text(dc, "⚙", &gear, palette.muted, DT_CENTER);
+        self.settings_rect.set(gear);
     }
 
     unsafe fn strip(dc: HDC, rect: RECT, palette: &Palette) {
@@ -1396,7 +1404,8 @@ impl App {
     fn show_panel(&self, tab: Tab) {
         self.panel.visible.set(true);
         self.panel.tab.set(tab);
-        *self.panel.root.borrow_mut() = self.active_repo_root();
+        let chosen = self.panel.root.borrow().clone().filter(|root| self.repos.borrow().iter().any(|repo| &repo.root == root));
+        *self.panel.root.borrow_mut() = chosen.or_else(|| self.active_repo_root());
         self.sync_panel();
         self.layout();
         let focus = match tab {
@@ -1466,6 +1475,21 @@ impl App {
     }
 
     /// Alt+9 e simili: apre la tab, o chiude il pannello se è già quella mostrata.
+    /// Repository di log e commit, scelto dall'intestazione del pannello quando la cartella ne ha più d'uno.
+    fn choose_repo(&self) {
+        let folder = self.explorer.root();
+        let roots: Vec<PathBuf> = self.repos.borrow().iter().map(|repo| repo.root.clone()).collect();
+        let labels: Vec<String> = roots
+            .iter()
+            .map(|root| folder.as_deref().and_then(|folder| root.strip_prefix(folder).ok()).filter(|rest| !rest.as_os_str().is_empty()).map_or_else(|| root.file_name().map_or_else(|| root.display().to_string(), |name| name.to_string_lossy().into_owned()), |rest| rest.display().to_string()))
+            .collect();
+        let entries: Vec<(usize, &str)> = labels.iter().enumerate().map(|(index, label)| (index + 1, label.as_str())).collect();
+        let Some(root) = popup_menu(self.hwnd, &entries).checked_sub(1).and_then(|index| roots.get(index).cloned()) else { return };
+        *self.panel.root.borrow_mut() = Some(root);
+        self.sync_panel();
+        self.invalidate();
+    }
+
     fn toggle_panel(&self, tab: Tab) {
         if self.panel.visible.get() && self.panel.tab.get() == tab {
             self.panel.visible.set(false);
@@ -1636,7 +1660,7 @@ impl App {
 
     fn panel_height(&self) -> i32 {
         if !self.panel.visible.get() {
-            return 0;
+            return self.scale(panel::HEADER);
         }
         let available = self.status_rect().top - self.scale(TAB_HEIGHT) - self.scale(EDITOR_MIN);
         self.scale(self.panel.height.get()).clamp(self.scale(panel::HEADER + 60), available.max(self.scale(panel::HEADER + 60)))
@@ -1653,6 +1677,9 @@ impl App {
 
     fn tab_at(&self, x: i32, y: i32) -> Option<(usize, bool)> {
         let tabs = self.tabs.borrow();
+        if contains(&self.settings_rect.get(), x, y) {
+            return None;
+        }
         let index = tabs.iter().position(|(tab, _)| contains(tab, x, y))?;
         Some((index, contains(&tabs[index].1, x, y)))
     }
@@ -1664,9 +1691,12 @@ impl App {
             unsafe { SetCapture(self.hwnd) };
             return;
         }
-        if self.panel.visible.get() && contains(&self.panel_rect(), x, y) {
+        if contains(&self.panel_rect(), x, y) {
             if let Some(tab) = self.panel.tab_at(x, y) {
-                return self.show_panel(tab);
+                return self.toggle_panel(tab);
+            }
+            if self.panel.on_repo(x, y) {
+                return self.choose_repo();
             }
             if let Some(target) = self.panel.console_target_at(x, y) {
                 return self.on_console_target(target);
@@ -1686,6 +1716,9 @@ impl App {
         }
         if self.explorer_visible.get() && contains(&self.header_rect(), x, y) {
             return self.header_menu();
+        }
+        if contains(&self.settings_rect.get(), x, y) {
+            return self.open_settings();
         }
         if self.find.is_open() && contains(&self.find_rect(), x, y) {
             if let Some(button) = self.find.button_at(x, y) {
@@ -1791,7 +1824,7 @@ impl App {
             ScreenToClient(self.hwnd, &mut point);
         }
         let over_splitter = self.splitter_rect().is_some_and(|splitter| contains(&splitter, point.x, point.y));
-        let clickable = contains(&self.eol_rect.get(), point.x, point.y) || contains(&self.vcs_rect.get(), point.x, point.y) || (self.explorer_visible.get() && contains(&self.header_rect(), point.x, point.y));
+        let clickable = contains(&self.eol_rect.get(), point.x, point.y) || contains(&self.vcs_rect.get(), point.x, point.y) || contains(&self.settings_rect.get(), point.x, point.y) || (self.explorer_visible.get() && contains(&self.header_rect(), point.x, point.y));
         let over_panel = self.over_panel_splitter(point.y) || self.dragging_panel.get();
         let cursor = match (over_splitter || self.dragging.get(), clickable) {
             _ if over_panel => IDC_SIZENS,

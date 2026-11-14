@@ -73,6 +73,9 @@ pub struct Panel {
     pub changes: RefCell<Vec<ChangedFile>>,
     /// Repository mostrato da log e commit.
     pub root: RefCell<Option<PathBuf>>,
+    /// Repository della cartella: con più di uno il nome nell'intestazione apre la scelta.
+    pub repo_count: Cell<usize>,
+    repo_rect: Cell<RECT>,
     pub terminals: RefCell<Vec<Terminal>>,
     /// Terminale mostrato nella Console; None è il log dei comandi git.
     pub view: Cell<Option<u32>>,
@@ -140,6 +143,8 @@ impl Panel {
             graph: RefCell::new(Vec::new()),
             changes: RefCell::new(Vec::new()),
             root: RefCell::new(None),
+            repo_count: Cell::new(0),
+            repo_rect: Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }),
             terminals: RefCell::new(Vec::new()),
             view: Cell::new(None),
             next_terminal: Cell::new(1),
@@ -188,7 +193,9 @@ impl Panel {
         place(self.message, commit, RECT { left: body.left + scale(8), top: message_top, right: body.right - scale(8), bottom: body.bottom - scale(BUTTON_ROW) });
     }
 
+    /// Da chiuso resta solo l'intestazione, così le tab si possono sempre cliccare.
     pub unsafe fn paint(&self, dc: HDC, rect: RECT, palette: &Palette, scale: impl Fn(i32) -> i32) {
+        let visible = self.visible.get();
         let header = RECT { bottom: rect.top + scale(HEADER), ..rect };
         fill(dc, &rect, palette.panel);
         fill(dc, &RECT { bottom: rect.top + 1, ..rect }, palette.border);
@@ -198,7 +205,7 @@ impl Panel {
         for (label, tab) in [("Console", Tab::Console), ("Git", Tab::Git), ("Commit", Tab::Commit)] {
             let width = text_width(dc, label) + scale(24);
             let area = RECT { left, top: header.top, right: left + width, bottom: header.bottom };
-            let active = tab == self.tab.get();
+            let active = visible && tab == self.tab.get();
             if active {
                 fill(dc, &RECT { top: area.bottom - scale(2), ..area }, palette.accent);
             }
@@ -207,7 +214,7 @@ impl Panel {
             left += width;
         }
         let mut console_tabs = Vec::new();
-        if self.tab.get() == Tab::Console {
+        if visible && self.tab.get() == Tab::Console {
             fill(dc, &RECT { left: left + scale(6), top: header.top + scale(7), right: left + scale(7), bottom: header.bottom - scale(7) }, palette.border);
             left += scale(12);
             let mut targets = vec![("Comandi git".to_owned(), ConsoleTarget::Log)];
@@ -240,15 +247,22 @@ impl Panel {
             }
         }
         *self.console_tabs.borrow_mut() = console_tabs;
+        self.repo_rect.set(RECT { left: 0, top: 0, right: 0, bottom: 0 });
         if let Some(root) = self.root.borrow().as_ref() {
             let name = root.file_name().map_or_else(|| root.display().to_string(), |name| name.to_string_lossy().into_owned());
-            let area = RECT { left, right: rect.right - scale(12), ..header };
-            text(dc, &name, &area, palette.muted, DT_RIGHT | DT_END_ELLIPSIS);
+            let label = if self.repo_count.get() > 1 { format!("⎇ {name} ▾") } else { format!("⎇ {name}") };
+            let right = rect.right - scale(12);
+            let width = text_width(dc, &label).min(right - left);
+            let area = RECT { left: right - width, right, ..header };
+            text(dc, &label, &area, palette.muted, DT_RIGHT | DT_END_ELLIPSIS);
+            if self.repo_count.get() > 1 {
+                self.repo_rect.set(RECT { left: area.left - scale(6), right: area.right + scale(6), ..area });
+            }
         }
         *self.tabs.borrow_mut() = tabs;
 
         let mut buttons = Vec::new();
-        if self.tab.get() == Tab::Commit {
+        if visible && self.tab.get() == Tab::Commit {
             let row = RECT { top: rect.bottom - scale(BUTTON_ROW), ..rect };
             let mut left = row.left + scale(8);
             for (label, button) in [("Commit", Button::Commit), ("Commit e Push", Button::CommitAndPush)] {
@@ -269,6 +283,11 @@ impl Panel {
             text(dc, &format!("{checked} file selezionati · Ctrl+Invio nel messaggio per il commit"), &hint, palette.muted, DT_LEFT | DT_END_ELLIPSIS);
         }
         *self.buttons.borrow_mut() = buttons;
+    }
+
+    pub fn on_repo(&self, x: i32, y: i32) -> bool {
+        let r = self.repo_rect.get();
+        x >= r.left && x < r.right && y >= r.top && y < r.bottom
     }
 
     pub fn tab_at(&self, x: i32, y: i32) -> Option<Tab> {
