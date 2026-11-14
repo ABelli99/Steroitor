@@ -7,6 +7,7 @@ mod diff;
 mod explorer;
 mod find;
 mod git;
+mod hunks;
 mod lang;
 mod list;
 mod paint;

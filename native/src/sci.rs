@@ -93,6 +93,13 @@ pub const SC_MARK_LEFTRECT: isize = 27;
 pub const SC_MOD_INSERTTEXT: isize = 0x1;
 pub const SC_MOD_DELETETEXT: isize = 0x2;
 pub const SCN_MODIFIED: u32 = 2008;
+pub const SCN_MARGINCLICK: u32 = 2010;
+pub const SCI_SETMARGINSENSITIVEN: u32 = 2246;
+pub const SC_MARGIN_TEXT: isize = 4;
+pub const SCI_MARGINSETTEXT: u32 = 2530;
+pub const SCI_MARGINSETSTYLE: u32 = 2532;
+pub const SCI_MARGINTEXTCLEARALL: u32 = 2536;
+pub const SCI_POSITIONFROMLINE: u32 = 2167;
 pub const SCI_GETDOCPOINTER: u32 = 2357;
 pub const SCI_AUTOCSHOW: u32 = 2100;
 pub const SCI_AUTOCCANCEL: u32 = 2101;
@@ -157,6 +164,15 @@ pub struct Notification {
     pub modifiers: i32,
     pub modification_type: i32,
     pub text: *const std::ffi::c_char,
+    pub length: isize,
+    pub lines_added: isize,
+    pub message: i32,
+    pub wparam: usize,
+    pub lparam: isize,
+    pub line: isize,
+    pub fold_level_now: i32,
+    pub fold_level_prev: i32,
+    pub margin: i32,
 }
 
 impl Notification {

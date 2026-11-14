@@ -19,13 +19,15 @@ use windows_sys::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW,
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use steroitor_core::git::history::ResetMode;
-use steroitor_core::git::parse::{FileStatus, Operation};
+use steroitor_core::git::history::LogFilter;
+use steroitor_core::git::parse::{BlameLine, FileStatus, Operation};
 use steroitor_core::text::{decode, encode};
 
 use crate::compare::Compare;
 use crate::dialogs::{copy_to_clipboard, message_box, open_files, pick_folder, save_file, wide};
 use crate::explorer::{popup_menu, Action, Explorer};
 use crate::find::{self, window_text, FindBar};
+use crate::hunks;
 use crate::git::{line_changes, repo_name, repo_of, CommitRequest, Event, FileColors, Repo, Worker, WM_COMMAND_LOGGED, WM_GIT_EVENT};
 use crate::lang::{self, Language};
 use crate::list::{decode_event, ListEvent, RowPaint, WM_LIST_EVENT, WM_LIST_PAINT};
@@ -67,6 +69,17 @@ const MENU_INIT: usize = 7;
 const MARKER_TIMER: usize = 1;
 const MARKER_DELAY_MS: u32 = 300;
 const GIT_MARGIN: usize = 1;
+const BLAME_MARGIN: usize = 2;
+const LOG_FILTER_TIMER: usize = 4;
+const LOG_FILTER_DELAY_MS: u32 = 400;
+const GUTTER_ROLLBACK: usize = 1;
+const GUTTER_STAGE: usize = 2;
+const GUTTER_DIFF: usize = 3;
+const GUTTER_BLAME: usize = 4;
+const CHIP_ALL: usize = 1;
+const CHIP_ASK: usize = 2;
+const CHIP_ACTIVE_FILE: usize = 3;
+const CHIP_BRANCH: usize = 10;
 const MARKER_ADDED: usize = 0;
 const MARKER_MODIFIED: usize = 1;
 const MARKER_DELETED: usize = 2;
@@ -114,6 +127,8 @@ struct Doc {
     anchor: isize,
     caret: isize,
     first_line: isize,
+    /// Annotazioni (blame) mostrate nel margine, una per riga; vuoto se spente.
+    blame: Vec<BlameLine>,
 }
 
 impl Doc {
@@ -123,6 +138,15 @@ impl Doc {
             None => format!("Senza titolo {}", self.untitled),
         }
     }
+}
+
+/// Annotazione di una riga: hash breve, data, autore.
+fn blame_label(entry: &BlameLine) -> String {
+    if entry.hash.bytes().all(|byte| byte == b'0') {
+        return format!(" {}", entry.author);
+    }
+    let date = panel::local_time(entry.timestamp);
+    format!(" {} {} {}", entry.hash.get(..7).unwrap_or(&entry.hash), date.get(..10).unwrap_or(&date), entry.author)
 }
 
 fn operation_name(operation: &Operation) -> &'static str {
@@ -464,7 +488,12 @@ impl App {
         sci.call(SCI_SETMODEVENTMASK, (SC_MOD_INSERTTEXT | SC_MOD_DELETETEXT) as usize, 0);
         sci.call(SCI_SETMARGINTYPEN, GIT_MARGIN, SC_MARGIN_SYMBOL);
         sci.call(SCI_SETMARGINMASKN, GIT_MARGIN, 0b111);
-        sci.call(SCI_SETMARGINWIDTHN, GIT_MARGIN, self.scale(4) as isize);
+        sci.call(SCI_SETMARGINWIDTHN, GIT_MARGIN, self.scale(6) as isize);
+        sci.call(SCI_SETMARGINSENSITIVEN, GIT_MARGIN, 1);
+        sci.call(SCI_SETMARGINTYPEN, BLAME_MARGIN, SC_MARGIN_TEXT);
+        sci.call(SCI_SETMARGINWIDTHN, BLAME_MARGIN, 0);
+        sci.call(SCI_SETMARGINSENSITIVEN, BLAME_MARGIN, 1);
+        sci.call(SCI_SETMARGINMASKN, BLAME_MARGIN, 0);
         for (marker, color) in [(MARKER_ADDED, self.palette.git_added), (MARKER_MODIFIED, self.palette.git_modified), (MARKER_DELETED, self.palette.git_ignored)] {
             sci.call(SCI_MARKERDEFINE, marker, SC_MARK_LEFTRECT);
             sci.call(SCI_MARKERSETBACK, marker, color as isize);
@@ -479,6 +508,7 @@ impl App {
         sci.call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_SELECTION_INACTIVE_BACK, opaque(palette.selection));
         sci.call(SCI_SETMARGINBACKN, 0, palette.editor as isize);
         sci.call(SCI_SETMARGINBACKN, GIT_MARGIN, palette.editor as isize);
+        sci.call(SCI_SETMARGINBACKN, BLAME_MARGIN, palette.panel as isize);
         sci.call(SCI_INDICSETSTYLE, find::INDICATOR, INDIC_ROUNDBOX);
         sci.call(SCI_INDICSETFORE, find::INDICATOR, palette.accent as isize);
         sci.call(SCI_INDICSETALPHA, find::INDICATOR, 60);
@@ -553,7 +583,7 @@ impl App {
         // In lista prima di caricare il testo: le notifiche di modifica devono arrivare a questa tab, non alla precedente.
         let index = {
             let mut docs = self.docs.borrow_mut();
-            docs.push(Doc { pointer, path, untitled, encoding, bom, eol, language, dirty: false, modified, stale: false, anchor: 0, caret: 0, first_line: 0 });
+            docs.push(Doc { pointer, path, untitled, encoding, bom, eol, language, dirty: false, modified, stale: false, anchor: 0, caret: 0, first_line: 0, blame: Vec::new() });
             docs.len() - 1
         };
         self.active.set(index);
@@ -650,6 +680,7 @@ impl App {
             self.find.highlight(&self.sci);
         }
         self.update_markers();
+        self.show_blame_margin();
         if !stale {
             self.with_plugins(|plugins, sci, settings, path| plugins.on_activate(sci, settings, path));
         }
@@ -1282,6 +1313,14 @@ impl App {
             SCN_AUTOCCANCELLED | SCN_AUTOCCOMPLETED => self.plugins.on_list_closed(&self.sci),
             SCN_DWELLSTART => self.with_plugins(|plugins, sci, settings, path| plugins.on_dwell(sci, settings, path, notification.position)),
             SCN_DWELLEND => self.plugins.on_dwell_end(&self.sci),
+            SCN_MARGINCLICK => {
+                let line = self.sci.call(SCI_LINEFROMPOSITION, notification.position.max(0) as usize, 0).max(0) as usize;
+                match notification.margin as usize {
+                    GIT_MARGIN => self.gutter_menu(line),
+                    BLAME_MARGIN => self.open_blame_commit(line),
+                    _ => {}
+                }
+            }
             SCN_UPDATEUI => {
                 self.match_braces();
                 // SAFETY: finestra valida.
@@ -1522,7 +1561,7 @@ impl App {
                             self.panel.set_changes(&root, status);
                         }
                         if head_moved && self.panel.visible.get() {
-                            self.worker.log(&root);
+                            self.load_log(&root);
                         }
                     }
                     if head_moved {
@@ -1552,6 +1591,12 @@ impl App {
                         self.worker.refresh(&root);
                     }
                 }
+                Event::Blame(file, result) => match result {
+                    Ok(lines) => self.set_blame(&file, lines),
+                    Err(error) => {
+                        message_box(self.hwnd, &error, MB_ICONERROR);
+                    }
+                },
                 Event::Cloned(target, result) => match result {
                     Ok(()) => self.open_project(target),
                     Err(error) => {
@@ -1572,7 +1617,7 @@ impl App {
                     }
                     self.worker.refresh(&root);
                     if self.panel.visible.get() {
-                        self.worker.log(&root);
+                        self.load_log(&root);
                     }
                 }
                 Event::Branches(root, branches) => {
@@ -1595,7 +1640,7 @@ impl App {
                     }
                     self.worker.refresh(&root);
                     if self.panel.visible.get() {
-                        self.worker.log(&root);
+                        self.load_log(&root);
                     }
                 }
             }
@@ -1848,7 +1893,7 @@ impl App {
             self.panel.set_changes(&root, status);
         }
         if self.panel.tab.get() == Tab::Git {
-            self.worker.log(&root);
+            self.load_log(&root);
         }
     }
 
@@ -1992,6 +2037,154 @@ impl App {
         unsafe { InvalidateRect(self.hwnd, &self.panel_rect(), 0) };
     }
 
+    /// Log del repository con i filtri della riga sopra il log.
+    fn load_log(&self, root: &Path) {
+        let filters = self.panel.filters.borrow().clone();
+        let text = Some(window_text(self.panel.search).trim().to_string()).filter(|text| !text.is_empty());
+        self.panel.graph_hidden.set(filters.author.is_some() || filters.path.is_some() || text.is_some());
+        self.worker.log(root, LogFilter { reference: filters.branch, author: filters.author, text, path: filters.path });
+    }
+
+    fn choose_filter(&self, chip: panel::Chip) {
+        let Some(root) = self.panel.root.borrow().clone() else { return };
+        let current = self.panel.filters.borrow().clone();
+        match chip {
+            panel::Chip::Branch => {
+                let branches: Vec<String> = self.repos.borrow().iter().find(|repo| repo.root == root).map(|repo| repo.branches.iter().map(|branch| branch.name.clone()).collect()).unwrap_or_default();
+                let mut entries = vec![(CHIP_ALL, "Tutti i branch"), (0, "")];
+                entries.extend(branches.iter().enumerate().map(|(index, name)| (CHIP_BRANCH + index, name.as_str())));
+                let choice = popup_menu(self.hwnd, &entries);
+                match choice {
+                    CHIP_ALL => self.panel.filters.borrow_mut().branch = None,
+                    id if id >= CHIP_BRANCH => self.panel.filters.borrow_mut().branch = branches.get(id - CHIP_BRANCH).cloned(),
+                    _ => return,
+                }
+            }
+            panel::Chip::Author => match popup_menu(self.hwnd, &[(CHIP_ALL, "Tutti gli autori"), (CHIP_ASK, "Filtra per autore…")]) {
+                CHIP_ALL => self.panel.filters.borrow_mut().author = None,
+                CHIP_ASK => {
+                    let Some(author) = prompt(self.hwnd, &self.palette, self.font.get(), "Autore", "Nome o email (anche in parte):", current.author.as_deref().unwrap_or("")) else { return };
+                    self.panel.filters.borrow_mut().author = Some(author);
+                }
+                _ => return,
+            },
+            panel::Chip::Path => {
+                let active = self.active_path().filter(|path| path.starts_with(&root));
+                let mut entries = vec![(CHIP_ALL, "Tutti i percorsi"), (CHIP_ASK, "Filtra per percorso…")];
+                if active.is_some() {
+                    entries.push((CHIP_ACTIVE_FILE, "File attivo"));
+                }
+                match popup_menu(self.hwnd, &entries) {
+                    CHIP_ALL => self.panel.filters.borrow_mut().path = None,
+                    CHIP_ACTIVE_FILE => self.panel.filters.borrow_mut().path = active.map(|path| path.to_string_lossy().into_owned()),
+                    CHIP_ASK => {
+                        let label = "Cartella o file, relativo al repository o assoluto:";
+                        let Some(path) = prompt(self.hwnd, &self.palette, self.font.get(), "Percorso", label, current.path.as_deref().unwrap_or("")) else { return };
+                        self.panel.filters.borrow_mut().path = Some(path);
+                    }
+                    _ => return,
+                }
+            }
+        }
+        self.load_log(&root);
+        self.invalidate();
+    }
+
+    /// Clic sul marker Git nel gutter: azioni sul blocco cambiato (se c'è) e annotazioni.
+    fn gutter_menu(&self, line: usize) {
+        let Some(path) = self.active_path() else { return };
+        let Some(root) = repo_of(&self.repos.borrow(), &path).map(|repo| repo.root.clone()) else { return };
+        let head = self.heads.borrow().get(&crate::git::key(&path)).cloned().flatten();
+        let text = self.sci.text();
+        let hunk = head.as_deref().and_then(|head| hunks::hunk_at(head, &text, line));
+        let blame_on = self.docs.borrow().get(self.active.get()).is_some_and(|doc| !doc.blame.is_empty());
+        let mut entries = Vec::new();
+        if hunk.is_some() {
+            entries.extend([(GUTTER_ROLLBACK, "Annulla le modifiche del blocco"), (GUTTER_STAGE, "Metti in stage il blocco"), (GUTTER_DIFF, "Mostra diff"), (0, "")]);
+        }
+        entries.push((GUTTER_BLAME, if blame_on { "Nascondi annotazioni" } else { "Annota (blame)" }));
+        match popup_menu(self.hwnd, &entries) {
+            GUTTER_ROLLBACK => {
+                let (Some(head), Some(hunk)) = (head, hunk) else { return };
+                self.rollback_hunk(&head, &text, &hunk);
+            }
+            GUTTER_STAGE => self.stage_hunk(&root, &path, &text, line),
+            GUTTER_DIFF => self.compare.show_file(&root, &path, self.font.get()),
+            GUTTER_BLAME if blame_on => self.set_blame(&path, Vec::new()),
+            GUTTER_BLAME => self.worker.blame(&root, &path),
+            _ => {}
+        }
+    }
+
+    /// Riporta il blocco com'era in HEAD, con una modifica sola (annullabile con Ctrl+Z).
+    fn rollback_hunk(&self, head: &str, text: &str, hunk: &hunks::Hunk) {
+        let restored = hunks::rollback(head, text, hunk);
+        let line_start = self.sci.call(SCI_POSITIONFROMLINE, hunk.new.start, 0);
+        let start = if line_start < 0 { text.len() } else { (line_start as usize).min(text.len()) };
+        let common = text.as_bytes().iter().zip(restored.as_bytes()).take(start).take_while(|(a, b)| a == b).count();
+        let replacement = &restored.as_bytes()[common..];
+        self.sci.call(SCI_SETTARGETRANGE, common, text.len() as isize);
+        self.sci.call(SCI_REPLACETARGET, replacement.len(), replacement.as_ptr() as isize);
+        self.update_markers();
+    }
+
+    /// Mette in stage solo il blocco sotto la riga: l'index prende quel blocco dal testo dell'editor, il file non cambia.
+    fn stage_hunk(&self, root: &Path, path: &Path, text: &str, line: usize) {
+        let (root_text, path_text) = (root.to_string_lossy().into_owned(), path.to_string_lossy().into_owned());
+        let index = match self.worker.now(|git| git.index_content(&root_text, &path_text)) {
+            Ok(index) => index.unwrap_or_default(),
+            Err(error) => {
+                message_box(self.hwnd, &error, MB_ICONERROR);
+                return;
+            }
+        };
+        let Some(hunk) = hunks::hunk_at(&index, text, line) else {
+            message_box(self.hwnd, "Il blocco è già in stage.", MB_ICONINFORMATION);
+            return;
+        };
+        let staged = hunks::apply(&index, text, &hunk);
+        self.worker.run(root, move |git, root| git.stage_content(root, &path_text, &staged));
+    }
+
+    /// Annotazioni del file nel margine; con un elenco vuoto le toglie.
+    fn set_blame(&self, file: &Path, lines: Vec<BlameLine>) {
+        let Some(index) = self.docs.borrow().iter().position(|doc| doc.path.as_deref() == Some(file)) else { return };
+        let empty = lines.is_empty();
+        self.docs.borrow_mut()[index].blame = lines;
+        if index != self.active.get() {
+            return;
+        }
+        self.sci.call(SCI_MARGINTEXTCLEARALL, 0, 0);
+        if !empty {
+            let docs = self.docs.borrow();
+            for (line, entry) in docs[index].blame.iter().enumerate() {
+                self.sci.call_str(SCI_MARGINSETTEXT, line, &blame_label(entry));
+                self.sci.call(SCI_MARGINSETSTYLE, line, STYLE_LINENUMBER as isize);
+            }
+        }
+        self.show_blame_margin();
+    }
+
+    /// Larghezza del margine delle annotazioni per la tab attiva: zero se spente.
+    fn show_blame_margin(&self) {
+        let width = {
+            let docs = self.docs.borrow();
+            let longest = docs.get(self.active.get()).and_then(|doc| doc.blame.iter().map(blame_label).max_by_key(|label| label.chars().count()));
+            longest.map_or(0, |label| self.sci.call_str(SCI_TEXTWIDTH, STYLE_LINENUMBER, &label) + self.scale(12) as isize)
+        };
+        self.sci.call(SCI_SETMARGINWIDTHN, BLAME_MARGIN, width);
+    }
+
+    /// Clic su un'annotazione: le modifiche del commit di quella riga.
+    fn open_blame_commit(&self, line: usize) {
+        let Some(path) = self.active_path() else { return };
+        let Some(root) = repo_of(&self.repos.borrow(), &path).map(|repo| repo.root.clone()) else { return };
+        let entry = self.docs.borrow().get(self.active.get()).and_then(|doc| doc.blame.get(line).cloned());
+        if let Some(entry) = entry.filter(|entry| entry.hash.bytes().any(|byte| byte != b'0')) {
+            self.compare.show_commit(&root, &entry.hash, &entry.summary, self.font.get());
+        }
+    }
+
     fn conflicted(&self, index: usize) -> bool {
         self.panel.changes.borrow().get(index).is_some_and(|file| file.status == FileStatus::Conflict)
     }
@@ -2079,6 +2272,9 @@ impl App {
             }
             if self.panel.on_repo(x, y) {
                 return self.choose_repo();
+            }
+            if let Some(chip) = self.panel.chip_at(x, y) {
+                return self.choose_filter(chip);
             }
             if let Some(target) = self.panel.console_target_at(x, y) {
                 return self.on_console_target(target);
@@ -2428,6 +2624,9 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
         }
         WM_COMMAND => {
             let notification = ((wparam >> 16) & 0xFFFF) as u32;
+            if lparam as HWND == app.panel.search && notification == EN_CHANGE {
+                SetTimer(hwnd, LOG_FILTER_TIMER, LOG_FILTER_DELAY_MS, None);
+            }
             if lparam as HWND == app.find.find && notification == EN_CHANGE {
                 app.find.search(&app.sci, true, true);
                 app.invalidate();
@@ -2478,6 +2677,13 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
         WM_TIMER if wparam == MARKER_TIMER => {
             KillTimer(hwnd, MARKER_TIMER);
             app.update_markers();
+            0
+        }
+        WM_TIMER if wparam == LOG_FILTER_TIMER => {
+            KillTimer(hwnd, LOG_FILTER_TIMER);
+            if let Some(root) = app.panel.root.borrow().clone() {
+                app.load_log(&root);
+            }
             0
         }
         WM_TIMER if wparam == plugins::COMPLETION_TIMER => {

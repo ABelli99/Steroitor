@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use steroitor_core::git::history::LogFilter;
-use steroitor_core::git::parse::{Branch, Commit, FileStatus, RepoStatus};
+use steroitor_core::git::parse::{BlameLine, Branch, Commit, FileStatus, RepoStatus};
 use steroitor_core::git::runner::{CommandLog, Git};
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
@@ -25,6 +25,7 @@ pub enum Event {
     /// Il commit si è fermato prima di committare: questi file in stage hanno fine riga CRLF.
     Crlf(PathBuf, Vec<String>, CommitRequest),
     Cloned(PathBuf, Result<(), String>),
+    Blame(PathBuf, Result<Vec<BlameLine>, String>),
     Compare(crate::compare::Loaded),
 }
 
@@ -96,9 +97,17 @@ impl Worker {
         self.log.lock().map(|mut log| std::mem::take(&mut *log)).unwrap_or_default()
     }
 
-    pub fn log(&self, root: &Path) {
+    pub fn log(&self, root: &Path, filter: LogFilter) {
         let root = root.to_path_buf();
-        self.spawn(move |git| Event::Log(root.clone(), git.log_filtered(&root.to_string_lossy(), &LogFilter::default(), 0, LOG_COMMITS)));
+        self.spawn(move |git| Event::Log(root.clone(), git.log_filtered(&root.to_string_lossy(), &filter, 0, LOG_COMMITS)));
+    }
+
+    pub fn blame(&self, root: &Path, file: &Path) {
+        let (root, file) = (root.to_path_buf(), file.to_path_buf());
+        self.spawn(move |git| {
+            let lines = git.blame(&root.to_string_lossy(), &file.to_string_lossy());
+            Event::Blame(file, lines)
+        });
     }
 
     /// Commit dei file indicati: toglie dall'index quelli non scelti, aggiunge gli altri, committa (o fa amend) ed eventualmente push.

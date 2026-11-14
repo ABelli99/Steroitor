@@ -19,6 +19,8 @@ use crate::terminal::Terminal;
 use crate::theme::Palette;
 
 pub const HEADER: i32 = 28;
+const FILTER_ROW: i32 = 32;
+const SEARCH_WIDTH: i32 = 240;
 const MESSAGE_HEIGHT: i32 = 90;
 const BUTTON_ROW: i32 = 40;
 const LANE: i32 = 14;
@@ -41,6 +43,21 @@ pub enum Button {
     Commit,
     CommitAndPush,
     Amend,
+}
+
+/// Filtri del log cliccabili nella riga sopra il log; il testo si cerca nel campo accanto.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Chip {
+    Branch,
+    Author,
+    Path,
+}
+
+#[derive(Default, Clone)]
+pub struct LogFilters {
+    pub branch: Option<String>,
+    pub author: Option<String>,
+    pub path: Option<String>,
 }
 
 /// Sotto-tab della Console: il log dei comandi git, un terminale (o la sua ×), il pulsante per aprirne uno.
@@ -83,6 +100,12 @@ pub struct Panel {
     pub log: List,
     pub files: List,
     pub message: HWND,
+    /// Ricerca nel messaggio dei commit, nella riga dei filtri del log.
+    pub search: HWND,
+    pub filters: RefCell<LogFilters>,
+    /// Con filtri su autore, percorso o testo i parent non sono contigui: il grafo non ha senso e si nasconde.
+    pub graph_hidden: Cell<bool>,
+    chips: RefCell<Vec<(RECT, Chip)>>,
     /// Il prossimo commit modifica l'ultimo (amend).
     pub amend: Cell<bool>,
     pub commits: RefCell<Vec<Commit>>,
@@ -125,16 +148,19 @@ impl Panel {
         let scintilla = wide("Scintilla");
         let edit = wide("EDIT");
         // SAFETY: controlli figli della finestra principale.
-        let (console, message) = unsafe {
+        let (console, message, search) = unsafe {
             let console = CreateWindowExW(0, scintilla.as_ptr(), std::ptr::null(), WS_CHILD, 0, 0, 0, 0, parent, std::ptr::null_mut(), instance, std::ptr::null());
             let style = WS_CHILD | WS_VSCROLL | WS_TABSTOP | (ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL) as u32;
             let message = CreateWindowExW(0, edit.as_ptr(), std::ptr::null(), style, 0, 0, 0, 0, parent, std::ptr::null_mut(), instance, std::ptr::null());
+            let search = CreateWindowExW(0, edit.as_ptr(), std::ptr::null(), WS_CHILD | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32, 0, 0, 0, 0, parent, std::ptr::null_mut(), instance, std::ptr::null());
+            let cue = wide("Cerca nei messaggi");
+            SendMessageW(search, 0x1501, 1, cue.as_ptr() as isize);
             if palette.dark {
                 let theme = wide("DarkMode_Explorer");
                 SetWindowTheme(console, theme.as_ptr(), std::ptr::null());
                 SetWindowTheme(message, theme.as_ptr(), std::ptr::null());
             }
-            (console, message)
+            (console, message, search)
         };
         let console = Sci::new(console);
         console.call_str(SCI_STYLESETFONT, STYLE_DEFAULT, "Cascadia Mono");
@@ -156,6 +182,10 @@ impl Panel {
             log: List::create(parent, instance, palette.editor, palette.dark),
             files: List::create(parent, instance, palette.editor, palette.dark),
             message,
+            search,
+            filters: RefCell::default(),
+            graph_hidden: Cell::new(false),
+            chips: RefCell::new(Vec::new()),
             amend: Cell::new(false),
             commits: RefCell::new(Vec::new()),
             graph: RefCell::new(Vec::new()),
@@ -216,7 +246,7 @@ impl Panel {
     }
 
     pub fn owns(&self, hwnd: HWND) -> bool {
-        [self.console.hwnd, self.log.hwnd, self.files.hwnd, self.message].contains(&hwnd)
+        [self.console.hwnd, self.log.hwnd, self.files.hwnd, self.message, self.search].contains(&hwnd)
     }
 
     /// Posiziona i controlli della tab attiva in `rect` (pixel reali, intestazione compresa) e nasconde gli altri.
@@ -242,7 +272,10 @@ impl Panel {
                 terminal.fit();
             }
         }
-        place(self.log.hwnd, visible && tab == Tab::Git, body);
+        let git = visible && tab == Tab::Git;
+        let filter_row = RECT { bottom: body.top + scale(FILTER_ROW), ..body };
+        place(self.search, git, RECT { left: (filter_row.right - scale(SEARCH_WIDTH + 8)).max(filter_row.left), top: filter_row.top + scale(4), right: filter_row.right - scale(8), bottom: filter_row.bottom - scale(4) });
+        place(self.log.hwnd, git, RECT { top: filter_row.bottom, ..body });
         let commit = visible && tab == Tab::Commit;
         let message_top = body.bottom - scale(BUTTON_ROW) - scale(MESSAGE_HEIGHT);
         place(self.files.hwnd, commit, RECT { bottom: message_top - scale(4), ..body });
@@ -317,6 +350,28 @@ impl Panel {
         }
         *self.tabs.borrow_mut() = tabs;
 
+        let mut chips = Vec::new();
+        if visible && self.tab.get() == Tab::Git {
+            let row = RECT { top: header.bottom, bottom: header.bottom + scale(FILTER_ROW), ..rect };
+            let filters = self.filters.borrow();
+            let short = |path: &String| Path::new(path).file_name().map_or_else(|| path.clone(), |name| name.to_string_lossy().into_owned());
+            let labels = [
+                (format!("Branch: {} ▾", filters.branch.as_deref().unwrap_or("tutti")), Chip::Branch),
+                (format!("Autore: {} ▾", filters.author.as_deref().unwrap_or("tutti")), Chip::Author),
+                (format!("Percorso: {} ▾", filters.path.as_ref().map_or_else(|| "tutti".to_string(), short)), Chip::Path),
+            ];
+            let mut left = row.left + scale(8);
+            for (label, chip) in labels {
+                let width = text_width(dc, &label) + scale(20);
+                let area = RECT { left, top: row.top + scale(4), right: left + width, bottom: row.bottom - scale(4) };
+                frame(dc, &area, palette.border);
+                text(dc, &label, &area, palette.fg, DT_CENTER);
+                chips.push((area, chip));
+                left += width + scale(6);
+            }
+        }
+        *self.chips.borrow_mut() = chips;
+
         let mut buttons = Vec::new();
         if visible && self.tab.get() == Tab::Commit {
             let row = RECT { top: rect.bottom - scale(BUTTON_ROW), ..rect };
@@ -356,6 +411,10 @@ impl Panel {
     pub fn on_repo(&self, x: i32, y: i32) -> bool {
         let r = self.repo_rect.get();
         x >= r.left && x < r.right && y >= r.top && y < r.bottom
+    }
+
+    pub fn chip_at(&self, x: i32, y: i32) -> Option<Chip> {
+        self.chips.borrow().iter().find(|(r, _)| x >= r.left && x < r.right && y >= r.top && y < r.bottom).map(|(_, chip)| *chip)
     }
 
     pub fn tab_at(&self, x: i32, y: i32) -> Option<Tab> {
@@ -465,7 +524,8 @@ impl Panel {
         let lane = scale(LANE);
         let middle = (rect.top + rect.bottom) / 2;
         let x = |lane_index: usize| rect.left + scale(6) + lane_index as i32 * lane + lane / 2;
-        for segment in &layout.segments {
+        let hidden = self.graph_hidden.get();
+        for segment in layout.segments.iter().filter(|_| !hidden) {
             let pen = CreatePen(PS_SOLID, scale(2).max(1), rgb(LANE_COLORS[segment.color % LANE_COLORS.len()]));
             let previous = SelectObject(dc, pen);
             let (from_y, to_y) = match segment.half {
@@ -482,7 +542,7 @@ impl Panel {
         let pen = CreatePen(PS_SOLID, 1, color);
         let (old_brush, old_pen) = (SelectObject(dc, brush), SelectObject(dc, pen));
         let radius = scale(4);
-        let center = x(layout.lane);
+        let center = if hidden { x(0) } else { x(layout.lane) };
         Ellipse(dc, center - radius, middle - radius, center + radius + 1, middle + radius + 1);
         SelectObject(dc, old_brush);
         SelectObject(dc, old_pen);
@@ -499,7 +559,7 @@ impl Panel {
             text(dc, value, &area, color, DT_LEFT | DT_END_ELLIPSIS);
             right -= scale(width) + scale(8);
         }
-        let mut left = rect.left + scale(6) + layout.width as i32 * lane + scale(6);
+        let mut left = rect.left + scale(6) + if hidden { 1 } else { layout.width as i32 } * lane + scale(6);
         if !commit.refs.is_empty() {
             let refs = commit.refs.join(", ");
             let width = text_width(dc, &refs).min((right - left) / 2);
