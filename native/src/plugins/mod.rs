@@ -2,6 +2,7 @@
 //! JavaScript/TypeScript, jdtls per Java). Ogni plugin e ogni opzione si accendono dalla pagina impostazioni e
 //! valgono subito; il server parte al primo file che lo richiede e si chiude quando non serve più.
 mod doc_popup;
+mod inline_html;
 mod process;
 mod protocol;
 mod servers;
@@ -42,6 +43,8 @@ pub struct Plugin {
     /// Cosa serve per farlo funzionare, mostrato nella pagina impostazioni.
     pub requires: &'static str,
     extensions: &'static [&'static str],
+    /// Id dell'opzione in `pluginOptions` ed etichetta, nell'ordine della pagina impostazioni.
+    pub options: &'static [(&'static str, &'static str)],
     protocol: Protocol,
     language_id: &'static str,
 }
@@ -52,6 +55,7 @@ pub static PLUGINS: [Plugin; 2] = [
         name: "JavaScript / TypeScript",
         requires: "tsserver con Node.js, dal progetto, da npm globale o da VS Code",
         extensions: &["js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx"],
+        options: &SCRIPT_OPTIONS,
         protocol: Protocol::TsServer,
         language_id: "typescript",
     },
@@ -60,16 +64,32 @@ pub static PLUGINS: [Plugin; 2] = [
         name: "Java",
         requires: "jdtls dall'estensione Java di VS Code o da JDTLS_HOME; 0,3–1 GB di RAM",
         extensions: &["java"],
+        options: &SERVER_OPTIONS,
         protocol: Protocol::Lsp,
         language_id: "java",
     },
 ];
 
-/// Id dell'opzione in `pluginOptions` e etichetta. `typeCheck` è la stessa chiave della versione Tauri.
-pub const OPTIONS: [(&str, &str); 3] = [("completion", "Completamento"), ("typeCheck", "Type-check"), ("docs", "Documentazione inline")];
-const COMPLETION: &str = OPTIONS[0].0;
-const TYPE_CHECK: &str = OPTIONS[1].0;
-const DOCS: &str = OPTIONS[2].0;
+/// Le opzioni che usano il server del plugin. `typeCheck` è la stessa chiave della versione Tauri.
+const SERVER_OPTIONS: [(&str, &str); 3] = [("completion", "Completamento"), ("typeCheck", "Type-check"), ("docs", "Documentazione inline")];
+/// JavaScript/TypeScript ha in più l'HTML inline, colorato senza server.
+const SCRIPT_OPTIONS: [(&str, &str); 5] = [SERVER_OPTIONS[0], SERVER_OPTIONS[1], SERVER_OPTIONS[2], (REACT, "HTML inline React (JSX)"), (ANGULAR, "HTML inline Angular (template)")];
+const COMPLETION: &str = SERVER_OPTIONS[0].0;
+const TYPE_CHECK: &str = SERVER_OPTIONS[1].0;
+const DOCS: &str = SERVER_OPTIONS[2].0;
+const REACT: &str = "reactInline";
+const ANGULAR: &str = "angularInline";
+/// Indicatori che colorano il testo dell'HTML inline, uno per ruolo.
+const HTML_INDICATORS: [(usize, inline_html::Role); 7] = [
+    (11, inline_html::Role::Tag),
+    (12, inline_html::Role::Attribute),
+    (13, inline_html::Role::Value),
+    (14, inline_html::Role::Punctuation),
+    (15, inline_html::Role::Text),
+    (16, inline_html::Role::Binding),
+    (17, inline_html::Role::Comment),
+];
+const INDIC_TEXTFORE: isize = 17;
 
 fn plugin_for(path: &Path) -> Option<usize> {
     let extension = path.extension()?.to_string_lossy().to_lowercase();
@@ -78,7 +98,7 @@ fn plugin_for(path: &Path) -> Option<usize> {
 
 fn wants_server(settings: &Settings, plugin: usize) -> bool {
     let id = PLUGINS[plugin].id;
-    settings.plugin_enabled(id) && OPTIONS.iter().any(|(option, _)| settings.plugin_option(id, option))
+    settings.plugin_enabled(id) && SERVER_OPTIONS.iter().any(|(option, _)| settings.plugin_option(id, option))
 }
 
 fn option(settings: &Settings, path: Option<&Path>, option: &str) -> Option<usize> {
@@ -238,6 +258,19 @@ impl Host {
         sci.call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_LIST_BACK, opaque(palette.panel));
         sci.call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_LIST_SELECTED, opaque(palette.fg));
         sci.call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_LIST_SELECTED_BACK, opaque(palette.selection));
+        for (indicator, role) in HTML_INDICATORS {
+            let color = match role {
+                inline_html::Role::Tag => palette.tag,
+                inline_html::Role::Attribute => palette.attribute,
+                inline_html::Role::Value => palette.string,
+                inline_html::Role::Punctuation => palette.muted,
+                inline_html::Role::Text => palette.fg,
+                inline_html::Role::Binding => palette.keyword,
+                inline_html::Role::Comment => palette.comment,
+            };
+            sci.call(SCI_INDICSETSTYLE, indicator, INDIC_TEXTFORE);
+            sci.call(SCI_INDICSETFORE, indicator, color as isize);
+        }
         for (indicator, color) in [(ERROR_INDICATOR, palette.danger), (WARNING_INDICATOR, palette.number)] {
             sci.call(SCI_INDICSETSTYLE, indicator, INDIC_SQUIGGLEPIXMAP);
             sci.call(SCI_INDICSETFORE, indicator, color as isize);
@@ -456,9 +489,30 @@ impl Host {
         });
     }
 
+    /// Colora come HTML il JSX e i template Angular del file, secondo le opzioni del plugin; altrimenti toglie i colori.
+    pub fn highlight(&self, sci: &Sci, settings: &Settings, path: Option<&Path>) {
+        let length = sci.call(SCI_GETLENGTH, 0, 0);
+        for (indicator, _) in HTML_INDICATORS {
+            sci.call(SCI_SETINDICATORCURRENT, indicator, 0);
+            sci.call(SCI_INDICATORCLEARRANGE, 0, length);
+        }
+        let jsx = path.and_then(|path| path.extension()).is_some_and(|extension| ["jsx", "tsx", "js", "mjs", "cjs"].iter().any(|candidate| extension.eq_ignore_ascii_case(candidate)));
+        let react = jsx && option(settings, path, REACT).is_some();
+        let angular = option(settings, path, ANGULAR).is_some();
+        if !react && !angular {
+            return;
+        }
+        for (range, role) in inline_html::spans(&sci.text(), react, angular) {
+            let Some(&(indicator, _)) = HTML_INDICATORS.iter().find(|(_, candidate)| *candidate == role) else { continue };
+            sci.call(SCI_SETINDICATORCURRENT, indicator, 0);
+            sci.call(SCI_INDICATORFILLRANGE, range.start, range.len() as isize);
+        }
+    }
+
     /// Tab diventata attiva: le sue sottolineature e un controllo aggiornato.
     pub fn on_activate(&self, sci: &Sci, settings: &Settings, path: Option<&Path>) {
         self.on_list_closed(sci);
+        self.highlight(sci, settings, path);
         self.apply_diagnostics(sci, settings, path);
         self.check(sci, settings, path);
     }

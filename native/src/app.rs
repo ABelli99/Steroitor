@@ -1710,6 +1710,7 @@ impl App {
 
     /// Marker nel gutter: righe aggiunte, modificate o tolte rispetto a HEAD. Il contenuto di HEAD si chiede una volta e resta in cache.
     fn update_markers(&self) {
+        self.with_plugins(|plugins, sci, settings, path| plugins.highlight(sci, settings, path));
         self.sci.call(SCI_MARKERDELETEALL, usize::MAX, 0);
         self.ruler.borrow_mut().clear();
         // SAFETY: finestra valida; la striscia si ridisegna con i marker.

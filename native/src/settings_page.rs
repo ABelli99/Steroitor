@@ -14,13 +14,13 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use crate::dialogs::wide;
 use crate::find::window_text;
 use crate::paint::{fill, frame, text, text_width};
-use crate::plugins::{OPTIONS, PLUGINS};
+use crate::plugins::PLUGINS;
 use crate::session::{EditorStyle, Settings};
 use crate::theme::Palette;
 
 const CLASS_NAME: &str = "SteroitorSettings";
 const WIDTH: i32 = 480;
-const HEIGHT: i32 = 680;
+const HEIGHT: i32 = 710;
 const FIELD_LEFT: i32 = 260;
 const ROW: i32 = 34;
 
@@ -45,8 +45,8 @@ struct Page {
     rebase: bool,
     shells: Vec<Shell>,
     shell: usize,
-    /// Per ogni plugin di PLUGINS: attivo e le sue opzioni, nell'ordine di OPTIONS.
-    plugins: Vec<(bool, [bool; 3])>,
+    /// Per ogni plugin di PLUGINS: attivo e le sue opzioni, nell'ordine di `options`.
+    plugins: Vec<(bool, Vec<bool>)>,
     hits: Vec<(RECT, Hit)>,
     done: Option<bool>,
 }
@@ -135,18 +135,23 @@ unsafe fn paint(hwnd: HWND, page: &mut Page) {
     text(dc, "Plugin", &row(top), palette.accent, DT_LEFT);
     top += 30;
     for (index, plugin) in PLUGINS.iter().enumerate() {
-        let (enabled, options) = page.plugins[index];
+        let (enabled, options) = page.plugins[index].clone();
         let name_row = row(top);
         hits.push((checkbox(dc, &palette, name_row.left, &name_row, plugin.name, enabled, palette.fg), Hit::Plugin(index)));
         text(dc, plugin.requires, &RECT { left: s(40), ..row(top + 22) }, palette.muted, DT_LEFT | DT_END_ELLIPSIS);
-        let option_row = row(top + 46);
+        let mut option_top = top + 46;
         let mut left = s(40);
-        for (option, (_, label)) in OPTIONS.iter().enumerate() {
-            let area = checkbox(dc, &palette, left, &option_row, label, options[option], if enabled { palette.fg } else { palette.muted });
+        for (option, (_, label)) in plugin.options.iter().enumerate() {
+            // Le opzioni che non stanno nella riga vanno a capo.
+            if left > s(40) && left + s(21) + text_width(dc, label) > client.right - s(16) {
+                left = s(40);
+                option_top += 28;
+            }
+            let area = checkbox(dc, &palette, left, &row(option_top), label, options[option], if enabled { palette.fg } else { palette.muted });
             hits.push((area, Hit::PluginOption(index, option)));
             left = area.right + s(18);
         }
-        top += 82;
+        top = option_top + 36;
     }
 
     let buttons = RECT { top: client.bottom - s(44), bottom: client.bottom - s(14), ..client };
@@ -249,7 +254,7 @@ pub fn edit(owner: HWND, palette: &Palette, font: HFONT, current: &Settings, she
                 rebase: current.pull_rebase(),
                 shells,
                 shell,
-                plugins: PLUGINS.iter().map(|plugin| (current.plugin_enabled(plugin.id), OPTIONS.map(|(option, _)| current.plugin_option(plugin.id, option)))).collect(),
+                plugins: PLUGINS.iter().map(|plugin| (current.plugin_enabled(plugin.id), plugin.options.iter().map(|(option, _)| current.plugin_option(plugin.id, option)).collect())).collect(),
                 hits: Vec::new(),
                 done: None,
             })
@@ -307,7 +312,7 @@ pub fn edit(owner: HWND, palette: &Palette, font: HFONT, current: &Settings, she
                 disabled_plugins.push(plugin.id.into());
             }
             let saved = plugin_options.entry(plugin.id.into()).or_default();
-            for ((option, _), on) in OPTIONS.iter().zip(options) {
+            for ((option, _), on) in plugin.options.iter().zip(options) {
                 saved.insert((*option).into(), *on);
             }
         }
