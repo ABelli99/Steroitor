@@ -1,18 +1,26 @@
 import type { Extension } from "@codemirror/state";
 import { saveSettings, settings } from "../settings.svelte";
+import { javaPlugin } from "./java";
 import { javascriptPlugin } from "./javascript";
 import type { Plugin, PluginLanguage, PluginModule } from "./types";
 
 export type PluginStatus = "disabled" | "loading" | "ready" | "error";
 
-export const plugins: Plugin[] = [javascriptPlugin];
+export const plugins: Plugin[] = [javascriptPlugin, javaPlugin];
 
 const isEnabled = (id: string) => !settings.disabledPlugins.includes(id);
-const optionsOf = (id: string) => ({ ...settings.pluginOptions[id] });
+
+export function pluginOption(id: string, option: string) {
+  const saved = settings.pluginOptions[id]?.[option];
+  if (saved !== undefined) return saved;
+  return plugins.find((plugin) => plugin.id === id)?.options?.find((candidate) => candidate.id === option)?.default ?? false;
+}
+
+const optionsOf = (plugin: Plugin) => Object.fromEntries((plugin.options ?? []).map((option) => [option.id, pluginOption(plugin.id, option.id)]));
 
 // I moduli si caricano una volta sola: attivazione e opzioni valgono dal prossimo avvio.
 const active = plugins.filter((plugin) => isEnabled(plugin.id));
-const startupOptions = Object.fromEntries(plugins.map((plugin) => [plugin.id, optionsOf(plugin.id)]));
+const startupOptions = Object.fromEntries(plugins.map((plugin) => [plugin.id, optionsOf(plugin)]));
 const modules = new Map<string, Promise<PluginModule | null>>();
 const loaded: PluginModule[] = [];
 
@@ -51,8 +59,6 @@ export function setPluginEnabled(id: string, enabled: boolean) {
   saveSettings();
 }
 
-export const pluginOption = (id: string, option: string) => settings.pluginOptions[id]?.[option] ?? false;
-
 export function setPluginOption(id: string, option: string, enabled: boolean) {
   settings.pluginOptions[id] = { ...settings.pluginOptions[id], [option]: enabled };
   saveSettings();
@@ -60,7 +66,7 @@ export function setPluginOption(id: string, option: string, enabled: boolean) {
 
 export function needsRestart(plugin: Plugin) {
   if (isEnabled(plugin.id) !== active.includes(plugin)) return true;
-  return active.includes(plugin) && (plugin.options ?? []).some((option) => pluginOption(plugin.id, option.id) !== (startupOptions[plugin.id][option.id] ?? false));
+  return active.includes(plugin) && (plugin.options ?? []).some((option) => pluginOption(plugin.id, option.id) !== startupOptions[plugin.id][option.id]);
 }
 
 export function notifyFilesChanged(dirs: string[]) {

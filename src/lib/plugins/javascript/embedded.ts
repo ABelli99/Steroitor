@@ -1,5 +1,6 @@
 import { LanguageSupport } from "@codemirror/language";
-import { javascript, javascriptLanguage, jsxLanguage, tsxLanguage, typescriptLanguage } from "@codemirror/lang-javascript";
+import type { CompletionSource } from "@codemirror/autocomplete";
+import { autoCloseTags, javascript, javascriptLanguage, jsxLanguage, tsxLanguage, typescriptLanguage } from "@codemirror/lang-javascript";
 import { htmlLanguage } from "@codemirror/lang-html";
 import { cssLanguage } from "@codemirror/lang-css";
 import { angularLanguage } from "@codemirror/lang-angular";
@@ -51,8 +52,12 @@ const embedTemplates = parseMixed((node, input) => {
   return kind && ranges.length ? { parser: parsers[kind], overlay: ranges } : null;
 });
 
-/** JavaScript/TypeScript con l'HTML e il CSS dei template inline evidenziati come tali. */
-export function scriptWithTemplates(options: { typescript?: boolean; jsx?: boolean }) {
+/**
+ * JavaScript/TypeScript con l'HTML e il CSS dei template inline evidenziati come tali.
+ * Con `completion` il completamento del codice viene solo da lì; nei template resta quello di HTML/CSS.
+ */
+export function scriptWithTemplates(options: { typescript?: boolean; jsx?: boolean }, completion?: CompletionSource) {
   const base = options.jsx ? (options.typescript ? tsxLanguage : jsxLanguage) : options.typescript ? typescriptLanguage : javascriptLanguage;
-  return new LanguageSupport(base.configure({ wrap: embedTemplates }), javascript(options).support);
+  const support = completion ? [javascriptLanguage.data.of({ autocomplete: completion }), options.jsx ? autoCloseTags : []] : javascript(options).support;
+  return new LanguageSupport(base.configure({ wrap: embedTemplates }), support);
 }

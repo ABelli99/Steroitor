@@ -16,9 +16,9 @@ export const javascriptPlugin: Plugin = {
   options: [
     {
       id: "typeCheck",
-      label: "Type-check con TypeScript",
+      label: "Type-check e completamento con TypeScript",
       description:
-        "Errori di tipo del file aperto, con il tsconfig del progetto e i tipi di node_modules. Gira in background: da ~50 MB a qualche centinaio di MB di RAM in più, secondo le dipendenze del progetto.",
+        "Errori di tipo e completamento dai tipi (metodi, proprietà, JSDoc) del file aperto, con il tsconfig del progetto e i tipi di node_modules. Gira in background: da ~50 MB a qualche centinaio di MB di RAM in più, secondo le dipendenze del progetto.",
     },
   ],
   load: (options) => import("./module").then((module) => module.create(options)),

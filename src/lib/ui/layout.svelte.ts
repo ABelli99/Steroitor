@@ -1,4 +1,4 @@
-const STORAGE_KEY = "steroitor.layout";
+import { readPreference, writePreference } from "../preferences";
 
 export type PanelTab = "console" | "git" | "commit";
 
@@ -20,22 +20,8 @@ const defaults: LayoutState = {
   commitDetailsWidth: 300,
 };
 
-function load(): LayoutState {
-  try {
-    return { ...defaults, ...JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") };
-  } catch {
-    return defaults;
-  }
-}
+export const layout = $state<LayoutState>({ ...defaults, ...readPreference("layout") });
 
-export const layout = $state<LayoutState>(load());
-
-export function saveLayout() {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(layout));
-  } catch {
-    /* preferenza non essenziale */
-  }
-}
+export const saveLayout = () => writePreference("layout", layout);
 
 export const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));

@@ -1,6 +1,7 @@
 mod explorer;
 mod files;
 mod git;
+mod lsp;
 mod session;
 mod shells;
 mod startup;
@@ -27,6 +28,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(watcher::FolderWatcher::default())
         .manage(terminal::Terminals::default())
+        .manage(lsp::LanguageServers::default())
         .on_window_event(|window, event| {
             if !matches!(event, WindowEvent::Destroyed) {
                 return;
@@ -38,6 +40,7 @@ pub fn run() {
             windows.persist();
             app.state::<watcher::FolderWatcher>().forget_window(label);
             app.state::<terminal::Terminals>().close_window(label);
+            app.state::<lsp::LanguageServers>().close_window(label);
         })
         .setup(|app| {
             app.manage(git::GitConfig::load(app.handle()));
@@ -103,6 +106,10 @@ pub fn run() {
             git::commands::git_commit_message,
             session::load_session,
             session::save_session,
+            session::load_preference,
+            session::save_preference,
+            lsp::lsp_start,
+            lsp::lsp_send,
             startup::startup_files,
             startup::app_ready,
             watcher::watch_folder,

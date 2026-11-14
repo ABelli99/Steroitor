@@ -5,7 +5,9 @@ import { linter, type Diagnostic } from "@codemirror/lint";
 import { IterMode } from "@lezer/common";
 import { definitionProvider } from "../../editor/definitionLink";
 import { documentPath } from "../../editor/setup";
+import { acceptWithTab } from "../completion";
 import type { PluginModule } from "../types";
+import { typeCompletions } from "./completion";
 import { scriptWithTemplates } from "./embedded";
 import { navigation } from "./navigation";
 import type { TypeDiagnostic } from "./typecheck/checker";
@@ -49,11 +51,13 @@ export async function create(options: Record<string, boolean>): Promise<PluginMo
   // Il worker parte subito: il compilatore si carica mentre l'utente apre i file.
   checker?.startTypeCheck();
   const diagnostics = checker && typeLinter(checker.typeCheck);
+  const completion = checker ? typeCompletions(checker) : undefined;
 
   // Senza type-check, errori di sintassi solo su JS: la grammatica Lezer di TypeScript non copre tutto (es. `(x): x is T =>`).
   const script = (language: { typescript?: boolean; jsx?: boolean }): Extension => [
-    scriptWithTemplates(language),
+    scriptWithTemplates(language, completion),
     autocompletion(),
+    acceptWithTab,
     diagnostics ?? (language.typescript ? [] : syntaxLinter),
     definitionProvider.of(navigation),
   ];

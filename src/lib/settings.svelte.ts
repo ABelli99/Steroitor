@@ -1,4 +1,4 @@
-const STORAGE_KEY = "steroitor.settings";
+import { readPreference, writePreference } from "./preferences";
 
 export type UpdateMethod = "merge" | "rebase";
 
@@ -39,20 +39,10 @@ const defaults: Settings = {
 };
 
 function load(): Settings {
-  try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
-    return { ...defaults, ...saved, editor: { ...defaultEditorStyle, ...saved.editor } };
-  } catch {
-    return defaults;
-  }
+  const saved = readPreference("settings") as Partial<Settings>;
+  return { ...defaults, ...saved, editor: { ...defaultEditorStyle, ...saved.editor } };
 }
 
 export const settings = $state<Settings>(load());
 
-export function saveSettings() {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
-  } catch {
-    /* preferenza non essenziale */
-  }
-}
+export const saveSettings = () => writePreference("settings", settings);

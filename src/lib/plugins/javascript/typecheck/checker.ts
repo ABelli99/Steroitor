@@ -10,8 +10,24 @@ export interface TypeDiagnostic {
   message: string;
 }
 
-/** O i file da leggere da disco prima di poter rispondere, o le diagnostiche del file. */
-export type DiagnoseResult = { missing: string[] } | { diagnostics: TypeDiagnostic[] };
+/** O i file da leggere da disco prima di poter rispondere, o la risposta. */
+export type Answer<T> = { missing: string[] } | { value: T };
+
+export interface CompletionItem {
+  name: string;
+  kind: string;
+  sortText: string;
+  insertText?: string;
+  /** Testo da sostituire prima della parola, es. il `.` di `win.` quando l'inserimento è `?.event`. */
+  replacementSpan?: { start: number; length: number };
+  source?: string;
+  data?: ts.CompletionEntryData;
+}
+
+export interface CompletionDetails {
+  signature: string;
+  documentation: string;
+}
 
 type Entry = Probe & { version: number };
 
@@ -73,7 +89,29 @@ export class Checker {
     this.#services.clear();
   }
 
-  async diagnose(path: string, content: string): Promise<DiagnoseResult> {
+  async diagnose(path: string, content: string): Promise<Answer<TypeDiagnostic[]>> {
+    const ready = await this.#prepare(path, content);
+    if ("missing" in ready) return ready;
+    const service = ready.value;
+    return { value: [...service.getSyntacticDiagnostics(path), ...service.getSemanticDiagnostics(path)].map(toDiagnostic) };
+  }
+
+  async complete(path: string, content: string, pos: number): Promise<Answer<CompletionItem[]>> {
+    const ready = await this.#prepare(path, content);
+    if ("missing" in ready) return ready;
+    const entries = ready.value.getCompletionsAtPosition(path, pos, { includeCompletionsWithInsertText: true })?.entries ?? [];
+    return { value: entries.map(({ name, kind, sortText, insertText, replacementSpan, source, data }) => ({ name, kind, sortText, insertText, replacementSpan, source, data })) };
+  }
+
+  async details(path: string, content: string, pos: number, item: CompletionItem): Promise<Answer<CompletionDetails | null>> {
+    const ready = await this.#prepare(path, content);
+    if ("missing" in ready) return ready;
+    const details = ready.value.getCompletionEntryDetails(path, pos, item.name, {}, item.source, {}, item.data);
+    if (!details) return { value: null };
+    return { value: { signature: ts.displayPartsToString(details.displayParts), documentation: ts.displayPartsToString(details.documentation) } };
+  }
+
+  async #prepare(path: string, content: string): Promise<Answer<ts.LanguageService>> {
     const pathKey = key(path);
     if (this.#current?.key !== pathKey || this.#current.content !== content) this.#current = { key: pathKey, content, version: ++this.#version };
 
@@ -90,7 +128,7 @@ export class Checker {
       const disk = missing.filter(isDiskPath);
       if (disk.length) return { missing: disk };
       for (const other of missing) this.#entries.set(key(other), { kind: "missing", version: 0 });
-      return { diagnostics: [...service.getSyntacticDiagnostics(path), ...service.getSemanticDiagnostics(path)].map(toDiagnostic) };
+      return { value: service };
     }
   }
 

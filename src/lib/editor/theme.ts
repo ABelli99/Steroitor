@@ -23,9 +23,18 @@ const chrome = EditorView.theme({
   ".cm-activeLineGutter": { backgroundColor: "var(--active-line)", color: "var(--fg)" },
   ".cm-selectionMatch": { backgroundColor: "var(--selection-match)" },
   ".cm-searchMatch": { backgroundColor: "var(--search-match)", outline: "1px solid var(--accent)" },
-  ".cm-panels": { backgroundColor: "var(--panel-bg)", color: "var(--fg)" },
-  ".cm-panels.cm-panels-top": { borderBottom: "1px solid var(--border)" },
-  ".cm-panel input, .cm-panel button": { font: "inherit" },
+  "&.cm-editor .cm-panels": { backgroundColor: "var(--panel-bg)", color: "var(--fg)" },
+  "&.cm-editor .cm-tooltip": { backgroundColor: "var(--panel-bg)", color: "var(--fg)", border: "1px solid var(--border)" },
+  "&.cm-editor .cm-tooltip-autocomplete ul li[aria-selected]": { backgroundColor: "var(--selection)", color: "var(--fg)" },
+  "&.cm-editor .cm-panels.cm-panels-top": { borderBottom: "1px solid var(--border)" },
+  ".cm-panel input, .cm-panel button": { font: "inherit", color: "var(--fg)" },
+  "&.cm-editor .cm-textfield": { backgroundColor: "var(--editor-bg)", border: "1px solid var(--border)" },
+  "&.cm-editor .cm-button": { backgroundImage: "none", backgroundColor: "var(--bg)", border: "1px solid var(--border)" },
+  "&.cm-editor .cm-button:hover": { backgroundColor: "var(--hover)" },
+  ".cm-panel.cm-search [name=close]": { color: "var(--fg)" },
+  ".cm-completionDocs": { maxWidth: "480px" },
+  ".cm-completionDocs code": { fontFamily: "var(--mono)", whiteSpace: "pre-wrap" },
+  ".cm-completionDocs p": { margin: "6px 0 0", whiteSpace: "pre-wrap", color: "var(--fg-muted)" },
 });
 
 const highlight = HighlightStyle.define([

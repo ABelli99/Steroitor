@@ -3,6 +3,7 @@
   import {
     needsRestart, pluginEnabled, pluginOption, plugins, pluginStatus, setPluginEnabled, setPluginOption, type PluginStatus,
   } from "../plugins/registry.svelte";
+  import { pluginProblems } from "../plugins/problems.svelte";
   import { defaultEditorStyle, saveSettings, settings, type EditorStyle } from "../settings.svelte";
   import { settingsView, type SettingsSection } from "./settingsPage.svelte";
 
@@ -111,6 +112,12 @@
             <small class:error={pluginStatus[plugin.id] === "error"}>
               {statusLabel[pluginStatus[plugin.id]]}{needsRestart(plugin) ? " · riavvia per applicare" : ""}
             </small>
+            {#each pluginProblems.filter((problem) => problem.plugin === plugin.name) as problem (problem.message)}
+              <div class="problem">
+                <strong>⚠ {problem.message}</strong>
+                <pre>{problem.detail}</pre>
+              </div>
+            {/each}
           </li>
         {/each}
       </ul>
@@ -271,7 +278,25 @@
     color: var(--fg-muted);
   }
 
-  small.error {
+  small.error,
+  .problem strong {
     color: var(--danger);
+  }
+
+  .problem {
+    margin-top: 8px;
+  }
+
+  .problem pre {
+    max-height: 160px;
+    overflow: auto;
+    margin: 4px 0 0;
+    padding: 6px 8px;
+    font: 12px var(--mono);
+    white-space: pre-wrap;
+    color: var(--fg-muted);
+    background: var(--editor-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
   }
 </style>

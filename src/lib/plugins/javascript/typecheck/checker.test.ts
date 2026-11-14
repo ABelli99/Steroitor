@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Probe } from "../../../backend";
-import { Checker, type TypeDiagnostic } from "./checker";
+import { Checker, type Answer } from "./checker";
 
 const disk: Record<string, string> = {
   "C:/app/tsconfig.json": JSON.stringify({ compilerOptions: { strict: true, target: "ES2022", module: "ESNext", moduleResolution: "Bundler" } }),
@@ -21,14 +21,16 @@ function probe(path: string): Probe {
 const libs = import.meta.glob<string>("/node_modules/typescript/lib/lib.*.d.ts", { query: "?raw", import: "default" });
 const checker = new Checker(async (fileName) => libs[`/node_modules/typescript/lib/${fileName}`]?.());
 
-async function check(path: string, content: string): Promise<TypeDiagnostic[]> {
+async function resolve<T>(ask: () => Promise<Answer<T>>): Promise<T> {
   for (let round = 0; round < 20; round++) {
-    const result = await checker.diagnose(path, content);
-    if ("diagnostics" in result) return result.diagnostics;
+    const result = await ask();
+    if ("value" in result) return result.value;
     checker.provide(result.missing.map((missing) => [missing, probe(missing)]));
   }
   throw new Error("too many rounds");
 }
+
+const check = (path: string, content: string) => resolve(() => checker.diagnose(path, content));
 
 describe("Checker", () => {
   it("resolves imports from disk and reports type errors", async () => {
@@ -50,5 +52,25 @@ describe("Checker", () => {
     disk["C:/app/src/user.ts"] = "export const makeUser = (name: string) => ({ name: name.length });";
     checker.invalidate(["C:\\app\\src"]);
     expect(await check("C:\\app\\src\\main.ts", content)).toHaveLength(1);
+  });
+
+  it("completes array methods with their documentation", async () => {
+    const path = "C:\\app\\src\\main.ts";
+    const content = "const a = [1, 2, 3];\na.";
+    const items = await resolve(() => checker.complete(path, content, content.length));
+    const map = items.find((item) => item.name === "map");
+    expect(map?.kind).toBe("method");
+    const details = await resolve(() => checker.details(path, content, content.length, map!));
+    expect(details?.signature).toContain("map<U>");
+    expect(details?.documentation).toContain("callback");
+  });
+
+  it("replaces the dot when a member of a possibly undefined value needs optional chaining", async () => {
+    const content = "declare const win: { event: string } | undefined;\nwin.";
+    const items = await resolve(() => checker.complete("C:\\app\\src\\main.ts", content, content.length));
+    const event = items.find((item) => item.name === "event")!;
+    const span = event.replacementSpan!;
+    const applied = content.slice(0, span.start) + event.insertText + content.slice(span.start + span.length);
+    expect(applied.endsWith("win?.event")).toBe(true);
   });
 });

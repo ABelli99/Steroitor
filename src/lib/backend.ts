@@ -19,6 +19,14 @@ export const loadSession = (folder: string | null) => invoke<string | null>("loa
 
 export const saveSession = (folder: string | null, data: string) => invoke<void>("save_session", { folder, data });
 
+export const loadPreference = (name: string) => invoke<string | null>("load_preference", { name });
+
+export const savePreference = (name: string, data: string) => invoke<void>("save_preference", { name, data });
+
+export const lspStart = (server: string, file: string) => invoke<{ id: number; root: string }>("lsp_start", { server, file });
+
+export const lspSend = (id: number, message: string) => invoke<void>("lsp_send", { id, message });
+
 export const startupFiles = () => invoke<string[]>("startup_files");
 
 export const appReady = () => invoke<number>("app_ready");

@@ -3,6 +3,8 @@
   import { eolLabel } from "../workspace/files";
   import type { GitRepo } from "../git/repo.svelte";
   import { useProject } from "../project/context";
+  import { dismissPluginProblem, pluginProblems } from "../plugins/problems.svelte";
+  import { settingsView } from "./settingsPage.svelte";
   import { openUpdate, skipUpdate, updates } from "./updates.svelte";
   import type { Workspace } from "../workspace/workspace.svelte";
 
@@ -20,7 +22,12 @@
 
   const vcsTitle = (repo: GitRepo) => (several ? `Branch e operazioni Git di ${repo.root} (Alt+\` per il repository selezionato)` : "Branch e operazioni Git (Alt+`)");
 
-  const branchLabel = (branch: NonNullable<GitRepo["branch"]>) => branch.head ?? `HEAD staccato (${branch.oid?.slice(0, 7) ?? "?"})`;
+  function openPluginSettings() {
+    settingsView.section = "plugins";
+    settingsView.open = true;
+  }
+
+  const branchLabel =(branch: NonNullable<GitRepo["branch"]>) => branch.head ?? `HEAD staccato (${branch.oid?.slice(0, 7) ?? "?"})`;
 </script>
 
 <footer class="status">
@@ -44,6 +51,12 @@
   {/each}
   {#if activity.label}<span class="busy">{activity.label}…</span>{/if}
   <span class="spacer"></span>
+  {#each pluginProblems as problem (problem.plugin + problem.message)}
+    <span class="problem">
+      <button title={`${problem.detail.slice(0, 400)}\n\nClic per i dettagli nelle impostazioni dei plugin`} onclick={openPluginSettings}>⚠ {problem.plugin}: {problem.message}</button>
+      <button class="skip" title="Nascondi" aria-label="Nascondi l'avviso" onclick={() => dismissPluginProblem(problem)}>×</button>
+    </span>
+  {/each}
   {#if updates.available}
     <span class="update">
       <button title="Apri la pagina della release su GitHub" onclick={openUpdate}>⬆ Steroitor {updates.available.version} disponibile</button>
@@ -102,16 +115,22 @@
     color: var(--fg);
   }
 
-  .update {
+  .update,
+  .problem {
     display: flex;
     align-items: center;
+  }
+
+  .problem button {
+    color: var(--danger);
   }
 
   .update button {
     color: var(--accent);
   }
 
-  .update .skip {
+  .update .skip,
+  .problem .skip {
     color: var(--fg-muted);
   }
 

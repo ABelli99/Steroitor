@@ -41,6 +41,8 @@ export interface PluginOption {
   id: string;
   label: string;
   description: string;
+  /** Valore finché l'utente non lo cambia; senza, spenta. */
+  default?: boolean;
 }
 
 export interface Plugin {

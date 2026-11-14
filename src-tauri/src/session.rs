@@ -3,6 +3,7 @@ use tauri::{AppHandle, Manager};
 
 const LEGACY_SESSION_FILE: &str = "session.json";
 const PROJECT_SESSIONS_DIR: &str = "sessions";
+const PREFERENCES_DIR: &str = "preferences";
 
 /// Una sessione per cartella; il progetto senza cartella usa il vecchio session.json.
 fn session_path(app: &AppHandle, folder: Option<&str>) -> Result<PathBuf, String> {
@@ -37,7 +38,35 @@ pub async fn load_session(app: AppHandle, folder: Option<String>) -> Result<Opti
 
 #[tauri::command]
 pub async fn save_session(app: AppHandle, folder: Option<String>, data: String) -> Result<(), String> {
-    let path = session_path(&app, folder.as_deref())?;
+    write_atomic(&session_path(&app, folder.as_deref())?, data)
+}
+
+/// Preferenze (impostazioni, layout) su file: il localStorage di WebView2 perde le ultime scritture
+/// quando l'app si chiude (log di leveldb troncato, "checksum mismatch" al riavvio).
+fn preference_path(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_lowercase()) {
+        return Err(format!("Nome di preferenza non valido: {name}"));
+    }
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join(PREFERENCES_DIR);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join(format!("{name}.json")))
+}
+
+#[tauri::command]
+pub async fn load_preference(app: AppHandle, name: String) -> Result<Option<String>, String> {
+    let path = preference_path(&app, &name)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    std::fs::read_to_string(path).map(Some).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn save_preference(app: AppHandle, name: String, data: String) -> Result<(), String> {
+    write_atomic(&preference_path(&app, &name)?, data)
+}
+
+fn write_atomic(path: &PathBuf, data: String) -> Result<(), String> {
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, data).map_err(|e| e.to_string())?;
     std::fs::rename(tmp, path).map_err(|e| e.to_string())

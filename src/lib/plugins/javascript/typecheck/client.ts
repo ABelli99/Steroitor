@@ -1,8 +1,10 @@
 import { probePaths, type Probe } from "../../../backend";
-import type { DiagnoseResult, TypeDiagnostic } from "./checker";
+import type { Answer, CompletionDetails, CompletionItem, TypeDiagnostic } from "./checker";
 
 export type Request =
   | { type: "diagnose"; path: string; content: string }
+  | { type: "complete"; path: string; content: string; pos: number }
+  | { type: "details"; path: string; content: string; pos: number; item: CompletionItem }
   | { type: "provide"; entries: [string, Probe][] }
   | { type: "invalidate"; dirs: string[] };
 
@@ -34,22 +36,30 @@ function call<T>(request: Request): Promise<T> {
   });
 }
 
-/** In fila: i giri di lettura di un controllo non si mescolano con quelli di un altro. */
+/** In fila: i giri di lettura di una richiesta non si mescolano con quelli di un'altra. */
 function serial<T>(task: () => Promise<T>): Promise<T> {
   const run = queue.then(task, task);
   queue = run.catch(() => {});
   return run;
 }
 
-export const typeCheck = (path: string, content: string) =>
-  serial(async (): Promise<TypeDiagnostic[]> => {
+/** Ripete la richiesta leggendo da disco i file che mancano, finché il worker può rispondere. */
+const answer = <T>(request: Request) =>
+  serial(async (): Promise<T> => {
     for (let round = 0; round < MAX_ROUNDS; round++) {
-      const result = await call<DiagnoseResult>({ type: "diagnose", path, content });
-      if ("diagnostics" in result) return result.diagnostics;
+      const result = await call<Answer<T>>(request);
+      if ("value" in result) return result.value;
       const probes = await probePaths(result.missing);
       await call({ type: "provide", entries: result.missing.map((missing, index): [string, Probe] => [missing, probes[index]]) });
     }
-    return [];
+    throw new Error("Troppi giri di lettura dei file del progetto");
   });
+
+export const typeCheck = (path: string, content: string) => answer<TypeDiagnostic[]>({ type: "diagnose", path, content });
+
+export const complete = (path: string, content: string, pos: number) => answer<CompletionItem[]>({ type: "complete", path, content, pos });
+
+export const completionDetails = (path: string, content: string, pos: number, item: CompletionItem) =>
+  answer<CompletionDetails | null>({ type: "details", path, content, pos, item });
 
 export const invalidateTypeCheck = (dirs: string[]) => serial(() => call<void>({ type: "invalidate", dirs }));

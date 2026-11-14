@@ -8,6 +8,8 @@ const checker = new Checker(async (fileName) => libs[`/node_modules/typescript/l
 
 function handle(request: Request) {
   if (request.type === "diagnose") return checker.diagnose(request.path, request.content);
+  if (request.type === "complete") return checker.complete(request.path, request.content, request.pos);
+  if (request.type === "details") return checker.details(request.path, request.content, request.pos, request.item);
   if (request.type === "provide") return checker.provide(request.entries);
   return checker.invalidate(request.dirs);
 }
