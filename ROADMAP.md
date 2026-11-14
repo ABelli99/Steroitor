@@ -194,7 +194,7 @@ Note di implementazione:
 
 ---
 
-## Riscrittura nativa (branch `native`) — N1 e N2 implementate
+## Riscrittura nativa (branch `native`) — N1, N2 e N3 implementate
 
 Obiettivo: la massima leggerezza. WebView2 da solo vale ~65 dei ~72 MB dell'app Tauri; un'app Win32 con l'editor di Notepad++ (Scintilla) ne usa una frazione. L'app Tauri resta su `master`, usabile, finché la nativa non arriva a parità.
 
@@ -209,7 +209,7 @@ Fasi:
 - **N1** — finestra, editor con evidenziazione (16 lexer: C-like per JS/TS/Java/C/C#, Python, JSON, YAML, Markdown, HTML/XML, CSS, Rust, TOML, INI, Batch, PowerShell, SQL, Diff), tab (clic, clic centrale, ×, `Ctrl+Tab`), `Ctrl+N/O/S/Shift+S/W`, file da riga di comando, encoding e BOM preservati, fine riga rilevato, tema chiaro/scuro di sistema, DPI per monitor. **Misura: 2 MB di RAM privata** (19 MB di working set con le DLL di sistema condivise) contro ~72 MB; eseguibile 1,3 MB contro 7 MB
 - **N2** — File Explorer (TreeView di Windows, cartelle caricate all'apertura, menu: nuovo file/cartella, rinomina `F2`, cestino `Canc`, mostra in Esplora risorse, copia percorso), cartella di progetto (intestazione dell'explorer, argomento da riga di comando o trascinamento), `Alt+1` explorer e `Alt+Z` a capo come nella versione Tauri, explorer ridimensionabile, watcher (albero aggiornato; file aperti ricaricati se cambiati su disco e senza modifiche), sessione (cartella, tab, finestra) in `%APPDATA%it.overzoom.steroitor
 ative`, impostazioni Editor lette dallo stesso `settings.json` della versione Tauri, ricerca e sostituzione (`Ctrl+F`, `Ctrl+H`, `F3`, maiuscole/minuscole, tutte le occorrenze evidenziate), fine riga cliccabile nella status bar, menu scuri. Logica di explorer, watcher e ricerca dei repository spostata in `core/` (la usa anche l'app Tauri). Misura con una cartella aperta: 1,9 MB di RAM privata
-- **N3** — Git: colori dei file, marker nel gutter, Commit, log con grafo, branch, menu VCS
+- **N3** — Git, con il backend spostato da `src-tauri` in `core/src/git` (stesso codice e test per le due app): stato dei repository della cartella aggiornato dal watcher, explorer colorato come IntelliJ, marker delle righe aggiunte/modificate/tolte rispetto a HEAD, branch con ahead/behind nella status bar e menu VCS (``Alt+` ``: pull col metodo delle impostazioni, push `Ctrl+Shift+K`, fetch, nuovo branch, checkout, merge). Pannello inferiore a tab, ridimensionabile: **Console** con i comandi git eseguiti, **Git** con il log (`Alt+9`), il grafo (algoritmo portato in `core/src/git/graph.rs`), refs, autore, data, hash e menu sul commit (checkout, nuovo branch, tag, cherry-pick, revert, reset soft/mixed/hard con conferma, copia hash), **Commit** (`Ctrl+K`) con i file da spuntare, il messaggio, Commit (`Ctrl+Invio`) e Commit e Push (`Ctrl+Alt+K`); `Ctrl+T` fa il pull col focus nel pannello. Misura: 2,3 MB di RAM privata con il log aperto
 - **N4** — Console dei comandi, terminale (ConPTY + emulatore)
 - **N5** — diff e merge a 3 vie, pagina impostazioni, plugin (completamento, jdtls riusando `lsp.rs`)
 

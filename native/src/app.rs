@@ -19,15 +19,18 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
+use steroitor_core::git::history::ResetMode;
 use steroitor_core::git::parse::FileStatus;
 use steroitor_core::text::{decode, encode};
 
-use crate::dialogs::{message_box, open_files, pick_folder, save_file, wide};
+use crate::dialogs::{copy_to_clipboard, message_box, open_files, pick_folder, save_file, wide};
 use crate::explorer::{popup_menu, Action, Explorer};
-use crate::find::{self, FindBar};
+use crate::find::{self, window_text, FindBar};
 use crate::git::{line_changes, repo_of, Event, FileColors, Repo, Worker, WM_COMMAND_LOGGED, WM_GIT_EVENT};
 use crate::lang::{self, Language};
+use crate::list::{decode_event, ListEvent, RowPaint, WM_LIST_EVENT, WM_LIST_PAINT};
 use crate::paint::{fill, text, text_width};
+use crate::panel::{self, Panel, Tab};
 use crate::prompt::prompt;
 use crate::sci::*;
 use crate::session::{Session, Settings};
@@ -60,6 +63,16 @@ const GIT_MARGIN: usize = 1;
 const MARKER_ADDED: usize = 0;
 const MARKER_MODIFIED: usize = 1;
 const MARKER_DELETED: usize = 2;
+const LOG_CHECKOUT: usize = 1;
+const LOG_BRANCH: usize = 2;
+const LOG_TAG: usize = 3;
+const LOG_CHERRY_PICK: usize = 4;
+const LOG_REVERT: usize = 5;
+const LOG_RESET_SOFT: usize = 6;
+const LOG_RESET_MIXED: usize = 7;
+const LOG_RESET_HARD: usize = 8;
+const LOG_COPY_HASH: usize = 9;
+const LIST_ROW_HEIGHT: i32 = 24;
 const VCS_PULL: usize = 1;
 const VCS_PUSH: usize = 2;
 const VCS_FETCH: usize = 3;
@@ -103,6 +116,8 @@ pub struct App {
     hwnd: HWND,
     sci: Sci,
     explorer: Explorer,
+    panel: Panel,
+    dragging_panel: Cell<bool>,
     find: FindBar,
     palette: Palette,
     settings: Settings,
@@ -232,6 +247,8 @@ impl App {
             hwnd,
             sci: Sci::new(editor),
             explorer: Explorer::create(hwnd, instance, &palette),
+            panel: Panel::create(hwnd, instance, &palette),
+            dragging_panel: Cell::new(false),
             find: FindBar::create(hwnd, instance),
             palette,
             settings: Settings::load(),
@@ -257,6 +274,7 @@ impl App {
             changes: Arc::default(),
         }));
         APP.with(|cell| cell.set(app).ok());
+        app.panel.attach();
         app.configure_editor();
         app.update_font();
 
@@ -300,6 +318,9 @@ impl App {
                 SendMessageW(control, WM_SETFONT, font as usize, 1);
             }
             self.explorer.set_font(font, self.scale(TREE_ITEM_HEIGHT));
+            SendMessageW(self.panel.message, WM_SETFONT, font as usize, 1);
+            self.panel.log.set_row_height(self.scale(LIST_ROW_HEIGHT));
+            self.panel.files.set_row_height(self.scale(LIST_ROW_HEIGHT));
             let old = self.font.replace(font);
             if !old.is_null() {
                 DeleteObject(old);
@@ -762,12 +783,31 @@ impl App {
                 0x31 => self.toggle_explorer(),
                 0x5A => self.toggle_wrap(),
                 0xC0 => self.vcs_menu(),
+                0x39 => self.toggle_panel(Tab::Git),
                 _ => return false,
             }
             return true;
         }
         if msg.message != WM_KEYDOWN {
             return false;
+        }
+        // SAFETY: lettura dello stato della tastiera del thread.
+        let alt = unsafe { GetKeyState(VK_MENU as i32) < 0 };
+        if ctrl && alt && key == 0x4B {
+            self.commit(true);
+            return true;
+        }
+        if focus == self.panel.message && ctrl && key == VK_RETURN {
+            self.commit(false);
+            return true;
+        }
+        if ctrl && !shift && key == 0x54 && self.panel.owns(focus) {
+            self.pull();
+            return true;
+        }
+        if ctrl && !shift && key == 0x4B {
+            self.show_panel(Tab::Commit);
+            return true;
         }
         if self.find.owns(focus) && !ctrl {
             match key {
@@ -840,8 +880,9 @@ impl App {
 
     fn layout(&self) {
         let client = self.client_rect();
-        let (tab, status) = (self.scale(TAB_HEIGHT), self.scale(STATUS_HEIGHT));
-        let bottom = client.bottom - status;
+        let tab = self.scale(TAB_HEIGHT);
+        let panel = self.panel_rect();
+        let bottom = panel.top;
         let left = self.editor_left();
         let find_height = self.scale(self.find.height());
         // SAFETY: finestre valide create da questo thread.
@@ -852,6 +893,7 @@ impl App {
             InvalidateRect(self.hwnd, std::ptr::null(), 0);
         }
         self.find.layout(RECT { left, top: tab, right: client.right, bottom: tab + find_height }, |value| self.scale(value));
+        self.panel.layout(panel, |value| self.scale(value));
     }
 
     fn invalidate(&self) {
@@ -922,7 +964,7 @@ impl App {
 
     fn splitter_rect(&self) -> Option<RECT> {
         let edge = self.explorer_edge();
-        (edge > 0).then(|| RECT { left: edge, top: 0, right: edge + self.scale(SPLITTER), bottom: self.status_rect().top })
+        (edge > 0).then(|| RECT { left: edge, top: 0, right: edge + self.scale(SPLITTER), bottom: self.panel_rect().top })
     }
 
     fn header_rect(&self) -> RECT {
@@ -956,6 +998,9 @@ impl App {
             self.paint_tabs(dc, &client);
             if self.find.is_open() {
                 self.find.paint(dc, self.find_rect(), &self.palette, |value| self.scale(value));
+            }
+            if self.panel.visible.get() {
+                self.panel.paint(dc, self.panel_rect(), &self.palette, |value| self.scale(value));
             }
             self.paint_status(dc);
             BitBlt(target, 0, 0, client.right, client.bottom, dc, 0, 0, SRCCOPY);
@@ -1110,6 +1155,14 @@ impl App {
                         moved
                     };
                     *self.colors.borrow_mut() = FileColors::build(&self.repos.borrow());
+                    if self.panel.root.borrow().as_deref() == Some(root.as_path()) {
+                        if let Some(status) = self.repos.borrow().iter().find(|repo| repo.root == root).and_then(|repo| repo.status.as_ref()) {
+                            self.panel.set_changes(&root, status);
+                        }
+                        if head_moved && self.panel.visible.get() {
+                            self.worker.log(&root);
+                        }
+                    }
                     if head_moved {
                         // Commit, checkout, reset: il contenuto in HEAD dei file di questo repository va riletto.
                         let prefix = crate::git::key(&root);
@@ -1120,6 +1173,30 @@ impl App {
                     unsafe { InvalidateRect(self.explorer.hwnd, std::ptr::null(), 0) };
                 }
                 Event::Status(_, Err(_)) => {}
+                Event::Log(root, Ok(commits)) => {
+                    if self.panel.root.borrow().as_deref() == Some(root.as_path()) {
+                        self.panel.set_commits(commits);
+                    }
+                }
+                Event::Log(_, Err(error)) => {
+                    message_box(self.hwnd, &error, MB_ICONERROR);
+                }
+                Event::Committed(root, result) => {
+                    match result {
+                        Ok(()) => {
+                            let empty = wide("");
+                            // SAFETY: controllo valido, stringa terminata da zero.
+                            unsafe { SetWindowTextW(self.panel.message, empty.as_ptr()) };
+                        }
+                        Err(error) => {
+                            message_box(self.hwnd, &error, MB_ICONERROR);
+                        }
+                    }
+                    self.worker.refresh(&root);
+                    if self.panel.visible.get() {
+                        self.worker.log(&root);
+                    }
+                }
                 Event::Branches(root, branches) => {
                     if let Some(repo) = self.repos.borrow_mut().iter_mut().find(|repo| repo.root == root) {
                         repo.branches = branches;
@@ -1138,6 +1215,9 @@ impl App {
                         message_box(self.hwnd, &error, MB_ICONERROR);
                     }
                     self.worker.refresh(&root);
+                    if self.panel.visible.get() {
+                        self.worker.log(&root);
+                    }
                 }
             }
         }
@@ -1235,6 +1315,160 @@ impl App {
         }
     }
 
+    /// Mostra il pannello sulla tab indicata, per il repository del file attivo.
+    fn show_panel(&self, tab: Tab) {
+        self.panel.visible.set(true);
+        self.panel.tab.set(tab);
+        *self.panel.root.borrow_mut() = self.active_repo_root();
+        self.sync_panel();
+        self.layout();
+        let focus = match tab {
+            Tab::Console => self.panel.console.hwnd,
+            Tab::Git => self.panel.log.hwnd,
+            Tab::Commit => self.panel.message,
+        };
+        // SAFETY: controllo valido.
+        unsafe { SetFocus(focus) };
+    }
+
+    /// Alt+9 e simili: apre la tab, o chiude il pannello se è già quella mostrata.
+    fn toggle_panel(&self, tab: Tab) {
+        if self.panel.visible.get() && self.panel.tab.get() == tab {
+            self.panel.visible.set(false);
+            self.layout();
+            self.focus_editor();
+        } else {
+            self.show_panel(tab);
+        }
+    }
+
+    fn sync_panel(&self) {
+        let Some(root) = self.panel.root.borrow().clone() else { return };
+        if let Some(status) = self.repos.borrow().iter().find(|repo| repo.root == root).and_then(|repo| repo.status.as_ref()) {
+            self.panel.set_changes(&root, status);
+        }
+        if self.panel.tab.get() == Tab::Git {
+            self.worker.log(&root);
+        }
+    }
+
+    fn commit(&self, push: bool) {
+        let Some(root) = self.panel.root.borrow().clone().or_else(|| self.active_repo_root()) else { return };
+        let message = window_text(self.panel.message).trim().to_string();
+        if message.is_empty() {
+            self.show_panel(Tab::Commit);
+            message_box(self.hwnd, "Scrivi il messaggio di commit.", MB_ICONINFORMATION);
+            return;
+        }
+        let (files, unstage): (Vec<String>, Vec<String>) = {
+            let changes = self.panel.changes.borrow();
+            (
+                changes.iter().filter(|file| file.checked).map(|file| file.path.clone()).collect(),
+                changes.iter().filter(|file| !file.checked && file.staged).map(|file| file.path.clone()).collect(),
+            )
+        };
+        if files.is_empty() {
+            message_box(self.hwnd, "Nessun file selezionato per il commit.", MB_ICONINFORMATION);
+            return;
+        }
+        self.worker.commit(&root, files, unstage, message, push);
+    }
+
+    fn pull(&self) {
+        if let Some(root) = self.active_repo_root() {
+            let rebase = self.settings.pull_rebase();
+            self.worker.run(&root, move |git, root| git.pull(root, rebase));
+        }
+    }
+
+    /// Menu contestuale di un commit nel log.
+    fn log_menu(&self, index: usize) {
+        let Some(root) = self.panel.root.borrow().clone() else { return };
+        let Some(hash) = self.panel.commits.borrow().get(index).map(|commit| commit.hash.clone()) else { return };
+        let entries = [
+            (LOG_CHECKOUT, "Checkout"),
+            (LOG_BRANCH, "Nuovo branch da qui…"),
+            (LOG_TAG, "Crea tag…"),
+            (0, ""),
+            (LOG_CHERRY_PICK, "Cherry-pick"),
+            (LOG_REVERT, "Revert"),
+            (0, ""),
+            (LOG_RESET_SOFT, "Reset soft"),
+            (LOG_RESET_MIXED, "Reset mixed"),
+            (LOG_RESET_HARD, "Reset hard"),
+            (0, ""),
+            (LOG_COPY_HASH, "Copia hash"),
+        ];
+        let short = hash.get(..7).unwrap_or(&hash).to_string();
+        match popup_menu(self.hwnd, &entries) {
+            LOG_CHECKOUT => self.worker.run(&root, move |git, root| git.checkout_commit(root, &hash)),
+            LOG_BRANCH => {
+                if let Some(name) = prompt(self.hwnd, &self.palette, self.font.get(), "Nuovo branch", &format!("Nome del branch che parte da {short}:"), "") {
+                    self.worker.run(&root, move |git, root| git.create_branch(root, &name, true, Some(&hash)));
+                }
+            }
+            LOG_TAG => {
+                if let Some(name) = prompt(self.hwnd, &self.palette, self.font.get(), "Crea tag", &format!("Nome del tag su {short}:"), "") {
+                    self.worker.run(&root, move |git, root| git.create_tag(root, &name, &hash));
+                }
+            }
+            LOG_CHERRY_PICK => self.worker.run(&root, move |git, root| git.cherry_pick(root, &hash)),
+            LOG_REVERT => self.worker.run(&root, move |git, root| git.revert(root, &hash)),
+            LOG_RESET_SOFT => self.worker.run(&root, move |git, root| git.reset(root, &hash, ResetMode::Soft)),
+            LOG_RESET_MIXED => self.worker.run(&root, move |git, root| git.reset(root, &hash, ResetMode::Mixed)),
+            LOG_RESET_HARD => {
+                let question = format!("Reset hard a {short}? Le modifiche non committate andranno perse.");
+                if message_box(self.hwnd, &question, MB_YESNO | MB_ICONWARNING) == IDYES {
+                    self.worker.run(&root, move |git, root| git.reset(root, &hash, ResetMode::Hard));
+                }
+            }
+            LOG_COPY_HASH => copy_to_clipboard(self.hwnd, &hash),
+            _ => {}
+        }
+    }
+
+    fn on_list_event(&self, list: HWND, event: ListEvent, index: usize) {
+        if list == self.panel.log.hwnd {
+            if event == ListEvent::Menu {
+                self.log_menu(index);
+            }
+            return;
+        }
+        if list != self.panel.files.hwnd {
+            return;
+        }
+        match event {
+            ListEvent::Toggle => self.panel.toggle(index),
+            ListEvent::Select if self.panel.on_checkbox(|value| self.scale(value)) => self.panel.toggle(index),
+            ListEvent::Activate => {
+                let path = self.panel.changes.borrow().get(index).map(|file| PathBuf::from(&file.path));
+                if let Some(path) = path.filter(|path| path.is_file()) {
+                    self.open(&path);
+                }
+            }
+            _ => {}
+        }
+        // SAFETY: area del pannello nella finestra principale (contatore dei file selezionati).
+        unsafe { InvalidateRect(self.hwnd, &self.panel_rect(), 0) };
+    }
+
+    fn panel_height(&self) -> i32 {
+        if !self.panel.visible.get() {
+            return 0;
+        }
+        let available = self.status_rect().top - self.scale(TAB_HEIGHT) - self.scale(EDITOR_MIN);
+        self.scale(self.panel.height.get()).clamp(self.scale(panel::HEADER + 60), available.max(self.scale(panel::HEADER + 60)))
+    }
+
+    fn panel_rect(&self) -> RECT {
+        let status = self.status_rect();
+        RECT { top: status.top - self.panel_height(), bottom: status.top, ..status }
+    }
+
+    fn over_panel_splitter(&self, y: i32) -> bool {
+        self.panel.visible.get() && (y - self.panel_rect().top).abs() <= self.scale(3)
+    }
+
     fn tab_at(&self, x: i32, y: i32) -> Option<(usize, bool)> {
         let tabs = self.tabs.borrow();
         let index = tabs.iter().position(|(tab, _)| contains(tab, x, y))?;
@@ -1242,6 +1476,23 @@ impl App {
     }
 
     fn on_click(&self, x: i32, y: i32) {
+        if self.over_panel_splitter(y) {
+            self.dragging_panel.set(true);
+            // SAFETY: cattura del mouse sulla finestra principale fino al rilascio.
+            unsafe { SetCapture(self.hwnd) };
+            return;
+        }
+        if self.panel.visible.get() && contains(&self.panel_rect(), x, y) {
+            if let Some(tab) = self.panel.tab_at(x, y) {
+                return self.show_panel(tab);
+            }
+            match self.panel.button_at(x, y) {
+                Some(panel::Button::Commit) => self.commit(false),
+                Some(panel::Button::CommitAndPush) => self.commit(true),
+                None => {}
+            }
+            return;
+        }
         if self.splitter_rect().is_some_and(|splitter| contains(&splitter, x, y)) {
             self.dragging.set(true);
             // SAFETY: cattura del mouse sulla finestra principale fino al rilascio.
@@ -1281,7 +1532,12 @@ impl App {
         }
     }
 
-    fn on_mouse_move(&self, x: i32) {
+    fn on_mouse_move(&self, x: i32, y: i32) {
+        if self.dragging_panel.get() {
+            let height = self.status_rect().top - y;
+            self.panel.height.set(height * 96 / self.dpi().max(1));
+            return self.layout();
+        }
         if !self.dragging.get() {
             return;
         }
@@ -1350,7 +1606,9 @@ impl App {
         }
         let over_splitter = self.splitter_rect().is_some_and(|splitter| contains(&splitter, point.x, point.y));
         let clickable = contains(&self.eol_rect.get(), point.x, point.y) || contains(&self.vcs_rect.get(), point.x, point.y) || (self.explorer_visible.get() && contains(&self.header_rect(), point.x, point.y));
+        let over_panel = self.over_panel_splitter(point.y) || self.dragging_panel.get();
         let cursor = match (over_splitter || self.dragging.get(), clickable) {
+            _ if over_panel => IDC_SIZENS,
             (true, _) => IDC_SIZEWE,
             (false, true) => IDC_HAND,
             _ => return false,
@@ -1394,11 +1652,12 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             0
         }
         WM_MOUSEMOVE => {
-            app.on_mouse_move(point(lparam).0);
+            let (x, y) = point(lparam);
+            app.on_mouse_move(x, y);
             0
         }
         WM_LBUTTONUP => {
-            if app.dragging.replace(false) {
+            if app.dragging.replace(false) | app.dragging_panel.replace(false) {
                 ReleaseCapture();
             }
             0
@@ -1460,7 +1719,24 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             app.on_git_events();
             0
         }
-        WM_COMMAND_LOGGED => 0,
+        WM_COMMAND_LOGGED => {
+            app.panel.append_console(&app.worker.take_log());
+            0
+        }
+        WM_LIST_PAINT => {
+            let row = &*(lparam as *const RowPaint);
+            if row.list == app.panel.log.hwnd {
+                app.panel.paint_log_row(row, &app.palette, app.font.get(), |value| app.scale(value));
+            } else {
+                app.panel.paint_file_row(row, &app.palette, app.font.get(), |value| app.scale(value));
+            }
+            0
+        }
+        WM_LIST_EVENT => {
+            let (event, index) = decode_event(lparam);
+            app.on_list_event(wparam as HWND, event, index);
+            0
+        }
         WM_TIMER if wparam == MARKER_TIMER => {
             KillTimer(hwnd, MARKER_TIMER);
             app.update_markers();

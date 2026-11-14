@@ -3,14 +3,16 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use steroitor_core::git::parse::{Branch, FileStatus, RepoStatus};
+use steroitor_core::git::history::LogFilter;
+use steroitor_core::git::parse::{Branch, Commit, FileStatus, RepoStatus};
 use steroitor_core::git::runner::{CommandLog, Git};
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
 pub const WM_GIT_EVENT: u32 = WM_APP + 2;
 pub const WM_COMMAND_LOGGED: u32 = WM_APP + 3;
-const LOG_LIMIT: usize = 500;
+/// Commit caricati nel log: abbastanza per la storia recente senza pesare in memoria.
+const LOG_COMMITS: u32 = 1000;
 
 pub enum Event {
     Status(PathBuf, Result<RepoStatus, String>),
@@ -18,14 +20,16 @@ pub enum Event {
     Head(PathBuf, Option<String>),
     /// Un'operazione voluta dall'utente (pull, checkout, …): l'errore va mostrato.
     Finished(PathBuf, Result<(), String>),
+    Log(PathBuf, Result<Vec<Commit>, String>),
+    Committed(PathBuf, Result<(), String>),
 }
 
 #[derive(Clone)]
 pub struct Worker {
     hwnd: usize,
     events: Arc<Mutex<Vec<Event>>>,
-    /// I comandi git eseguiti, per la Console.
-    pub log: Arc<Mutex<Vec<CommandLog>>>,
+    /// I comandi git eseguiti, in attesa che la Console li mostri.
+    log: Arc<Mutex<Vec<CommandLog>>>,
 }
 
 impl Worker {
@@ -47,9 +51,6 @@ impl Worker {
                 "git",
                 Box::new(move |entry| {
                     if let Ok(mut log) = log.lock() {
-                        if log.len() == LOG_LIMIT {
-                            log.remove(0);
-                        }
                         log.push(entry);
                     }
                     Self::post(hwnd, WM_COMMAND_LOGGED);
@@ -65,6 +66,35 @@ impl Worker {
 
     pub fn take(&self) -> Vec<Event> {
         self.events.lock().map(|mut events| std::mem::take(&mut *events)).unwrap_or_default()
+    }
+
+    pub fn take_log(&self) -> Vec<CommandLog> {
+        self.log.lock().map(|mut log| std::mem::take(&mut *log)).unwrap_or_default()
+    }
+
+    pub fn log(&self, root: &Path) {
+        let root = root.to_path_buf();
+        self.spawn(move |git| Event::Log(root.clone(), git.log_filtered(&root.to_string_lossy(), &LogFilter::default(), 0, LOG_COMMITS)));
+    }
+
+    /// Commit dei file indicati: toglie dall'index quelli non scelti, aggiunge gli altri, committa ed eventualmente fa push.
+    pub fn commit(&self, root: &Path, files: Vec<String>, unstage: Vec<String>, message: String, push: bool) {
+        let root = root.to_path_buf();
+        self.spawn(move |git| {
+            let path = root.to_string_lossy().into_owned();
+            let result = (|| {
+                if !unstage.is_empty() {
+                    git.unstage(&path, &unstage)?;
+                }
+                git.stage(&path, &files)?;
+                git.commit(&path, &message)?;
+                if push {
+                    git.push(&path)?;
+                }
+                Ok(())
+            })();
+            Event::Committed(root, result)
+        });
     }
 
     pub fn refresh(&self, root: &Path) {
