@@ -39,13 +39,100 @@ fn first_match(dir: &Path, accept: impl Fn(&str) -> bool) -> Option<PathBuf> {
 }
 
 /// L'estensione Java di VS Code (redhat.java) contiene sia jdtls sia un JRE abbastanza recente.
-fn vscode_java_extension() -> Option<PathBuf> {
+pub fn vscode_java_extension() -> Option<PathBuf> {
     let home = home()?;
     VSCODE_EXTENSION_DIRS
         .iter()
         .filter_map(|dir| first_match(&home.join(dir), |name| name.starts_with("redhat.java-")))
         .filter(|path| path.join("server").is_dir())
         .max()
+}
+
+/// Java per i server scritti in Java: `JDTLS_JAVA_HOME`, il JRE dell'estensione Java di VS Code, `JAVA_HOME`, il PATH.
+fn server_java(extension: Option<&Path>) -> PathBuf {
+    let bundled = extension.and_then(|dir| first_match(&dir.join("jre"), |_| true)).map(|jre| jre.join("bin").join("java.exe"));
+    std::env::var_os("JDTLS_JAVA_HOME")
+        .map(|dir| PathBuf::from(dir).join("bin").join("java.exe"))
+        .or(bundled.filter(|path| path.exists()))
+        .or_else(|| std::env::var_os("JAVA_HOME").map(|dir| PathBuf::from(dir).join("bin").join("java.exe")))
+        .unwrap_or_else(|| PathBuf::from("java.exe"))
+}
+
+fn in_path(file: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?).map(|dir| dir.join(file)).find(|path| path.is_file())
+}
+
+pub fn dart_root(file: &Path) -> PathBuf {
+    project_root(file, &["pubspec.yaml"])
+}
+
+/// La build Gradle intera (settings.gradle), così kotlin-language-server vede tutti i moduli.
+pub fn gradle_root(file: &Path) -> PathBuf {
+    let start = file.parent().unwrap_or(file);
+    let settings = start.ancestors().find(|dir| ["settings.gradle", "settings.gradle.kts"].iter().any(|name| dir.join(name).is_file()));
+    settings.map_or_else(|| java_root(file), Path::to_path_buf)
+}
+
+/// dart.exe: prima quello di Flutter (conosce i pacchetti di Flutter), poi un Dart SDK.
+fn locate_dart() -> Option<PathBuf> {
+    let env = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    let flutter_dart = |flutter: PathBuf| flutter.join("bin/cache/dart-sdk/bin/dart.exe");
+    let mut flutters: Vec<PathBuf> = env("FLUTTER_ROOT").into_iter().collect();
+    flutters.extend(in_path("flutter.bat").and_then(|bat| Some(bat.parent()?.parent()?.to_path_buf())));
+    flutters.extend(home().map(|home| home.join("flutter")));
+    flutters.extend(["C:\\src\\flutter", "C:\\flutter", "C:\\tools\\flutter"].map(PathBuf::from));
+    let sdks = env("DART_SDK").into_iter().chain(["C:\\tools\\dart-sdk"].map(PathBuf::from)).chain(env("ProgramFiles").map(|dir| dir.join("Dart").join("dart-sdk")));
+    flutters.into_iter().map(flutter_dart).chain(in_path("dart.exe")).chain(sdks.map(|sdk| sdk.join("bin").join("dart.exe"))).find(|path| path.is_file())
+}
+
+pub fn dart(root: &Path) -> Result<Command, String> {
+    let program = locate_dart().ok_or("Dart non trovato: installa Flutter (e lancia una volta `flutter doctor`) o il Dart SDK, oppure imposta FLUTTER_ROOT o DART_SDK")?;
+    let mut command = Command::new(program);
+    command.args(["language-server", "--protocol=lsp", "--client-id=steroitor", "--client-version=1"]).current_dir(root);
+    Ok(command)
+}
+
+/// La cartella di kotlin-language-server (quella con `lib`): da `KOTLIN_LANGUAGE_SERVER`, dal PATH o dall'estensione
+/// Kotlin di VS Code, che lo scarica nel suo spazio globale.
+fn locate_kotlin() -> Option<PathBuf> {
+    let explicit = std::env::var_os("KOTLIN_LANGUAGE_SERVER").map(PathBuf::from).map(|path| if path.is_file() { path.parent().and_then(Path::parent).map(Path::to_path_buf).unwrap_or(path) } else { path });
+    let path = in_path("kotlin-language-server.bat").or_else(|| in_path("kotlin-language-server")).and_then(|script| Some(script.parent()?.parent()?.to_path_buf()));
+    let vscode = std::env::var_os("APPDATA").into_iter().flat_map(|dir| ["Code", "Code - Insiders", "Cursor"].map(|editor| PathBuf::from(&dir).join(editor).join("User/globalStorage/fwcd.kotlin/langServerInstall/server")));
+    explicit.into_iter().chain(path).chain(vscode).find(|home| home.join("lib").join("kotlin-language-server.jar").is_file())
+}
+
+/// Java avviato direttamente e non lo script .bat: chiudendo il server si chiude anche Java, non solo cmd.exe.
+pub fn kotlin(root: &Path) -> Result<Command, String> {
+    let home = locate_kotlin().ok_or("kotlin-language-server non trovato: scaricalo da github.com/fwcd/kotlin-language-server e metti la sua cartella bin nel PATH, oppure imposta KOTLIN_LANGUAGE_SERVER")?;
+    let mut command = Command::new(server_java(vscode_java_extension().as_deref()));
+    command.args(["-Xmx1G", "-XX:+UseSerialGC", "-cp"]).arg(home.join("lib").join("*")).arg("org.javacs.kt.MainKt").current_dir(root);
+    Ok(command)
+}
+
+/// Il plugin Vue per tsserver e la cartella da cui tsserver lo carica: dal progetto, da npm globale (anche dentro
+/// `@vue/language-server`) o dall'estensione Vue di VS Code, che lo dichiara nel suo package.json.
+fn locate_vue_plugin(root: &Path) -> Option<(String, PathBuf)> {
+    const PLUGIN: &str = "@vue/typescript-plugin";
+    let has = |dir: &Path, name: &str| dir.join("node_modules").join(name).join("package.json").is_file();
+    let global = std::env::var_os("APPDATA").map(|dir| PathBuf::from(dir).join("npm"));
+    let mut probes: Vec<PathBuf> = root.ancestors().map(Path::to_path_buf).collect();
+    probes.extend(global.iter().flat_map(|npm| [npm.clone(), npm.join("node_modules/@vue/language-server")]));
+    if let Some((name, probe)) = probes.into_iter().find(|dir| has(dir, PLUGIN)).map(|dir| (PLUGIN.to_string(), dir)) {
+        return Some((name, probe));
+    }
+    let home = home()?;
+    let extension = VSCODE_EXTENSION_DIRS.iter().filter_map(|dir| first_match(&home.join(dir), |name| name.starts_with("vue.volar-"))).max()?;
+    let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(extension.join("package.json")).ok()?).ok()?;
+    let name = manifest["contributes"]["typescriptServerPlugins"][0]["name"].as_str()?.to_string();
+    has(&extension, &name).then_some((name, extension))
+}
+
+/// tsserver con il plugin Vue: i file .vue (script, template e stili) entrano nel progetto TypeScript.
+pub fn vue_tsserver(root: &Path) -> Result<Command, String> {
+    let (name, probe) = locate_vue_plugin(root).ok_or("plugin Vue per TypeScript non trovato: `npm i -D @vue/typescript-plugin` nel progetto, `npm i -g @vue/language-server` o l'estensione Vue di VS Code")?;
+    let mut command = tsserver(root)?;
+    command.arg("--globalPlugins").arg(name).arg("--pluginProbeLocations").arg(probe);
+    Ok(command)
 }
 
 /// jdtls da `JDTLS_HOME` o dall'estensione di VS Code; Java da `JDTLS_JAVA_HOME`, dal JRE dell'estensione, da `JAVA_HOME` o dal PATH.
@@ -56,12 +143,9 @@ pub fn jdtls(root: &Path, data_dir: &Path) -> Result<Command, String> {
     let home = home.ok_or("jdtls non trovato: imposta JDTLS_HOME o installa l'estensione Java di VS Code (redhat.java)")?;
     let launcher = first_match(&home.join("plugins"), |name| name.starts_with("org.eclipse.equinox.launcher_") && name.ends_with(".jar"))
         .ok_or_else(|| format!("launcher di jdtls non trovato in {}", home.display()))?;
-    let bundled = extension.as_ref().and_then(|dir| first_match(&dir.join("jre"), |_| true)).map(|jre| jre.join("bin").join("java.exe"));
-    let java = std::env::var_os("JDTLS_JAVA_HOME")
-        .map(|dir| PathBuf::from(dir).join("bin").join("java.exe"))
-        .or(bundled.filter(|path| path.exists()))
-        .or_else(|| std::env::var_os("JAVA_HOME").map(|dir| PathBuf::from(dir).join("bin").join("java.exe")))
-        .unwrap_or_else(|| PathBuf::from("java.exe"));
+    let java = server_java(extension.as_deref());
+    // Come VS Code: con Lombok come agente jdtls vede getter, builder e costruttori generati.
+    let lombok = std::env::var_os("LOMBOK_JAR").map(PathBuf::from).or_else(|| extension.as_ref().and_then(|dir| first_match(&dir.join("lombok"), |name| name.starts_with("lombok") && name.ends_with(".jar"))));
 
     let base = data_dir.join("jdtls");
     let key = root.to_string_lossy().to_lowercase();
@@ -87,6 +171,7 @@ pub fn jdtls(root: &Path, data_dir: &Path) -> Result<Command, String> {
             "java.base/java.lang=ALL-UNNAMED",
         ])
         .arg(format!("-Dosgi.sharedConfiguration.area={}", home.join("config_win").display()))
+        .args(lombok.filter(|jar| jar.is_file()).map(|jar| format!("-javaagent:{}", jar.display())))
         .arg("-jar")
         .arg(launcher)
         .arg("-configuration")

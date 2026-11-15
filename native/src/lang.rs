@@ -59,6 +59,8 @@ const C_STYLES: &[(usize, Role)] = &[
 
 pub const JS_KEYWORDS: &str = "abstract any as async await boolean break case catch class const constructor continue debugger declare default delete do else enum export extends false finally for from function get if implements import in infer instanceof interface is keyof let module namespace never new null number object of override package private protected public readonly return satisfies set static string super switch symbol this throw true try type typeof undefined unique unknown var void while with yield";
 const JAVA_KEYWORDS: &str = "abstract assert boolean break byte case catch char class const continue default do double else enum extends false final finally float for goto if implements import instanceof int interface long native new non-sealed null package permits private protected public record return sealed short static strictfp super switch synchronized this throw throws transient true try var void volatile while yield";
+const KOTLIN_KEYWORDS: &str = "abstract actual annotation as break by catch class companion const constructor continue crossinline data do dynamic else enum expect external false field file final finally for fun get if import in infix init inline inner interface internal is lateinit noinline null object open operator out override package private protected public reified return sealed set super suspend tailrec this throw true try typealias typeof val value var vararg when where while";
+const DART_KEYWORDS: &str = "abstract as assert async await base break case catch class const continue covariant default deferred do dynamic else enum export extends extension external factory false final finally for Function get hide if implements import in interface is late library mixin new null of on operator part required rethrow return sealed set show static super switch sync this throw true try typedef var void when while with yield";
 const C_KEYWORDS: &str = "alignas alignof auto bool break case catch char char16_t char32_t char8_t class concept const consteval constexpr constinit const_cast continue co_await co_return co_yield decltype default delete do double dynamic_cast else enum explicit export extern false float for friend goto if inline int long mutable namespace new noexcept nullptr operator private protected public register reinterpret_cast requires return short signed sizeof static static_assert static_cast struct switch template this thread_local throw true try typedef typeid typename union unsigned using virtual void volatile wchar_t while";
 const CSHARP_KEYWORDS: &str = "abstract as async await base bool break byte case catch char checked class const continue decimal default delegate do double else enum event explicit extern false finally fixed float for foreach get goto if implicit in init int interface internal is lock long namespace new null object operator out override params partial private protected public readonly record ref return sbyte sealed set short sizeof stackalloc static string struct switch this throw true try typeof uint ulong unchecked unsafe ushort using var virtual void volatile when where while with yield";
 const PYTHON_KEYWORDS: &str = "False None True and as assert async await break case class continue def del elif else except finally for from global if import in is lambda match nonlocal not or pass raise return try type while with yield";
@@ -76,12 +78,16 @@ const fn c_like(name: &'static str, keywords: &'static [&'static str], propertie
     Language { name, lexer: Some("cpp"), keywords, properties, styles: C_STYLES }
 }
 
+/// Kotlin e Dart: stringhe a tre virgolette e `$` nei nomi (Dart) e nei template.
+const TEMPLATE_PROPERTIES: &[(&str, &str)] = &[("lexer.cpp.triplequoted.strings", "1"), ("lexer.cpp.allow.dollars", "1")];
 const SCRIPT_PROPERTIES: &[(&str, &str)] = &[("lexer.cpp.backquoted.strings", "1"), ("lexer.cpp.allow.dollars", "1")];
 
 pub static PLAIN: Language = Language { name: "Testo semplice", lexer: None, keywords: &[], properties: &[], styles: &[] };
 static JAVASCRIPT: Language = c_like("JavaScript", &[JS_KEYWORDS], SCRIPT_PROPERTIES);
 static TYPESCRIPT: Language = c_like("TypeScript", &[JS_KEYWORDS], SCRIPT_PROPERTIES);
 static JAVA: Language = c_like("Java", &[JAVA_KEYWORDS], &[]);
+static KOTLIN: Language = c_like("Kotlin", &[KOTLIN_KEYWORDS], TEMPLATE_PROPERTIES);
+static DART: Language = c_like("Dart", &[DART_KEYWORDS], TEMPLATE_PROPERTIES);
 static C: Language = c_like("C / C++", &[C_KEYWORDS], &[]);
 static CSHARP: Language = c_like("C#", &[CSHARP_KEYWORDS], &[("lexer.cpp.verbatim.strings.allow.escapes", "0")]);
 static PYTHON: Language = Language {
@@ -201,6 +207,8 @@ const BY_EXTENSION: &[(&[&str], &Language)] = &[
     (&["js", "mjs", "cjs", "jsx"], &JAVASCRIPT),
     (&["ts", "mts", "cts", "tsx"], &TYPESCRIPT),
     (&["java"], &JAVA),
+    (&["kt", "kts"], &KOTLIN),
+    (&["dart"], &DART),
     (&["c", "h", "cc", "cpp", "cxx", "hpp", "hh", "hxx"], &C),
     (&["cs"], &CSHARP),
     (&["py", "pyw"], &PYTHON),
@@ -235,6 +243,8 @@ mod tests {
     fn detects_by_extension_ignoring_case() {
         assert_eq!(detect(Path::new("C:\\src\\Main.JAVA")).name, "Java");
         assert_eq!(detect(Path::new("app.component.ts")).name, "TypeScript");
+        assert_eq!(detect(Path::new("build.gradle.kts")).name, "Kotlin");
+        assert_eq!(detect(Path::new("main.dart")).name, "Dart");
         assert_eq!(detect(Path::new(".gitconfig")).name, "Properties / INI");
         assert_eq!(detect(Path::new("README")).name, "Testo semplice");
     }

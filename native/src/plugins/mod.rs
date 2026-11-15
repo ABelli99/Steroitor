@@ -1,10 +1,15 @@
 //! Plugin dei linguaggi: completamento, type-check e documentazione inline da un server esterno (tsserver per
-//! JavaScript/TypeScript, jdtls per Java). Ogni plugin e ogni opzione si accendono dalla pagina impostazioni e
+//! JavaScript/TypeScript e Vue, jdtls per Java, clangd per C/C++, Dart per Flutter, kotlin-language-server per Android).
+//! Ogni plugin e ogni opzione si accendono dalla pagina impostazioni e
 //! valgono subito; il server parte al primo file che lo richiede e si chiude quando non serve più. COBOL non ha server:
-//! controllo e indentazione sono in `cobol`.
+//! controllo e indentazione sono in `cobol`. Spring e Lombok (`annotations`) e le risorse Android (`android`) lavorano senza
+//! server accanto a quello del plugin.
+mod android;
+mod annotations;
 mod cobol;
 mod doc_popup;
 mod inline_html;
+mod jvm_source;
 mod navigation;
 mod process;
 mod protocol;
@@ -58,7 +63,7 @@ pub struct Plugin {
     language_id: &'static str,
 }
 
-pub static PLUGINS: [Plugin; 4] = [
+pub static PLUGINS: [Plugin; 7] = [
     Plugin {
         id: "javascript",
         name: "JavaScript / TypeScript",
@@ -73,11 +78,11 @@ pub static PLUGINS: [Plugin; 4] = [
     Plugin {
         id: "java",
         name: "Java",
-        requires: "jdtls dall'estensione Java di VS Code o da JDTLS_HOME; 0,3–1 GB di RAM",
-        version: "1.1.0",
-        description: "Completamento, errori, documentazione e Vai alla dichiarazione con jdtls. Disattivato, resta l'evidenziazione.",
+        requires: "jdtls dall'estensione Java di VS Code o da JDTLS_HOME; 0,3–1 GB di RAM. Lombok dall'estensione o da LOMBOK_JAR",
+        version: "1.2.0",
+        description: "Completamento, errori, documentazione e Vai alla dichiarazione con jdtls (con Lombok). Annotazioni di Spring e Lombok completate e controllate anche senza server.",
         languages: &[("Java", &["java"])],
-        options: &SERVER_OPTIONS,
+        options: &JAVA_OPTIONS,
         protocol: Some(Protocol::Lsp),
         language_id: "java",
     },
@@ -103,6 +108,39 @@ pub static PLUGINS: [Plugin; 4] = [
         protocol: None,
         language_id: "cobol",
     },
+    Plugin {
+        id: "flutter",
+        name: "Flutter / Dart",
+        requires: "Flutter (o il Dart SDK) dal PATH, da FLUTTER_ROOT o da DART_SDK; per i pacchetti un `flutter pub get`",
+        version: "1.0.0",
+        description: "Completamento (anche dei widget), errori, documentazione e Vai alla dichiarazione con l'analysis server di Dart. Disattivato, resta l'evidenziazione.",
+        languages: &[("Dart", &["dart"])],
+        options: &SERVER_OPTIONS,
+        protocol: Some(Protocol::Lsp),
+        language_id: "dart",
+    },
+    Plugin {
+        id: "android",
+        name: "Android / Kotlin",
+        requires: "kotlin-language-server (github.com/fwcd/kotlin-language-server) nel PATH o in KOTLIN_LANGUAGE_SERVER, con Java 11 o più recente; le risorse non chiedono nulla",
+        version: "1.0.0",
+        description: "Kotlin con kotlin-language-server. Risorse Android (R.string.x, @drawable/y) completate e controllate in Kotlin, Java e XML, senza server.",
+        languages: &[("Kotlin", &["kt", "kts"])],
+        options: &ANDROID_OPTIONS,
+        protocol: Some(Protocol::Lsp),
+        language_id: "kotlin",
+    },
+    Plugin {
+        id: "vue",
+        name: "Vue",
+        requires: "tsserver con Node.js e il plugin @vue/typescript-plugin: dal progetto, da npm globale (@vue/language-server) o dall'estensione Vue di VS Code",
+        version: "1.0.0",
+        description: "Completamento, errori di tipo, documentazione e Vai alla dichiarazione nei componenti .vue (script e template) con tsserver e il plugin Vue.",
+        languages: &[("Vue", &["vue"])],
+        options: &SERVER_OPTIONS,
+        protocol: Some(Protocol::TsServer),
+        language_id: "vue",
+    },
 ];
 
 /// Le opzioni che usano il server del plugin. `typeCheck` è la stessa chiave della versione Tauri.
@@ -123,6 +161,26 @@ const COBOL_OPTIONS: [(&str, &str, &str); 2] = [
     (TYPE_CHECK, "Controllo del sorgente", "Colonne del formato fisso, DIVISION, IF/EVALUATE/SEARCH/PERFORM chiusi, paragrafi e dati non dichiarati (anche nei copybook), tipi dalle PIC: VALUE, aritmetica, MOVE, SET … TO TRUE."),
     (INDENT, "Indentazione COBOL", "Invio nell'area A o B giusta, Tab alle colonne 8, 12, 16…, END-IF, ELSE e WHEN riallineati mentre li scrivi; sempre spazi."),
 ];
+/// Java ha in più Spring e Lombok, senza server.
+const JAVA_OPTIONS: [(&str, &str, &str); 5] = [
+    SERVER_OPTIONS[0],
+    SERVER_OPTIONS[1],
+    SERVER_OPTIONS[2],
+    (SPRING, "Spring", "Senza server: nomi e attributi delle annotazioni e proprietà di @Value(\"${…}\") nel completamento; controllo di @Value, path variable, @Transactional e @Async su metodi private, @Bean, @Autowired sui campi."),
+    (LOMBOK, "Lombok", "Senza server: nomi e attributi delle annotazioni nel completamento; controllo delle combinazioni che non compilano (@Builder con @NoArgsConstructor, campi final, @Data su interfacce ed enum, log già dichiarato)."),
+];
+/// Android ha in più le risorse, senza server.
+const ANDROID_OPTIONS: [(&str, &str, &str); 4] = [
+    SERVER_OPTIONS[0],
+    SERVER_OPTIONS[1],
+    SERVER_OPTIONS[2],
+    (RESOURCES, "Risorse Android", "Senza server: R.<tipo>.<nome> in Kotlin e Java e @<tipo>/<nome> negli XML completati e controllati con le risorse di tutti i moduli; stili e attributi non si controllano perché vengono spesso dalle librerie."),
+];
+const SPRING: &str = "spring";
+const LOMBOK: &str = "lombok";
+const RESOURCES: &str = "resources";
+/// Slot della diagnostica calcolata senza server; 0 e 1 sono del server (sintassi e semantica per tsserver).
+const LOCAL_SLOT: usize = 2;
 const INDENT: &str = "indent";
 const COMPLETION: &str = SERVER_OPTIONS[0].0;
 const TYPE_CHECK: &str = SERVER_OPTIONS[1].0;
@@ -167,6 +225,8 @@ fn server_root(id: &str, path: &Path) -> PathBuf {
     match id {
         "java" => servers::java_root(path),
         "c" => servers::c_root(path),
+        "flutter" => servers::dart_root(path),
+        "android" => servers::gradle_root(path),
         _ => servers::script_root(path),
     }
 }
@@ -176,8 +236,86 @@ fn server_command(id: &str, root: &Path, data_dir: Option<&Path>) -> (&'static s
     match id {
         "java" => ("jdtls", data_dir.ok_or_else(|| "APPDATA non impostata".to_string()).and_then(|dir| servers::jdtls(root, dir))),
         "c" => ("clangd", servers::clangd(root)),
+        "flutter" => ("dart language-server", servers::dart(root)),
+        "android" => ("kotlin-language-server", servers::kotlin(root)),
+        "vue" => ("tsserver", servers::vue_tsserver(root)),
         _ => ("tsserver", servers::tsserver(root)),
     }
+}
+
+/// Suggerimenti calcolati senza server: da dove sostituiscono il testo, le voci e se vanno insieme a quelle del server.
+pub struct Local {
+    pub start: usize,
+    pub labels: Vec<String>,
+    pub merge: bool,
+}
+
+fn plugin_option(settings: &Settings, id: &str, option: &str) -> bool {
+    PLUGINS.iter().find(|plugin| plugin.id == id).is_some_and(|plugin| settings.plugin_enabled(id) && plugin.option_on(settings, option))
+}
+
+fn extension(path: &Path) -> String {
+    path.extension().map(|extension| extension.to_string_lossy().to_lowercase()).unwrap_or_default()
+}
+
+/// Spring e Lombok accesi, per un file Java.
+fn java_frameworks(settings: &Settings, path: &Path) -> Option<(bool, bool)> {
+    if extension(path) != "java" {
+        return None;
+    }
+    let (spring, lombok) = (plugin_option(settings, "java", SPRING), plugin_option(settings, "java", LOMBOK));
+    (spring || lombok).then_some((spring, lombok))
+}
+
+/// Il progetto Android del file, se le risorse sono accese e il file è Kotlin, Java o XML di un modulo Android.
+fn android_project(settings: &Settings, path: &Path) -> Option<PathBuf> {
+    plugin_option(settings, "android", RESOURCES).then(|| android::project(path)).flatten()
+}
+
+fn local_completions(settings: &Settings, path: &Path, text: &str, caret: usize) -> Option<Local> {
+    if let Some((spring, lombok)) = java_frameworks(settings, path) {
+        if let Some(local) = annotations::completions(text, caret, spring, lombok, || annotations::properties(&servers::java_root(path))) {
+            return Some(local);
+        }
+    }
+    let project = android_project(settings, path)?;
+    android::completions(text, caret, extension(path) == "xml", || android::index(&project))
+}
+
+/// Controllo del plugin senza server (COBOL).
+fn own_check(settings: &Settings, path: &Path) -> bool {
+    option(settings, Some(path), TYPE_CHECK).is_some_and(|plugin| PLUGINS[plugin].protocol.is_none())
+}
+
+fn local_checks(settings: &Settings, path: &Path) -> bool {
+    own_check(settings, path) || java_frameworks(settings, path).is_some() || android_project(settings, path).is_some()
+}
+
+/// I problemi trovati senza server; None se nessun controllo senza server vale per il file.
+fn local_diagnostics(settings: &Settings, path: &Path, text: &str) -> Option<Vec<Diagnostic>> {
+    let mut list = Vec::new();
+    let mut checked = false;
+    if own_check(settings, path) {
+        checked = true;
+        list.extend(cobol::check(text, path.parent()));
+    }
+    if let Some((spring, lombok)) = java_frameworks(settings, path) {
+        checked = true;
+        let properties = spring.then(|| annotations::properties(&servers::java_root(path))).flatten();
+        list.extend(annotations::check(text, spring, lombok, properties.as_deref()));
+    }
+    if let Some(project) = android_project(settings, path) {
+        checked = true;
+        list.extend(android::check(text, extension(path) == "xml", &android::index(&project)));
+    }
+    checked.then_some(list)
+}
+
+/// Quali slot della diagnostica mostrare: quelli del server con il type-check acceso, quello locale con un controllo
+/// senza server acceso.
+fn visible_slots(settings: &Settings, path: &Path) -> [bool; 3] {
+    let server = option(settings, Some(path), TYPE_CHECK).is_some_and(|plugin| PLUGINS[plugin].protocol.is_some());
+    [server, server, local_checks(settings, path)]
 }
 
 fn wants_server(settings: &Settings, plugin: usize) -> bool {
@@ -372,6 +510,8 @@ struct Pending {
     start: usize,
     items: Vec<Item>,
     incomplete: bool,
+    /// Voci senza server (Spring, Lombok) da mostrare con quelle del server.
+    extra: Vec<String>,
 }
 
 pub struct Host {
@@ -391,7 +531,7 @@ pub struct Host {
     popup: DocPopup,
     palette: Palette,
     font: Cell<HFONT>,
-    diagnostics: RefCell<HashMap<String, [Vec<Diagnostic>; 2]>>,
+    diagnostics: RefCell<HashMap<String, [Vec<Diagnostic>; 3]>>,
     definition: Cell<Option<u64>>,
     /// Risposta a Vai alla dichiarazione, per l'app: Some(None) se il server non ha trovato nulla.
     navigation: RefCell<Option<Option<(PathBuf, (usize, usize))>>>,
@@ -509,26 +649,30 @@ impl Host {
         self.servers.borrow_mut().get_mut(&id).map(|running| action(&mut running.server))
     }
 
-    /// Carattere digitato: programma il completamento (subito dopo il punto, altrimenti dopo una breve pausa).
+    /// Carattere digitato: programma il completamento (subito dopo il punto e, con Spring, Lombok o le risorse Android,
+    /// dopo `@`, `{` e `/`; altrimenti dopo una breve pausa).
     pub fn on_char(&self, sci: &Sci, settings: &Settings, path: Option<&Path>, ch: i32) {
         if option(settings, path, INDENT).is_some() {
             realign_closer(sci);
         }
-        if option(settings, path, COMPLETION).is_none() {
+        let Some(file) = path else { return };
+        let local = java_frameworks(settings, file).is_some() || android_project(settings, file).is_some();
+        if option(settings, path, COMPLETION).is_none() && !local {
             return;
         }
         let Some(ch) = u32::try_from(ch).ok().and_then(char::from_u32) else { return };
         let word = ch.is_alphanumeric() || ch == '_' || ch == '$';
         // Con la lista aperta filtra Scintilla, a meno che il server non l'abbia tagliata.
         let incomplete = self.completion.borrow().as_ref().is_some_and(|pending| pending.incomplete);
-        if ch == '.' {
+        let instant = ch == '.' || (local && matches!(ch, '@' | '{' | '/'));
+        if instant {
             sci.call(SCI_AUTOCCANCEL, 0, 0);
         } else if !word || (sci.call(SCI_AUTOCACTIVE, 0, 0) != 0 && !incomplete) {
             return;
         }
         self.trigger.set((ch == '.').then_some('.'));
         // SAFETY: timer della finestra principale; se esiste già viene riavviato.
-        unsafe { SetTimer(self.hwnd, COMPLETION_TIMER, if ch == '.' { 1 } else { COMPLETION_DELAY_MS }, None) };
+        unsafe { SetTimer(self.hwnd, COMPLETION_TIMER, if instant { 1 } else { COMPLETION_DELAY_MS }, None) };
     }
 
     /// Ctrl+Spazio (`explicit`) o il timer dopo la digitazione.
@@ -536,18 +680,31 @@ impl Host {
         // SAFETY: timer della finestra principale.
         unsafe { KillTimer(self.hwnd, COMPLETION_TIMER) };
         let trigger = self.trigger.take();
-        let Some(plugin) = option(settings, path, COMPLETION) else { return };
         let Some(path) = path else { return };
         let caret = sci.call(SCI_GETCURRENTPOS, 0, 0) as usize;
-        let start = sci.call(SCI_WORDSTARTPOSITION, caret, 1) as usize;
         let text = sci.text();
+        // Le voci senza server bastano da sole, tranne i nomi delle annotazioni, che si uniscono a quelle del server.
+        let mut extra = Vec::new();
+        if let Some(local) = local_completions(settings, path, &text, caret) {
+            if local.merge {
+                extra = local.labels;
+            } else if show_list(sci, local.start, local.labels) {
+                return;
+            }
+        }
+        let start = sci.call(SCI_WORDSTARTPOSITION, caret, 1) as usize;
+        let Some(plugin) = option(settings, Some(path), COMPLETION) else {
+            show_list(sci, start, extra);
+            return;
+        };
         let prefix = text.get(start..caret).unwrap_or("");
         let after_dot = start > 0 && text.as_bytes().get(start - 1) == Some(&b'.');
-        if (!explicit && prefix.is_empty() && !after_dot) || prefix.starts_with(|ch: char| ch.is_ascii_digit()) {
+        if (!explicit && prefix.is_empty() && !after_dot && extra.is_empty()) || prefix.starts_with(|ch: char| ch.is_ascii_digit()) {
             return;
         }
         let Some(server) = self.server_for(plugin, path) else {
-            show_list(sci, start, document_words(&text, prefix));
+            extra.extend(document_words(&text, prefix));
+            show_list(sci, start, extra);
             return;
         };
         let ticket = self.ticket.get() + 1;
@@ -557,7 +714,7 @@ impl Host {
             server.sync(path, &text);
             server.completion(ticket, &origin, trigger);
         });
-        *self.completion.borrow_mut() = Some(Pending { ticket, server, origin, document: sci.call(SCI_GETDOCPOINTER, 0, 0), start, items: Vec::new(), incomplete: false });
+        *self.completion.borrow_mut() = Some(Pending { ticket, server, origin, document: sci.call(SCI_GETDOCPOINTER, 0, 0), start, items: Vec::new(), incomplete: false, extra });
     }
 
     /// Voce selezionata nella lista: firma e documentazione accanto, se l'opzione è attiva.
@@ -620,11 +777,12 @@ impl Host {
         let position = position as usize;
         let text = sci.text();
         let point = position_of(&text, position);
-        if option(settings, path, TYPE_CHECK).is_some() {
+        {
             let found = path.and_then(|path| {
+                let visible = visible_slots(settings, path);
                 let diagnostics = self.diagnostics.borrow();
                 let slots = diagnostics.get(&key(path))?;
-                slots.iter().flatten().find(|diagnostic| diagnostic.start <= point && (point < diagnostic.end || diagnostic.start == diagnostic.end && point == diagnostic.start)).map(|diagnostic| diagnostic.message.clone())
+                slots.iter().zip(visible).filter(|(_, visible)| *visible).flat_map(|(list, _)| list).find(|diagnostic| diagnostic.start <= point && (point < diagnostic.end || diagnostic.start == diagnostic.end && point == diagnostic.start)).map(|diagnostic| diagnostic.message.clone())
             });
             if let Some(message) = found {
                 return show_tip(sci, position, &message);
@@ -649,7 +807,7 @@ impl Host {
     }
 
     pub fn on_modified(&self, settings: &Settings, path: Option<&Path>) {
-        if option(settings, path, TYPE_CHECK).is_some() {
+        if path.is_some_and(|path| option(settings, Some(path), TYPE_CHECK).is_some() || local_checks(settings, path)) {
             // SAFETY: timer della finestra principale; se esiste già viene riavviato.
             unsafe { SetTimer(self.hwnd, CHECK_TIMER, CHECK_DELAY_MS, None) };
         }
@@ -659,13 +817,14 @@ impl Host {
     pub fn check(&self, sci: &Sci, settings: &Settings, path: Option<&Path>) {
         // SAFETY: timer della finestra principale.
         unsafe { KillTimer(self.hwnd, CHECK_TIMER) };
-        let (Some(plugin), Some(path)) = (option(settings, path, TYPE_CHECK), path) else { return };
-        if PLUGINS[plugin].protocol.is_none() {
-            self.diagnostics.borrow_mut().insert(key(path), [cobol::check(&sci.text(), path.parent()), Vec::new()]);
-            return self.apply_diagnostics(sci, settings, Some(path));
-        }
-        let Some(server) = self.server_for(plugin, path) else { return };
+        let Some(path) = path else { return };
         let text = sci.text();
+        if let Some(list) = local_diagnostics(settings, path, &text) {
+            self.diagnostics.borrow_mut().entry(key(path)).or_default()[LOCAL_SLOT] = list;
+            self.apply_diagnostics(sci, settings, Some(path));
+        }
+        let Some(plugin) = option(settings, Some(path), TYPE_CHECK).filter(|&plugin| PLUGINS[plugin].protocol.is_some()) else { return };
+        let Some(server) = self.server_for(plugin, path) else { return };
         self.with_server(server, |server| {
             server.sync(path, &text);
             server.check(path);
@@ -777,6 +936,7 @@ impl Host {
                 items.sort_by(|a, b| a.sort.cmp(&b.sort));
                 let start = pending.start;
                 let mut labels: Vec<String> = items.iter().map(|item| item.insert.clone()).collect();
+                labels.extend(pending.extra.iter().cloned());
                 pending.items = items;
                 pending.incomplete = incomplete;
                 drop(completion);
@@ -821,11 +981,12 @@ impl Host {
             sci.call(SCI_SETINDICATORCURRENT, indicator, 0);
             sci.call(SCI_INDICATORCLEARRANGE, 0, length);
         }
-        let Some(path) = path.filter(|_| option(settings, path, TYPE_CHECK).is_some()) else { return };
+        let Some(path) = path else { return };
+        let visible = visible_slots(settings, path);
         let diagnostics = self.diagnostics.borrow();
         let Some(slots) = diagnostics.get(&key(path)) else { return };
         let text = sci.text();
-        for diagnostic in slots.iter().flatten() {
+        for diagnostic in slots.iter().zip(visible).filter(|(_, visible)| *visible).flat_map(|(list, _)| list) {
             let start = offset_of(&text, diagnostic.start);
             let end = offset_of(&text, diagnostic.end).max(start + 1).min(text.len());
             if end <= start {
@@ -850,20 +1011,21 @@ fn merged(mut ranges: Vec<std::ops::Range<usize>>) -> Vec<std::ops::Range<usize>
     out
 }
 
-/// Mostra i suggerimenti che iniziano con quanto scritto da `start` al cursore.
-fn show_list(sci: &Sci, start: usize, labels: Vec<String>) {
+/// Mostra i suggerimenti che iniziano con quanto scritto da `start` al cursore; false se non ce n'è nessuno.
+fn show_list(sci: &Sci, start: usize, labels: Vec<String>) -> bool {
     let caret = sci.call(SCI_GETCURRENTPOS, 0, 0) as usize;
     if caret < start {
-        return;
+        return false;
     }
     let text = sci.text();
     let prefix = text.get(start..caret).unwrap_or("").to_lowercase();
     let mut seen = HashSet::new();
     let shown: Vec<String> = labels.into_iter().filter(|label| !label.is_empty() && !label.contains('\n') && label.to_lowercase().starts_with(&prefix) && seen.insert(label.clone())).take(MAX_ITEMS).collect();
     if shown.is_empty() || (shown.len() == 1 && shown[0].to_lowercase() == prefix) {
-        return;
+        return false;
     }
     sci.call_str(SCI_AUTOCSHOW, caret - start, &shown.join("\n"));
+    true
 }
 
 fn show_tip(sci: &Sci, position: usize, text: &str) {
@@ -899,7 +1061,11 @@ mod tests {
         assert_eq!(plugin_for(Path::new("PAYROLL.CBL")).map(|index| PLUGINS[index].id), Some("cobol"));
         assert_eq!(plugin_for(Path::new("src/main.c")).map(|index| PLUGINS[index].id), Some("c"));
         assert_eq!(plugin_for(Path::new("Widget.HPP")).map(|index| PLUGINS[index].id), Some("c"));
+        assert_eq!(plugin_for(Path::new("lib/main.dart")).map(|index| PLUGINS[index].id), Some("flutter"));
+        assert_eq!(plugin_for(Path::new("MainActivity.kt")).map(|index| PLUGINS[index].id), Some("android"));
+        assert_eq!(plugin_for(Path::new("App.vue")).map(|index| PLUGINS[index].id), Some("vue"));
         assert!(plugin_for(Path::new("x.rs")).is_none());
+        assert!(plugin_for(Path::new("res/layout/main.xml")).is_none());
     }
 
     #[test]
@@ -914,13 +1080,37 @@ mod tests {
         assert!(option(&settings, path, COMPLETION).is_none());
     }
 
+    #[test]
+    fn local_checks_follow_the_options() {
+        let mut settings = Settings::default();
+        let java = Path::new("A.java");
+        assert!(java_frameworks(&settings, java).is_none() && !local_checks(&settings, java));
+        settings.plugin_options.entry("java".into()).or_default().insert(LOMBOK.into(), true);
+        assert_eq!(java_frameworks(&settings, java), Some((false, true)));
+        assert_eq!(visible_slots(&settings, java), [false, false, true]);
+        let text = "import lombok.Data;\n@Data interface I {}\n";
+        assert_eq!(local_diagnostics(&settings, java, text).map(|list| list.len()), Some(1));
+        assert!(local_diagnostics(&settings, Path::new("a.ts"), text).is_none());
+        assert!(own_check(&settings, Path::new("A.CBL")), "COBOL controlla senza server di default");
+    }
+
     /// Server vero: completamento, documentazione e diagnostica. `cargo test -- --ignored real_server`.
+    /// Con `STEROITOR_REAL_BASE` il progetto di prova nasce in quella cartella (per Vue: con package.json e node_modules).
     fn real_server(plugin: usize, file: &str, source: &str, caret: &str, wanted: &str) {
-        let dir = std::env::temp_dir().join(format!("steroitor-real-{}-{}", PLUGINS[plugin].id, std::process::id()));
+        real_server_with(plugin, &[], file, source, caret, wanted);
+    }
+
+    /// Come `real_server`, con altri file del progetto (relativi alla sua cartella).
+    fn real_server_with(plugin: usize, files: &[(&str, &str)], file: &str, source: &str, caret: &str, wanted: &str) {
+        let base = std::env::var_os("STEROITOR_REAL_BASE").map_or_else(std::env::temp_dir, PathBuf::from);
+        let dir = base.join(format!("steroitor-real-{}-{}", PLUGINS[plugin].id, std::process::id()));
         let path = dir.join(file);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, source).unwrap();
-        if PLUGINS[plugin].id == "java" {
+        for (name, content) in files {
+            std::fs::write(dir.join(name), content).unwrap();
+        }
+        if PLUGINS[plugin].id == "java" && !dir.join("pom.xml").exists() {
             let pom ="<project xmlns=\"http://maven.apache.org/POM/4.0.0\"><modelVersion>4.0.0</modelVersion><groupId>x</groupId><artifactId>x</artifactId><version>1</version>\
                 <properties><maven.compiler.release>17</maven.compiler.release></properties></project>";
             std::fs::write(dir.join("pom.xml"), pom).unwrap();
@@ -1021,6 +1211,42 @@ mod tests {
     fn real_server_clangd() {
         let source = "#include <string>\n/// Somma due interi.\nint add(int a, int b) { return a + b; }\nint main() {\n  int n = \"x\";\n  std::string s;\n  s.si\n}\n";
         real_server(2, "main.cpp", source, "s.si", "size");
+    }
+
+    #[test]
+    #[ignore]
+    fn real_server_dart() {
+        real_server(4, "lib/main.dart", "void main() {\n  String s = 'x';\n  int n = s;\n  s.tr\n}\n", "s.tr", "trim");
+    }
+
+    #[test]
+    #[ignore]
+    fn real_server_kotlin() {
+        real_server(5, "src/main/kotlin/Main.kt", "fun main() {\n    val s: String = \"x\"\n    val n: Int = s\n    s.tr\n}\n", "s.tr", "trim");
+    }
+
+    #[test]
+    #[ignore]
+    fn real_server_vue() {
+        let source = "<script setup lang=\"ts\">\nconst label: string = 'x';\nconst n: number = label;\nlabel.tr\n</script>\n<template><p>{{ label }}</p></template>\n";
+        real_server(6, "App.vue", source, "label.tr", "trim");
+    }
+
+    /// jdtls con Lombok come agente: i getter generati da @Data si completano. Lombok entra nel progetto come
+    /// dipendenza `system`, dal jar dell'estensione Java di VS Code, così Maven non scarica nulla.
+    #[test]
+    #[ignore]
+    fn real_server_jdtls_lombok() {
+        let extension = servers::vscode_java_extension().expect("estensione Java di VS Code");
+        let jar = std::fs::read_dir(extension.join("lombok")).unwrap().flatten().map(|entry| entry.path()).find(|path| path.extension().is_some_and(|extension| extension == "jar")).unwrap();
+        let pom = format!(
+            "<project xmlns=\"http://maven.apache.org/POM/4.0.0\"><modelVersion>4.0.0</modelVersion><groupId>x</groupId><artifactId>x</artifactId><version>1</version>\
+             <properties><maven.compiler.release>17</maven.compiler.release></properties><dependencies><dependency><groupId>org.projectlombok</groupId>\
+             <artifactId>lombok</artifactId><version>1</version><scope>system</scope><systemPath>{}</systemPath></dependency></dependencies></project>",
+            jar.display()
+        );
+        let source = "import lombok.Data;\n@Data\npublic class Main {\n  private String name;\n  void f() {\n    int n = getName();\n    this.getNa\n  }\n}\n";
+        real_server_with(1, &[("pom.xml", &pom)], "src/main/java/Main.java", source, "this.getNa", "getName");
     }
 
     #[test]
