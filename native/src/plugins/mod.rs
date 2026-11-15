@@ -945,7 +945,11 @@ mod tests {
                     // jdtls risponde vuoto finché non ha importato il progetto: si richiede.
                     Some(Reply::Completions { items: list, .. }) => match list.iter().find(|item| item.insert == wanted) {
                         Some(item) => {
-                            server.item_doc(2, &origin, item);
+                            // Come nell'app: la documentazione della voce, se c'è; altrimenti si chiede al server.
+                            match &item.doc {
+                                Some(text) => doc = Some(text.clone()),
+                                None => server.item_doc(2, &origin, item),
+                            }
                             items = Some(list);
                         }
                         None => {

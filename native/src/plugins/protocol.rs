@@ -380,7 +380,13 @@ impl Server {
 fn lsp_item(item: &Value) -> Option<Item> {
     let label = item["label"].as_str()?;
     let insert = item["textEdit"]["newText"].as_str().or_else(|| item["insertText"].as_str()).unwrap_or(label);
-    let doc = join_doc(item.get("detail").map(text_of).unwrap_or_default(), item.get("documentation").map(text_of).unwrap_or_default());
+    let mut detail = item.get("detail").map(text_of).unwrap_or_default();
+    // clangd mette nel dettaglio solo il tipo (`size_type`) e la firma nell'etichetta (` size() const`).
+    let signature = label.trim().trim_start_matches('•');
+    if signature.contains('(') && !detail.contains('(') {
+        detail = format!("{detail} {signature}").trim().to_string();
+    }
+    let doc = join_doc(detail, item.get("documentation").map(text_of).unwrap_or_default());
     Some(Item { insert: insert.to_string(), sort: item["sortText"].as_str().unwrap_or(label).to_string(), doc, raw: item.clone() })
 }
 
@@ -413,6 +419,14 @@ fn ts_diagnostic(diagnostic: &Value) -> Option<Diagnostic> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn joins_clangd_type_and_signature() {
+        let item = lsp_item(&json!({"label": " size() const", "textEdit": {"newText": "size()"}, "detail": "size_type"})).unwrap();
+        assert_eq!(item.doc.as_deref(), Some("size_type size() const"));
+        let java = lsp_item(&json!({"label": "println(Object x) : void", "detail": "void println(Object x)"})).unwrap();
+        assert_eq!(java.doc.as_deref(), Some("void println(Object x)"));
+    }
 
     #[test]
     fn sends_c_files_as_c() {
