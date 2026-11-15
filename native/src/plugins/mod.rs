@@ -58,7 +58,7 @@ pub struct Plugin {
     language_id: &'static str,
 }
 
-pub static PLUGINS: [Plugin; 3] = [
+pub static PLUGINS: [Plugin; 4] = [
     Plugin {
         id: "javascript",
         name: "JavaScript / TypeScript",
@@ -80,6 +80,17 @@ pub static PLUGINS: [Plugin; 3] = [
         options: &SERVER_OPTIONS,
         protocol: Some(Protocol::Lsp),
         language_id: "java",
+    },
+    Plugin {
+        id: "c",
+        name: "C / C++",
+        requires: "clangd da LLVM, da Visual Studio (componente Clang), dall'estensione clangd di VS Code, dal PATH o da CLANGD_PATH; per i progetti con più file un compile_commands.json o un compile_flags.txt",
+        version: "1.0.0",
+        description: "Completamento, errori, documentazione e Vai alla dichiarazione con clangd. Disattivato, resta l'evidenziazione.",
+        languages: &[("C", &["c", "h"]), ("C++", &["cc", "cpp", "cxx", "hpp", "hh", "hxx"])],
+        options: &SERVER_OPTIONS,
+        protocol: Some(Protocol::Lsp),
+        language_id: "cpp",
     },
     Plugin {
         id: "cobol",
@@ -148,6 +159,24 @@ impl Plugin {
     /// Opzione accesa: un'opzione mai toccata è spenta se accende un server, accesa se il plugin non ne ha.
     pub fn option_on(&self, settings: &Settings, option: &str) -> bool {
         settings.plugin_option(self.id, option, self.protocol.is_none())
+    }
+}
+
+/// Cartella del progetto per il server del plugin: un server per progetto.
+fn server_root(id: &str, path: &Path) -> PathBuf {
+    match id {
+        "java" => servers::java_root(path),
+        "c" => servers::c_root(path),
+        _ => servers::script_root(path),
+    }
+}
+
+/// Nome e comando del server del plugin; jdtls tiene il suo workspace in `data_dir`.
+fn server_command(id: &str, root: &Path, data_dir: Option<&Path>) -> (&'static str, Result<std::process::Command, String>) {
+    match id {
+        "java" => ("jdtls", data_dir.ok_or_else(|| "APPDATA non impostata".to_string()).and_then(|dir| servers::jdtls(root, dir))),
+        "c" => ("clangd", servers::clangd(root)),
+        _ => ("tsserver", servers::tsserver(root)),
     }
 }
 
@@ -450,7 +479,7 @@ impl Host {
     fn server_for(&self, plugin: usize, path: &Path) -> Option<u32> {
         let definition = &PLUGINS[plugin];
         let protocol = definition.protocol?;
-        let root = if protocol == Protocol::Lsp { servers::java_root(path) } else { servers::script_root(path) };
+        let root = server_root(definition.id, path);
         let server_key = format!("{}:{}", definition.id, key(&root));
         if let Some((id, _)) = self.servers.borrow().iter().find(|(_, running)| running.key == server_key) {
             return Some(*id);
@@ -458,11 +487,7 @@ impl Host {
         if self.failed.borrow().contains(&server_key) {
             return None;
         }
-        let name = if protocol == Protocol::Lsp { "jdtls" } else { "tsserver" };
-        let command = match protocol {
-            Protocol::Lsp => self.data_dir.as_deref().ok_or_else(|| "APPDATA non impostata".to_string()).and_then(|dir| servers::jdtls(&root, dir)),
-            Protocol::TsServer => servers::tsserver(&root),
-        };
+        let (name, command) = server_command(definition.id, &root, self.data_dir.as_deref());
         let id = self.next_server.get();
         let process = command.and_then(|command| Process::spawn(command, id, Arc::clone(&self.queue), self.hwnd));
         match process {
@@ -872,6 +897,8 @@ mod tests {
         assert_eq!(plugin_for(Path::new("a/B.TSX")).map(|index| PLUGINS[index].id), Some("javascript"));
         assert_eq!(plugin_for(Path::new("Main.java")).map(|index| PLUGINS[index].id), Some("java"));
         assert_eq!(plugin_for(Path::new("PAYROLL.CBL")).map(|index| PLUGINS[index].id), Some("cobol"));
+        assert_eq!(plugin_for(Path::new("src/main.c")).map(|index| PLUGINS[index].id), Some("c"));
+        assert_eq!(plugin_for(Path::new("Widget.HPP")).map(|index| PLUGINS[index].id), Some("c"));
         assert!(plugin_for(Path::new("x.rs")).is_none());
     }
 
@@ -893,17 +920,13 @@ mod tests {
         let path = dir.join(file);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, source).unwrap();
-        if PLUGINS[plugin].protocol == Some(Protocol::Lsp) {
-            let pom = "<project xmlns=\"http://maven.apache.org/POM/4.0.0\"><modelVersion>4.0.0</modelVersion><groupId>x</groupId><artifactId>x</artifactId><version>1</version>\
+        if PLUGINS[plugin].id == "java" {
+            let pom ="<project xmlns=\"http://maven.apache.org/POM/4.0.0\"><modelVersion>4.0.0</modelVersion><groupId>x</groupId><artifactId>x</artifactId><version>1</version>\
                 <properties><maven.compiler.release>17</maven.compiler.release></properties></project>";
             std::fs::write(dir.join("pom.xml"), pom).unwrap();
         }
-        let root = if PLUGINS[plugin].protocol == Some(Protocol::Lsp) { servers::java_root(&path) } else { servers::script_root(&path) };
-        let command = match PLUGINS[plugin].protocol.unwrap() {
-            Protocol::Lsp => servers::jdtls(&root, &dir.with_extension("data")),
-            Protocol::TsServer => servers::tsserver(&root),
-        }
-        .unwrap();
+        let root = server_root(PLUGINS[plugin].id, &path);
+        let command = server_command(PLUGINS[plugin].id, &root, Some(&dir.with_extension("data"))).1.unwrap();
         let queue: Queue = Arc::default();
         let process = Process::spawn(command, 1, Arc::clone(&queue), std::ptr::null_mut()).unwrap();
         let mut server = Server::new(PLUGINS[plugin].protocol.unwrap(), process, &root, PLUGINS[plugin].language_id);
@@ -987,6 +1010,13 @@ mod tests {
     #[ignore]
     fn real_server_jdtls() {
         real_server(1, "src/main/java/Main.java", "public class Main {\n  void f() {\n    String s = \"x\";\n    int n = s;\n    s.tr\n  }\n}\n", "s.tr", "trim");
+    }
+
+    #[test]
+    #[ignore]
+    fn real_server_clangd() {
+        let source = "#include <string>\n/// Somma due interi.\nint add(int a, int b) { return a + b; }\nint main() {\n  int n = \"x\";\n  std::string s;\n  s.si\n}\n";
+        real_server(2, "main.cpp", source, "s.si", "size");
     }
 
     #[test]

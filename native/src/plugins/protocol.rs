@@ -71,6 +71,12 @@ fn hash(text: &str) -> u64 {
     text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3))
 }
 
+/// Il plugin C/C++ dichiara `cpp`; i file `.c` vanno al server come C.
+fn language_of<'a>(language_id: &'a str, path: &Path) -> &'a str {
+    let c = path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("c"));
+    if language_id == "cpp" && c { "c" } else { language_id }
+}
+
 pub fn file_uri(path: &Path) -> String {
     let text = path.to_string_lossy().replace('\\', "/");
     let encoded: Vec<String> = text
@@ -191,7 +197,10 @@ impl Server {
         self.documents.insert(path.to_path_buf(), (version, fingerprint, super::position_of(text, text.len())));
         let file = path.to_string_lossy().into_owned();
         match (self.protocol, previous) {
-            (Protocol::Lsp, None) => self.send(None, "textDocument/didOpen", json!({ "textDocument": { "uri": file_uri(path), "languageId": self.language_id, "version": version, "text": text } }), false),
+            (Protocol::Lsp, None) => {
+                let language = language_of(self.language_id, path);
+                self.send(None, "textDocument/didOpen", json!({ "textDocument": { "uri": file_uri(path), "languageId": language, "version": version, "text": text } }), false)
+            }
             (Protocol::Lsp, Some(_)) => self.send(None, "textDocument/didChange", json!({ "textDocument": { "uri": file_uri(path), "version": version }, "contentChanges": [{ "text": text }] }), false),
             (Protocol::TsServer, None) => self.send(None, "updateOpen", json!({ "openFiles": [{ "file": file, "fileContent": text }] }), false),
             // Una modifica sola che sostituisce tutto il testo inviato prima, fino alla sua ultima posizione.
@@ -404,6 +413,13 @@ fn ts_diagnostic(diagnostic: &Value) -> Option<Diagnostic> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sends_c_files_as_c() {
+        assert_eq!(language_of("cpp", Path::new("a/main.C")), "c");
+        assert_eq!(language_of("cpp", Path::new("a/main.h")), "cpp");
+        assert_eq!(language_of("java", Path::new("Main.java")), "java");
+    }
 
     #[test]
     fn converts_paths_and_uris() {

@@ -4,6 +4,8 @@ use std::process::Command;
 
 const JAVA_MARKERS: [&str; 5] = ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", ".project"];
 const SCRIPT_MARKERS: [&str; 3] = ["tsconfig.json", "jsconfig.json", "package.json"];
+const C_CONFIG: [&str; 4] = ["compile_commands.json", "build/compile_commands.json", "compile_flags.txt", ".clangd"];
+const C_BUILD: [&str; 3] = ["CMakeLists.txt", "meson.build", "Makefile"];
 const VSCODE_EXTENSION_DIRS: [&str; 3] = [".vscode/extensions", ".vscode-insiders/extensions", ".cursor/extensions"];
 const TSSERVER: &str = "node_modules/typescript/lib/tsserver.js";
 
@@ -19,6 +21,13 @@ pub fn java_root(file: &Path) -> PathBuf {
 
 pub fn script_root(file: &Path) -> PathBuf {
     project_root(file, &SCRIPT_MARKERS)
+}
+
+/// Prima la cartella con la configurazione di clangd, poi quella del progetto di build.
+pub fn c_root(file: &Path) -> PathBuf {
+    let start = file.parent().unwrap_or(file);
+    let configured = start.ancestors().find(|dir| C_CONFIG.iter().any(|marker| dir.join(marker).exists()));
+    configured.map_or_else(|| project_root(file, &C_BUILD), Path::to_path_buf)
 }
 
 fn home() -> Option<PathBuf> {
@@ -88,6 +97,35 @@ pub fn jdtls(root: &Path, data_dir: &Path) -> Result<Command, String> {
     Ok(command)
 }
 
+/// clangd: da `CLANGD_PATH`, dal PATH, da LLVM, dal componente Clang di Visual Studio o dall'estensione clangd di
+/// VS Code (e Cursor), che lo scarica nel suo spazio globale.
+fn locate_clangd() -> Option<PathBuf> {
+    let env = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    let explicit = env("CLANGD_PATH").map(|path| if path.is_dir() { path.join("clangd.exe") } else { path });
+    let path = std::env::var_os("PATH").into_iter().flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>()).map(|dir| dir.join("clangd.exe"));
+    let program_files: Vec<PathBuf> = ["ProgramFiles", "ProgramFiles(x86)"].into_iter().filter_map(env).collect();
+    let llvm = program_files.iter().map(|dir| dir.join("LLVM").join("bin").join("clangd.exe"));
+    let visual_studio = program_files.iter().flat_map(|dir| {
+        let root = dir.join("Microsoft Visual Studio");
+        let editions = std::fs::read_dir(&root).into_iter().flatten().flatten().flat_map(|year| std::fs::read_dir(year.path()).into_iter().flatten().flatten().map(|edition| edition.path()));
+        editions.flat_map(|edition| [edition.join("VC/Tools/Llvm/x64/bin/clangd.exe"), edition.join("VC/Tools/Llvm/bin/clangd.exe")]).collect::<Vec<_>>()
+    });
+    let vscode = env("APPDATA").into_iter().flat_map(|dir| ["Code", "Code - Insiders", "Cursor"].map(|editor| dir.join(editor).join("User/globalStorage/llvm-vs-code-extensions.vscode-clangd/install"))).filter_map(|install| {
+        let version = first_match(&install, |_| true)?;
+        Some(first_match(&version, |name| name.starts_with("clangd"))?.join("bin").join("clangd.exe"))
+    });
+    explicit.into_iter().chain(path).chain(llvm).chain(visual_studio.collect::<Vec<_>>()).chain(vscode).find(|path| path.is_file())
+}
+
+/// clangd senza indice in background (resta leggero) e senza aggiungere `#include`: le modifiche aggiuntive del
+/// completamento non si applicano.
+pub fn clangd(root: &Path) -> Result<Command, String> {
+    let program = locate_clangd().ok_or("clangd non trovato: installa LLVM (winget install LLVM.LLVM), il componente Clang di Visual Studio o l'estensione clangd di VS Code, oppure imposta CLANGD_PATH")?;
+    let mut command = Command::new(program);
+    command.args(["--background-index=false", "--header-insertion=never", "--log=error", "-j=2"]).current_dir(root);
+    Ok(command)
+}
+
 /// tsserver.js: quello del progetto (node_modules), poi quello installato con `npm i -g typescript`, poi quello di VS Code.
 fn locate_tsserver(root: &Path) -> Option<PathBuf> {
     let project = root.ancestors().map(|dir| dir.join(TSSERVER));
@@ -118,6 +156,10 @@ mod tests {
         std::fs::write(dir.join("app").join("pom.xml"), "").unwrap();
         assert_eq!(java_root(&source.join("Main.java")), dir.join("app"));
         assert_eq!(script_root(&source.join("a.ts")), source);
+        std::fs::write(dir.join("app").join("CMakeLists.txt"), "").unwrap();
+        assert_eq!(c_root(&source.join("main.c")), dir.join("app"));
+        std::fs::write(dir.join("compile_flags.txt"), "").unwrap();
+        assert_eq!(c_root(&source.join("main.c")), dir);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
