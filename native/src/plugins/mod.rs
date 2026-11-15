@@ -84,9 +84,9 @@ pub static PLUGINS: [Plugin; 3] = [
     Plugin {
         id: "cobol",
         name: "COBOL",
-        requires: "nessun programma esterno: il controllo è interno, non è un compilatore",
-        version: "1.0.0",
-        description: "Controllo del sorgente e indentazione per aree A e B. Formato fisso; libero con >>SOURCE FORMAT FREE.",
+        requires: "nessun programma esterno: il controllo è interno e non è un compilatore",
+        version: "1.1.0",
+        description: "Controllo del sorgente con i tipi dalle PIC e i copybook accanto al file, indentazione per aree A e B. Formato fisso; libero con >>SOURCE FORMAT FREE.",
         languages: &[("COBOL", &["cbl", "cob", "cpy"])],
         options: &COBOL_OPTIONS,
         protocol: None,
@@ -109,8 +109,8 @@ const SCRIPT_OPTIONS: [(&str, &str, &str); 5] = [
     (ANGULAR, "HTML inline Angular (template)", "Colora l'HTML nei template inline dei componenti Angular; senza server."),
 ];
 const COBOL_OPTIONS: [(&str, &str, &str); 2] = [
-    (TYPE_CHECK, "Controllo del sorgente", "Colonne del formato fisso, ordine delle DIVISION, IF/EVALUATE/SEARCH/PERFORM chiusi, stringhe chiuse, paragrafi e dati non dichiarati (salvo con COPY)."),
-    (INDENT, "Indentazione COBOL", "Invio va nell'area A o B giusta, un livello in più dopo IF, ELSE, EVALUATE, WHEN e PERFORM in linea; sempre spazi."),
+    (TYPE_CHECK, "Controllo del sorgente", "Colonne del formato fisso, DIVISION, IF/EVALUATE/SEARCH/PERFORM chiusi, paragrafi e dati non dichiarati (anche nei copybook), tipi dalle PIC: VALUE, aritmetica, MOVE, SET … TO TRUE."),
+    (INDENT, "Indentazione COBOL", "Invio nell'area A o B giusta, Tab alle colonne 8, 12, 16…, END-IF, ELSE e WHEN riallineati mentre li scrivi; sempre spazi."),
 ];
 const INDENT: &str = "indent";
 const COMPLETION: &str = SERVER_OPTIONS[0].0;
@@ -144,21 +144,92 @@ fn plugin_for(path: &Path) -> Option<usize> {
     PLUGINS.iter().position(|plugin| plugin.languages.iter().any(|(_, extensions)| extensions.contains(&extension.as_str())))
 }
 
+impl Plugin {
+    /// Opzione accesa: un'opzione mai toccata è spenta se accende un server, accesa se il plugin non ne ha.
+    pub fn option_on(&self, settings: &Settings, option: &str) -> bool {
+        settings.plugin_option(self.id, option, self.protocol.is_none())
+    }
+}
+
 fn wants_server(settings: &Settings, plugin: usize) -> bool {
-    let id = PLUGINS[plugin].id;
-    PLUGINS[plugin].protocol.is_some() && settings.plugin_enabled(id) && SERVER_OPTIONS.iter().any(|(option, _, _)| settings.plugin_option(id, option))
+    let definition = &PLUGINS[plugin];
+    definition.protocol.is_some() && settings.plugin_enabled(definition.id) && SERVER_OPTIONS.iter().any(|(option, _, _)| definition.option_on(settings, option))
 }
 
 fn option(settings: &Settings, path: Option<&Path>, option: &str) -> Option<usize> {
     let plugin = plugin_for(path?)?;
-    let id = PLUGINS[plugin].id;
-    (settings.plugin_enabled(id) && settings.plugin_option(id, option)).then_some(plugin)
+    (settings.plugin_enabled(PLUGINS[plugin].id) && PLUGINS[plugin].option_on(settings, option)).then_some(plugin)
+}
+
+fn indent_unit(sci: &Sci) -> usize {
+    match sci.call(SCI_GETINDENT, 0, 0) {
+        0 => sci.call(SCI_GETTABWIDTH, 0, 0),
+        unit => unit,
+    }
+    .max(1) as usize
+}
+
+/// Indentazione della riga a sole spazi (COBOL va a colonne), con il cursore all'inizio del testo.
+fn indent_with_spaces(sci: &Sci, line: usize, columns: usize) {
+    let tabs = sci.call(SCI_GETUSETABS, 0, 0) as usize;
+    sci.call(SCI_SETUSETABS, 0, 0);
+    sci.call(SCI_SETLINEINDENTATION, line, columns as isize);
+    sci.call(SCI_SETUSETABS, tabs, 0);
 }
 
 /// Colonna della riga nuova dopo Invio quando la decide il plugin (COBOL); None per l'indentazione normale.
 pub fn new_line_column(sci: &Sci, settings: &Settings, path: Option<&Path>, line: usize, unit: usize) -> Option<usize> {
     option(settings, path, INDENT)?;
     Some(cobol::new_line_column(&sci.text(), line, unit))
+}
+
+/// Tab e Shift+Tab nei file COBOL a formato fisso: alle colonne 8, 12, 16… false se li gestisce Scintilla
+/// (formato libero, più cursori, selezione).
+pub fn tab(sci: &Sci, settings: &Settings, path: Option<&Path>, back: bool) -> bool {
+    let caret = sci.call(SCI_GETCURRENTPOS, 0, 0) as usize;
+    if option(settings, path, INDENT).is_none() || sci.call(SCI_GETSELECTIONS, 0, 0) > 1 || sci.call(SCI_GETANCHOR, 0, 0) as usize != caret {
+        return false;
+    }
+    let line = sci.call(SCI_LINEFROMPOSITION, caret, 0).max(0) as usize;
+    let column = sci.call(SCI_GETCOLUMN, caret, 0).max(0) as usize;
+    let Some(stop) = cobol::tab_stop(&sci.text(), column, false) else { return false };
+    if !back {
+        sci.call_str(SCI_REPLACESEL, 0, &" ".repeat(stop - column));
+        return true;
+    }
+    // Shift+Tab sposta la riga solo con il cursore nell'indentazione.
+    if caret > sci.call(SCI_GETLINEINDENTPOSITION, line, 0) as usize {
+        return false;
+    }
+    let indentation = sci.call(SCI_GETLINEINDENTATION, line, 0).max(0) as usize;
+    let target = cobol::tab_stop("", indentation, true).unwrap_or(0);
+    sci.call(SCI_BEGINUNDOACTION, 0, 0);
+    indent_with_spaces(sci, line, target);
+    sci.call(SCI_GOTOPOS, sci.call(SCI_GETLINEINDENTPOSITION, line, 0) as usize, 0);
+    sci.call(SCI_ENDUNDOACTION, 0, 0);
+    true
+}
+
+/// END-IF, ELSE, WHEN… appena scritti da soli sulla riga: la riga va alla colonna del loro IF, EVALUATE…
+fn realign_closer(sci: &Sci) {
+    let caret = sci.call(SCI_GETCURRENTPOS, 0, 0) as usize;
+    let line = sci.call(SCI_LINEFROMPOSITION, caret, 0).max(0) as usize;
+    let start = sci.call(SCI_POSITIONFROMLINE, line, 0) as usize;
+    let text = sci.line(line);
+    let Some((before, after)) = text.split_at_checked(caret - start) else { return };
+    // Con numeri di sequenza o altro testo sulla riga, `word` non è una parola sola e closer_column non risponde.
+    let word = before.trim().to_ascii_uppercase();
+    if !after.trim().is_empty() {
+        return;
+    }
+    let Some(column) = cobol::closer_column(&sci.text(), line, &word, indent_unit(sci)) else { return };
+    if sci.call(SCI_GETLINEINDENTATION, line, 0) as usize == column {
+        return;
+    }
+    sci.call(SCI_BEGINUNDOACTION, 0, 0);
+    indent_with_spaces(sci, line, column);
+    sci.call(SCI_GOTOPOS, sci.call(SCI_GETLINEINDENTPOSITION, line, 0) as usize + word.len(), 0);
+    sci.call(SCI_ENDUNDOACTION, 0, 0);
 }
 
 pub use navigation::Jump;
@@ -415,6 +486,9 @@ impl Host {
 
     /// Carattere digitato: programma il completamento (subito dopo il punto, altrimenti dopo una breve pausa).
     pub fn on_char(&self, sci: &Sci, settings: &Settings, path: Option<&Path>, ch: i32) {
+        if option(settings, path, INDENT).is_some() {
+            realign_closer(sci);
+        }
         if option(settings, path, COMPLETION).is_none() {
             return;
         }
@@ -562,7 +636,7 @@ impl Host {
         unsafe { KillTimer(self.hwnd, CHECK_TIMER) };
         let (Some(plugin), Some(path)) = (option(settings, path, TYPE_CHECK), path) else { return };
         if PLUGINS[plugin].protocol.is_none() {
-            self.diagnostics.borrow_mut().insert(key(path), [cobol::check(&sci.text()), Vec::new()]);
+            self.diagnostics.borrow_mut().insert(key(path), [cobol::check(&sci.text(), path.parent()), Vec::new()]);
             return self.apply_diagnostics(sci, settings, Some(path));
         }
         let Some(server) = self.server_for(plugin, path) else { return };

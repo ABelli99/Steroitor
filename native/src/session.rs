@@ -123,7 +123,7 @@ pub struct Settings {
     pub warn_crlf: Option<bool>,
     /// Id dei plugin spenti, come nella versione Tauri.
     pub disabled_plugins: Vec<String>,
-    /// Id plugin → id opzione → attiva; un'opzione mai toccata è spenta.
+    /// Id plugin → id opzione → attiva; un'opzione mai toccata è spenta, tranne nei plugin senza server.
     pub plugin_options: HashMap<String, HashMap<String, bool>>,
     /// Ultima cartella in cui si è clonato, proposta al clone successivo.
     pub clone_parent: Option<String>,
@@ -187,8 +187,9 @@ impl Settings {
         !self.disabled_plugins.iter().any(|disabled| disabled == id)
     }
 
-    pub fn plugin_option(&self, id: &str, option: &str) -> bool {
-        self.plugin_options.get(id).and_then(|options| options.get(option)).copied().unwrap_or(false)
+    /// `default` vale per un'opzione mai toccata.
+    pub fn plugin_option(&self, id: &str, option: &str, default: bool) -> bool {
+        self.plugin_options.get(id).and_then(|options| options.get(option)).copied().unwrap_or(default)
     }
 
     pub fn pull_rebase(&self) -> bool {
@@ -231,7 +232,7 @@ mod tests {
         let merged = settings.merge_into(saved);
         assert_eq!(merged["disabledPlugins"][0], "javascript");
         assert_eq!(merged["pluginOptions"]["java"]["jdtls"], true);
-        assert!(settings.plugin_option("java", "typeCheck") && !settings.plugin_option("java", "docs"));
+        assert!(settings.plugin_option("java", "typeCheck", false) && !settings.plugin_option("java", "docs", false));
         assert!(settings.plugin_enabled("java") && !settings.plugin_enabled("javascript"));
         assert_eq!(merged["skippedVersion"], "1.2.0");
         assert_eq!(merged["editor"]["other"], 1);

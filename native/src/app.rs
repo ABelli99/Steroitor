@@ -1653,6 +1653,12 @@ impl App {
             }
             return true;
         }
+        if key == VK_TAB && !ctrl && focus == self.sci.hwnd && self.sci.call(SCI_AUTOCACTIVE, 0, 0) == 0 {
+            let path = self.active_path();
+            if plugins::tab(&self.sci, &self.settings.borrow(), path.as_deref(), shift) {
+                return true;
+            }
+        }
         if key == VK_F3 && !ctrl {
             self.find.search(&self.sci, !shift, false);
             self.invalidate();

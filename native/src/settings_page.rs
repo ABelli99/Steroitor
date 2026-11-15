@@ -386,7 +386,7 @@ pub fn edit(owner: HWND, palette: &Palette, font: HFONT, current: &Settings, she
             rebase: current.pull_rebase(),
             shells,
             shell,
-            plugins: PLUGINS.iter().map(|plugin| (current.plugin_enabled(plugin.id), plugin.options.iter().map(|(option, _, _)| current.plugin_option(plugin.id, option)).collect())).collect(),
+            plugins: PLUGINS.iter().map(|plugin| (current.plugin_enabled(plugin.id), plugin.options.iter().map(|(option, _, _)| plugin.option_on(current, option)).collect())).collect(),
             scroll: 0,
             content: 0,
             hits: Vec::new(),
