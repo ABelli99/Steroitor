@@ -2823,8 +2823,8 @@ impl App {
             message_box(self.hwnd, &format!("La cartella {} non esiste più.", dir.display()), MB_ICONWARNING);
             return;
         }
-        let shell = self.settings.borrow().terminal_shell.clone();
-        self.open_terminal(&shell, Some(&dir), Some((&config.name, &config.command)));
+        // Sempre cmd, come le configurazioni di IntelliJ: Windows PowerShell con la policy predefinita rifiuta npm.ps1 e simili.
+        self.open_terminal("cmd", Some(&dir), Some((&config.name, &config.command)));
     }
 
     fn close_terminal(&self, id: u32) {

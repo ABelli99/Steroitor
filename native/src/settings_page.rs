@@ -8,7 +8,7 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM}
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus, GetKeyState, SetFocus, VK_ESCAPE, VK_RETURN, VK_SHIFT, VK_TAB};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetFocus, GetKeyState, SetFocus, VK_ESCAPE, VK_RETURN, VK_SHIFT, VK_TAB};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dialogs::wide;
@@ -29,6 +29,7 @@ const CARD: i32 = 720;
 const CONTENT_TOP: i32 = 52;
 const EN_SETFOCUS: u32 = 0x0100;
 const EN_KILLFOCUS: u32 = 0x0200;
+const FOLLOW_TIMER: usize = 1;
 
 /// Campi numerici dell'editor: etichetta, minimo, massimo (gli stessi della versione Tauri).
 const FIELDS: [(&str, f64, f64); 4] = [("Dimensione carattere (px)", 8.0, 32.0), ("Interlinea", 1.0, 2.5), ("Larghezza tab", 1.0, 16.0), ("Indentazione (spazi)", 1.0, 16.0)];
@@ -54,6 +55,7 @@ enum Hit {
 }
 
 struct Page {
+    owner: HWND,
     palette: Palette,
     brush: HBRUSH,
     title_font: HFONT,
@@ -318,6 +320,8 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wparam: WPARAM, lp
         let page = page.as_mut()?;
         match message {
             WM_PAINT => paint(hwnd, page),
+            // Il timer gira anche dentro il ciclo di spostamento della finestra principale: la pagina la segue.
+            WM_TIMER if wparam == FOLLOW_TIMER => follow_owner(hwnd, page.owner),
             WM_CTLCOLOREDIT => {
                 SetTextColor(wparam as HDC, page.palette.fg);
                 SetBkColor(wparam as HDC, page.palette.editor);
@@ -361,6 +365,20 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, wparam: WPARAM, lp
     handled.unwrap_or_else(|| DefWindowProcW(hwnd, message, wparam, lparam))
 }
 
+/// Riporta la pagina sull'area client della finestra principale, se questa si è spostata o ridimensionata.
+unsafe fn follow_owner(hwnd: HWND, owner: HWND) {
+    let mut client = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    GetClientRect(owner, &mut client);
+    let mut origin = POINT { x: 0, y: 0 };
+    ClientToScreen(owner, &mut origin);
+    let mut current = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    GetWindowRect(hwnd, &mut current);
+    if (current.left, current.top, current.right - current.left, current.bottom - current.top) != (origin.x, origin.y, client.right, client.bottom) && client.right > 0 {
+        SetWindowPos(hwnd, std::ptr::null_mut(), origin.x, origin.y, client.right, client.bottom, SWP_NOZORDER | SWP_NOACTIVATE);
+        InvalidateRect(hwnd, std::ptr::null(), 0);
+    }
+}
+
 /// Mostra la pagina sopra tutta la finestra; alla chiusura le impostazioni come le ha lasciate l'utente.
 pub fn edit(owner: HWND, palette: &Palette, font: HFONT, current: &Settings, shells: Vec<Shell>) -> Option<Settings> {
     let class_name = wide(CLASS_NAME);
@@ -387,6 +405,7 @@ pub fn edit(owner: HWND, palette: &Palette, font: HFONT, current: &Settings, she
             edit
         });
         let page = Page {
+            owner,
             palette: *palette,
             brush: CreateSolidBrush(palette.editor),
             title_font,
@@ -405,7 +424,10 @@ pub fn edit(owner: HWND, palette: &Palette, font: HFONT, current: &Settings, she
         place_edits(hwnd, &page);
         PAGE.with(|slot| *slot.borrow_mut() = Some(page));
 
-        EnableWindow(owner, 0);
+        // La finestra principale resta attiva per spostarla e ridimensionarla dalla cornice; la pagina copre il resto.
+        SetTimer(hwnd, FOLLOW_TIMER, 30, None);
+        // Chiudere l'app con la pagina aperta non è previsto: la ✕ della finestra torna attiva alla chiusura della pagina.
+        EnableMenuItem(GetSystemMenu(owner, 0), SC_CLOSE, MF_BYCOMMAND | MF_GRAYED);
         ShowWindow(hwnd, SW_SHOW);
         SetFocus(edits[0]);
         SendMessageW(edits[0], 0x00B1, 0, -1);
@@ -418,6 +440,12 @@ pub fn edit(owner: HWND, palette: &Palette, font: HFONT, current: &Settings, she
                 // WM_QUIT arrivato durante il dialogo: va rimesso in coda per il ciclo principale.
                 PostQuitMessage(0);
                 break;
+            }
+            let ours = msg.hwnd == hwnd || IsChild(hwnd, msg.hwnd) != 0;
+            if !ours && matches!(msg.message, WM_KEYDOWN | WM_KEYUP | WM_CHAR) {
+                // Tasti diretti all'editor sotto la pagina (dopo un clic sulla cornice): tornano alla pagina.
+                SetFocus(edits[0]);
+                continue;
             }
             if msg.message == WM_KEYDOWN {
                 match msg.wParam as u16 {
@@ -439,7 +467,8 @@ pub fn edit(owner: HWND, palette: &Palette, font: HFONT, current: &Settings, she
         }
         let page = PAGE.with(|page| page.borrow_mut().take());
         let raw: Vec<String> = edits.iter().map(|&edit| window_text(edit)).collect();
-        EnableWindow(owner, 1);
+        KillTimer(hwnd, FOLLOW_TIMER);
+        EnableMenuItem(GetSystemMenu(owner, 0), SC_CLOSE, MF_BYCOMMAND | MF_ENABLED);
         DestroyWindow(hwnd);
         DeleteObject(title_font);
         let page = page?;
