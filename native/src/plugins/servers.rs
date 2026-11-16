@@ -92,13 +92,13 @@ pub fn dart(root: &Path) -> Result<Command, String> {
     Ok(command)
 }
 
-/// La cartella di kotlin-language-server (quella con `lib`): da `KOTLIN_LANGUAGE_SERVER`, dal PATH o dall'estensione
+/// La cartella di kotlin-language-server (quella con `bin` e `lib`): da `KOTLIN_LANGUAGE_SERVER`, dal PATH o dall'estensione
 /// Kotlin di VS Code, che lo scarica nel suo spazio globale.
-fn locate_kotlin() -> Option<PathBuf> {
+pub fn locate_kotlin() -> Option<PathBuf> {
     let explicit = std::env::var_os("KOTLIN_LANGUAGE_SERVER").map(PathBuf::from).map(|path| if path.is_file() { path.parent().and_then(Path::parent).map(Path::to_path_buf).unwrap_or(path) } else { path });
     let path = in_path("kotlin-language-server.bat").or_else(|| in_path("kotlin-language-server")).and_then(|script| Some(script.parent()?.parent()?.to_path_buf()));
     let vscode = std::env::var_os("APPDATA").into_iter().flat_map(|dir| ["Code", "Code - Insiders", "Cursor"].map(|editor| PathBuf::from(&dir).join(editor).join("User/globalStorage/fwcd.kotlin/langServerInstall/server")));
-    explicit.into_iter().chain(path).chain(vscode).find(|home| home.join("lib").join("kotlin-language-server.jar").is_file())
+    explicit.into_iter().chain(path).chain(vscode).find(|home| home.join("bin").join("kotlin-language-server.bat").is_file() && home.join("lib").is_dir())
 }
 
 /// Java avviato direttamente e non lo script .bat: chiudendo il server si chiude anche Java, non solo cmd.exe.

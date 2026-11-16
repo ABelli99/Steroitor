@@ -1222,7 +1222,11 @@ mod tests {
     #[test]
     #[ignore]
     fn real_server_kotlin() {
-        real_server(5, "src/main/kotlin/Main.kt", "fun main() {\n    val s: String = \"x\"\n    val n: Int = s\n    s.tr\n}\n", "s.tr", "trim");
+        // Senza build Gradle il server cerca la libreria standard nelle cache di Maven e Gradle: qui gliela dà kls-classpath.
+        let lib = servers::locate_kotlin().expect("kotlin-language-server").join("lib");
+        let stdlib = std::fs::read_dir(&lib).unwrap().flatten().map(|entry| entry.path()).find(|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("kotlin-stdlib-2"))).unwrap();
+        let script = format!("@echo {}", stdlib.display());
+        real_server_with(5, &[("kls-classpath.bat", &script)], "Main.kt", "fun main() {\n    val s: String = \"x\"\n    val n: Int = s\n    s.tr\n}\n", "s.tr", "trim");
     }
 
     #[test]
