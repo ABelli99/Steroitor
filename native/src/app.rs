@@ -39,6 +39,7 @@ use crate::panel::{self, BranchEntry, BranchRow, ConsoleTarget, DetailRow, Panel
 use crate::plugins::{self, Host};
 use crate::prompt::{prompt, prompt_selected, prompt_text};
 use crate::quick_open;
+use crate::run;
 use crate::sci::*;
 use crate::session::{ProjectSession, Session, Settings, UnsavedTab};
 use crate::settings_page;
@@ -79,6 +80,10 @@ const VCS_METHOD_REBASE: usize = 13;
 const VCS_BRANCH_FROM: usize = 9000;
 const SHELL_NEW: usize = 100;
 const SHELL_DEFAULT: usize = 200;
+const RUN_ADD: usize = 1;
+const RUN_EDIT: usize = 2;
+const RUN_REMOVE: usize = 3;
+const RUN_CONFIG: usize = 100;
 const EDIT_DECLARATION: usize = 1;
 const LINK_INDICATOR: usize = 24;
 const EDIT_CUT: usize = 2;
@@ -203,6 +208,7 @@ enum TopButton {
     OpenFolder,
     Clone,
     NewProject,
+    Run,
     Settings,
     Explorer,
     Panel,
@@ -1937,7 +1943,7 @@ impl App {
         }
     }
 
-    /// Barra in alto: Nuovo, Apri, Apri cartella, Clona, Nuovo progetto … Impostazioni, Explorer, Pannello.
+    /// Barra in alto: Nuovo, Apri, Apri cartella, Clona, Nuovo progetto … ▶ Esegui, Impostazioni, Explorer, Pannello.
     unsafe fn paint_top_bar(&self, dc: HDC) {
         let palette = &self.palette;
         let rect = self.top_bar_rect();
@@ -1957,7 +1963,7 @@ impl App {
         for (label, button) in [("Nuovo", TopButton::New), ("Apri", TopButton::Open), ("Apri cartella", TopButton::OpenFolder), ("Clona", TopButton::Clone), ("Nuovo progetto", TopButton::NewProject)] {
             left = place(dc, left, label, button, false).right + self.scale(2);
         }
-        let entries = [("Impostazioni", TopButton::Settings, false), ("Explorer", TopButton::Explorer, self.explorer_visible.get()), ("Pannello", TopButton::Panel, self.panel.visible.get())];
+        let entries = [("▶ Esegui", TopButton::Run, false), ("Impostazioni", TopButton::Settings, false), ("Explorer", TopButton::Explorer, self.explorer_visible.get()), ("Pannello", TopButton::Panel, self.panel.visible.get())];
         let width: i32 = entries.iter().map(|(label, _, _)| text_width(dc, label) + self.scale(18)).sum();
         let mut left = rect.right - self.scale(6) - width;
         for (label, button, on) in entries {
@@ -1977,6 +1983,7 @@ impl App {
             TopButton::OpenFolder => self.open_folder(),
             TopButton::Clone => self.clone_repository(),
             TopButton::NewProject => self.new_project(),
+            TopButton::Run => self.run_menu(),
             TopButton::Settings => self.open_settings(),
             TopButton::Explorer => self.toggle_explorer(),
             TopButton::Panel => {
@@ -2708,6 +2715,12 @@ impl App {
     }
 
     fn new_terminal_with(&self, shell: &str) {
+        let cwd = self.explorer.root().or_else(|| self.active_repo_root());
+        self.open_terminal(shell, cwd.as_deref(), None);
+    }
+
+    /// Un terminale nuovo, in primo piano; con `run` (titolo, comando) porta il nome della configurazione e la esegue.
+    fn open_terminal(&self, shell: &str, cwd: Option<&Path>, run: Option<(&str, &str)>) {
         let shell = match steroitor_core::shells::resolve(Some(shell.to_string()).filter(|id| !id.is_empty()).as_deref()) {
             Ok(shell) => shell,
             Err(error) => {
@@ -2717,11 +2730,16 @@ impl App {
         };
         let id = self.panel.next_terminal.get();
         self.panel.next_terminal.set(id + 1);
-        let cwd = self.explorer.root().or_else(|| self.active_repo_root());
         // SAFETY: istanza del modulo che ha creato la finestra principale.
         let instance = unsafe { GetWindowLongPtrW(self.hwnd, GWLP_HINSTANCE) } as HINSTANCE;
-        match Terminal::open(self.hwnd, instance, &self.palette, id, &shell, cwd.as_deref()) {
-            Ok(terminal) => self.panel.terminals.borrow_mut().push(terminal),
+        match Terminal::open(self.hwnd, instance, &self.palette, id, &shell, cwd) {
+            Ok(mut terminal) => {
+                if let Some((title, command)) = run {
+                    terminal.title = title.to_string();
+                    terminal.type_command(command);
+                }
+                self.panel.terminals.borrow_mut().push(terminal);
+            }
             Err(error) => {
                 message_box(self.hwnd, &error, MB_ICONERROR);
                 return;
@@ -2729,6 +2747,84 @@ impl App {
         }
         self.panel.view.set(Some(id));
         self.show_panel(Tab::Console);
+    }
+
+    /// Menu del pulsante "▶ Esegui": le configurazioni del progetto, poi aggiungi, modifica e rimuovi.
+    fn run_menu(&self) {
+        let Some(root) = self.explorer.root() else {
+            message_box(self.hwnd, "Apri una cartella per configurare i comandi da eseguire.", MB_ICONINFORMATION);
+            return;
+        };
+        let mut configs = run::load(&root);
+        let labels: Vec<String> = configs.iter().map(|config| format!("▶  {}", config.name)).collect();
+        let mut entries: Vec<(usize, &str)> = labels.iter().enumerate().map(|(index, label)| (RUN_CONFIG + index, label.as_str())).collect();
+        if !entries.is_empty() {
+            entries.push((0, ""));
+        }
+        entries.push((RUN_ADD, "Aggiungi configurazione…"));
+        if !configs.is_empty() {
+            entries.extend([(RUN_EDIT, "Modifica configurazione…"), (RUN_REMOVE, "Rimuovi configurazione…")]);
+        }
+        match popup_menu(self.hwnd, &entries) {
+            RUN_ADD => {
+                if let Some(config) = self.ask_run_config(&root, None) {
+                    configs.push(config);
+                    run::save(&root, &configs);
+                }
+            }
+            RUN_EDIT => {
+                let Some(index) = self.pick_run_config(&configs) else { return };
+                if let Some(config) = self.ask_run_config(&root, Some(&configs[index])) {
+                    configs[index] = config;
+                    run::save(&root, &configs);
+                }
+            }
+            RUN_REMOVE => {
+                let Some(index) = self.pick_run_config(&configs) else { return };
+                configs.remove(index);
+                run::save(&root, &configs);
+            }
+            id if id >= RUN_CONFIG => {
+                if let Some(config) = configs.get(id - RUN_CONFIG) {
+                    self.start_run_config(&root, config);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn pick_run_config(&self, configs: &[run::RunConfig]) -> Option<usize> {
+        let entries: Vec<(usize, &str)> = configs.iter().enumerate().map(|(index, config)| (index + 1, config.name.as_str())).collect();
+        popup_menu(self.hwnd, &entries).checked_sub(1)
+    }
+
+    /// Cartella, comando e nome, partendo da `current` o da quello che suggerisce la cartella.
+    fn ask_run_config(&self, root: &Path, current: Option<&run::RunConfig>) -> Option<run::RunConfig> {
+        let ask = |title: &str, label: &str, initial: &str| prompt(self.hwnd, &self.palette, self.font.get(), title, label, initial);
+        let folder = ask("Cartella", "Relativa al progetto, es. .\\progetto-fe", current.map_or(".", |config| config.folder.as_str()))?;
+        let dir = root.join(&folder);
+        if !dir.is_dir() {
+            message_box(self.hwnd, &format!("La cartella {} non esiste.", dir.display()), MB_ICONWARNING);
+            return None;
+        }
+        let command = ask("Comando", &format!("Eseguito in un terminale nella cartella {folder}"), current.map_or_else(|| run::suggested_command(&dir), |config| config.command.as_str()))?;
+        let name = ask("Nome", "Come compare nel menu ▶ Esegui e nella tab del terminale", &current.map_or_else(|| run::suggested_name(&folder, &command), |config| config.name.clone()))?;
+        Some(run::RunConfig { name, folder, command })
+    }
+
+    /// Come il Rerun di IntelliJ: il terminale della stessa configurazione si chiude (e con lui il processo) e se ne apre uno nuovo.
+    fn start_run_config(&self, root: &Path, config: &run::RunConfig) {
+        let previous = self.panel.terminals.borrow().iter().find(|terminal| terminal.title == config.name).map(|terminal| terminal.id);
+        if let Some(id) = previous {
+            self.close_terminal(id);
+        }
+        let dir = run::folder_of(root, config);
+        if !dir.is_dir() {
+            message_box(self.hwnd, &format!("La cartella {} non esiste più.", dir.display()), MB_ICONWARNING);
+            return;
+        }
+        let shell = self.settings.borrow().terminal_shell.clone();
+        self.open_terminal(&shell, Some(&dir), Some((&config.name, &config.command)));
     }
 
     fn close_terminal(&self, id: u32) {

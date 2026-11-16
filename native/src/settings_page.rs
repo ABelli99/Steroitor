@@ -237,14 +237,24 @@ unsafe fn paint(hwnd: HWND, page: &mut Page) {
         Section::Plugins => {
             let note = RECT { right: main.left + s(CARD), ..row(top) };
             top += wrapped(dc, "Plugin e opzioni si applicano alla chiusura della pagina, a tutti i file aperti.", &note, palette.muted, true) + s(12);
-            for index in 0..PLUGINS.len() {
-                let card = RECT { left: main.left, top, right: main.right.min(main.left + s(CARD)), bottom: top };
-                let bottom = plugin_card(dc, hwnd, page, index, &card, false, &mut hits);
-                let card = RECT { bottom, ..card };
-                fill(dc, &card, palette.panel);
-                frame(dc, &card, palette.border);
-                plugin_card(dc, hwnd, page, index, &card, true, &mut hits);
-                top = bottom + s(8);
+            // Schede affiancate finché ci stanno; quelle di una riga hanno l'altezza della più alta.
+            let gap = s(8);
+            let width = (main.right - main.left).min(s(CARD));
+            let columns = ((main.right - main.left + gap) / (width + gap)).max(1) as usize;
+            let indices: Vec<usize> = (0..PLUGINS.len()).collect();
+            for row in indices.chunks(columns) {
+                let slot = |column: usize| {
+                    let left = main.left + column as i32 * (width + gap);
+                    RECT { left, top, right: left + width, bottom: top }
+                };
+                let bottom = row.iter().enumerate().map(|(column, &index)| plugin_card(dc, hwnd, page, index, &slot(column), false, &mut hits)).max().unwrap_or(top);
+                for (column, &index) in row.iter().enumerate() {
+                    let card = RECT { bottom, ..slot(column) };
+                    fill(dc, &card, palette.panel);
+                    frame(dc, &card, palette.border);
+                    plugin_card(dc, hwnd, page, index, &card, true, &mut hits);
+                }
+                top = bottom + gap;
             }
         }
     }

@@ -278,6 +278,11 @@ impl Terminal {
         }
     }
 
+    /// Scrive il comando e Invio, come se lo digitasse l'utente: la ConPTY lo tiene finché la shell non legge.
+    pub fn type_command(&self, command: &str) {
+        self.write(format!("{command}\r").as_bytes());
+    }
+
     /// Colonne e righe che stanno nel controllo, adattate alla sua dimensione attuale.
     pub fn fit(&self) {
         let mut client = RECT { left: 0, top: 0, right: 0, bottom: 0 };

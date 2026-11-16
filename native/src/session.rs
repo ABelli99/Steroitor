@@ -12,7 +12,7 @@ fn settings_file() -> Option<PathBuf> {
 }
 
 /// Scrive in un file temporaneo e lo rinomina: un'interruzione non lascia il file a metà.
-fn write_atomic(file: &std::path::Path, text: &str) {
+pub fn write_atomic(file: &std::path::Path, text: &str) {
     if let Some(dir) = file.parent() {
         let _ = std::fs::create_dir_all(dir);
     }

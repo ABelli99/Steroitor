@@ -20,6 +20,7 @@ mod panel;
 mod plugins;
 mod prompt;
 mod quick_open;
+mod run;
 mod sci;
 mod side_by_side;
 mod session;
