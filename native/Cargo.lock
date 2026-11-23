@@ -607,7 +607,7 @@ dependencies = [
 
 [[package]]
 name = "steroitor-native"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cc",
  "notify-debouncer-mini",

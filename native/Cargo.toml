@@ -1,6 +1,6 @@
 [package]
 name = "steroitor-native"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition = "2021"
 description = "Steroitor nativo: Win32 + Scintilla, senza webview"
 
